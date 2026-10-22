@@ -1,6 +1,66 @@
 import { create } from "zustand";
 import type { ConnectionMeta, ConnectionState, QueryResult } from "./types";
 
+export interface ConnPref {
+  color?: string;
+  starred?: boolean;
+  hidden?: boolean;
+}
+
+const CONN_PREFS_KEY = "df-conn-prefs";
+
+function loadConnPrefs(): Record<string, ConnPref> {
+  try {
+    return JSON.parse(localStorage.getItem(CONN_PREFS_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+export interface FavoriteTable {
+  connId: string;
+  database: string;
+  table: string;
+}
+
+const FAVORITES_KEY = "df-favorites";
+
+function loadFavorites(): FavoriteTable[] {
+  try {
+    return JSON.parse(localStorage.getItem(FAVORITES_KEY) || "[]");
+  } catch {
+    return [];
+  }
+}
+
+const CONN_GROUPS_KEY = "df-conn-groups";
+
+function loadConnGroups(): Record<string, string> {
+  try {
+    return JSON.parse(localStorage.getItem(CONN_GROUPS_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+const GROUP_STARS_KEY = "df-group-stars";
+
+function loadGroupStars(): Record<string, boolean> {
+  try {
+    return JSON.parse(localStorage.getItem(GROUP_STARS_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function sameFavorite(a: FavoriteTable, b: FavoriteTable): boolean {
+  return (
+    a.connId === b.connId &&
+    a.database === b.database &&
+    a.table === b.table
+  );
+}
+
 export interface TabViewState {
   result: QueryResult | null;
   error: string | null;
@@ -47,6 +107,14 @@ interface AppStore {
   setConnectionStates: (states: ConnectionState[]) => void;
   setConnected: (id: string, connected: boolean) => void;
   removeConnectionState: (id: string) => void;
+  connPrefs: Record<string, ConnPref>;
+  setConnPref: (id: string, patch: Partial<ConnPref>) => void;
+  favorites: FavoriteTable[];
+  toggleFavorite: (fav: FavoriteTable) => void;
+  connGroups: Record<string, string>;
+  setConnGroup: (id: string, group: string | undefined) => void;
+  groupStars: Record<string, boolean>;
+  toggleGroupStar: (group: string) => void;
   setActiveConn: (id: string | null) => void;
   setDatabases: (databases: string[]) => void;
   setActiveDb: (database: string | null) => void;
@@ -85,6 +153,10 @@ const initialTab: QueryTab = {
 export const useAppStore = create<AppStore>((set, get) => ({
   connections: [],
   connected: {},
+  connPrefs: loadConnPrefs(),
+  favorites: loadFavorites(),
+  connGroups: loadConnGroups(),
+  groupStars: loadGroupStars(),
   activeConnId: null,
   databases: [],
   activeDb: null,
@@ -113,6 +185,62 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const next = { ...state.connected };
       delete next[id];
       return { connected: next };
+    }),
+  setConnPref: (id, patch) =>
+    set((state) => {
+      const next = {
+        ...state.connPrefs,
+        [id]: { ...state.connPrefs[id], ...patch },
+      };
+      try {
+        localStorage.setItem(CONN_PREFS_KEY, JSON.stringify(next));
+      } catch {
+        // storage may be unavailable; prefs stay in memory for this session
+      }
+      return { connPrefs: next };
+    }),
+  toggleFavorite: (fav) =>
+    set((state) => {
+      const exists = state.favorites.some((item) => sameFavorite(item, fav));
+      const next = exists
+        ? state.favorites.filter((item) => !sameFavorite(item, fav))
+        : [...state.favorites, fav];
+      try {
+        localStorage.setItem(FAVORITES_KEY, JSON.stringify(next));
+      } catch {
+        // storage may be unavailable
+      }
+      return { favorites: next };
+    }),
+  setConnGroup: (id, group) =>
+    set((state) => {
+      const next = { ...state.connGroups };
+      if (group && group.trim()) {
+        next[id] = group.trim();
+      } else {
+        delete next[id];
+      }
+      try {
+        localStorage.setItem(CONN_GROUPS_KEY, JSON.stringify(next));
+      } catch {
+        // storage may be unavailable
+      }
+      return { connGroups: next };
+    }),
+  toggleGroupStar: (group) =>
+    set((state) => {
+      const next = { ...state.groupStars };
+      if (next[group]) {
+        delete next[group];
+      } else {
+        next[group] = true;
+      }
+      try {
+        localStorage.setItem(GROUP_STARS_KEY, JSON.stringify(next));
+      } catch {
+        // storage may be unavailable
+      }
+      return { groupStars: next };
     }),
   setActiveConn: (activeConnId) =>
     set({

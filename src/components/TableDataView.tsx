@@ -78,8 +78,8 @@ export default function TableDataView({ tab, onRefresh, theme }: Props) {
         </span>
         <span style={{ fontSize: 11, color: "var(--fa)" }}>
           {pkColumns.length > 0
-            ? "· 2 klik = redaktə"
-            : "· read-only (PK yox)"}
+            ? "· double-click to edit"
+            : "· read-only (no primary key)"}
         </span>
         <div
           style={{ width: 1, height: 14, background: "var(--bd)" }}

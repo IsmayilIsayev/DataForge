@@ -69,6 +69,9 @@ fn setup_native_menu(app: &tauri::App) -> tauri::Result<()> {
     let toggle_theme = MenuItemBuilder::with_id("toggle-theme", "Toggle Theme").build(app)?;
     let toggle_ai = MenuItemBuilder::with_id("toggle-ai", "Toggle AI Panel").build(app)?;
     let toggle_sidebar = MenuItemBuilder::with_id("toggle-sidebar", "Toggle Sidebar").build(app)?;
+    let focus_mode = MenuItemBuilder::with_id("focus-mode", "Focus Mode")
+        .accelerator("CmdOrCtrl+Shift+F")
+        .build(app)?;
     let reload = MenuItemBuilder::with_id("reload", "Reload")
         .accelerator("CmdOrCtrl+R")
         .build(app)?;
@@ -97,6 +100,7 @@ fn setup_native_menu(app: &tauri::App) -> tauri::Result<()> {
         .item(&toggle_theme)
         .item(&toggle_ai)
         .item(&toggle_sidebar)
+        .item(&focus_mode)
         .separator()
         .item(&reload)
         .item(&fullscreen)
@@ -140,6 +144,9 @@ fn setup_native_menu(app: &tauri::App) -> tauri::Result<()> {
             }
             "toggle-sidebar" => {
                 let _ = app.emit("menu:toggle-sidebar", ());
+            }
+            "focus-mode" => {
+                let _ = app.emit("menu:focus-mode", ());
             }
             "about" => {
                 let _ = app.emit("menu:about", ());
@@ -268,6 +275,7 @@ pub fn run() {
             commands::edit::update_cell,
             commands::edit::insert_row,
             commands::edit::delete_rows,
+            commands::search::find_in_database,
             commands::ai::ai_nl2sql,
             commands::ai::ai_explain,
             commands::ai::ai_get_config,

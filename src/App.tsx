@@ -10,6 +10,7 @@ import CommandPalette from "./components/CommandPalette";
 import type { CommandAction } from "./components/CommandPalette";
 import ConnectionDialog from "./components/ConnectionDialog";
 import DataGrid from "./components/DataGrid";
+import FindDialog from "./components/FindDialog";
 import Sidebar from "./components/Sidebar";
 import SqlEditor from "./components/SqlEditor";
 import TableDataView from "./components/TableDataView";
@@ -55,6 +56,7 @@ export default function App() {
   const databases = useAppStore((state) => state.databases);
   const tabs = useAppStore((state) => state.tabs);
   const activeTabId = useAppStore((state) => state.activeTabId);
+  const connPrefs = useAppStore((state) => state.connPrefs);
   const error = useAppStore((state) => state.error);
   const setActiveDb = useAppStore((state) => state.setActiveDb);
 
@@ -69,6 +71,8 @@ export default function App() {
   const [aboutOpen, setAboutOpen] = useState(false);
   const [appVersion, setAppVersion] = useState("0.1.0");
   const [sideOpen, setSideOpen] = useState(true);
+  const [focusMode, setFocusMode] = useState(false);
+  const [findOpen, setFindOpen] = useState(false);
   const [sideW, setSideW] = useState(248);
   const [aiW, setAiW] = useState(320);
   const [editorH, setEditorH] = useState(236);
@@ -260,6 +264,9 @@ export default function App() {
       await bind("menu:toggle-sidebar", () => {
         setSideOpen((open) => !open);
       });
+      await bind("menu:focus-mode", () => {
+        setFocusMode((value) => !value);
+      });
       await bind("menu:about", () => {
         setAboutOpen(true);
       });
@@ -311,6 +318,23 @@ export default function App() {
       unlisteners.forEach((unlisten) => unlisten());
     };
   }, []);
+
+  useEffect(() => {
+    if (focusMode) {
+      setSideOpen(false);
+      setAiOpen(false);
+    } else {
+      setSideOpen(true);
+    }
+    void (async () => {
+      try {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        await getCurrentWindow().setFullscreen(focusMode);
+      } catch {
+        // not running inside Tauri
+      }
+    })();
+  }, [focusMode]);
 
   useEffect(() => {
     if (!aboutOpen) return;
@@ -642,6 +666,23 @@ export default function App() {
       run: () => setSideOpen((open) => !open),
     },
     {
+      id: "find-in-db",
+      icon: "icon-search",
+      label: "Find in database…",
+      group: "View",
+      run: () => {
+        const store = useAppStore.getState();
+        if (store.activeConnId && store.activeDb) {
+          setFindOpen(true);
+        } else {
+          void notify(
+            "DataForge",
+            "Select a connection and database first.",
+          );
+        }
+      },
+    },
+    {
       id: "add",
       icon: "icon-plus",
       label: "Add connection…",
@@ -905,6 +946,10 @@ export default function App() {
           >
             {tabs.map((tab) => {
               const active = tab.id === activeTabId;
+              const tabColor =
+                tab.type === "table"
+                  ? connPrefs[tab.connectionId]?.color
+                  : undefined;
               return (
                 <div
                   key={tab.id}
@@ -930,8 +975,11 @@ export default function App() {
                     display: "flex",
                     alignItems: "center",
                     gap: 6,
-                    padding: "0 6px 0 10px",
+                    padding: "0 6px 0 7px",
                     marginBottom: -1,
+                    borderLeft: tabColor
+                      ? `3px solid ${tabColor}`
+                      : "3px solid transparent",
                     borderBottom: `2px solid ${
                       active ? "var(--ac)" : "transparent"
                     }`,
@@ -1514,6 +1562,17 @@ export default function App() {
         onClose={closeConnectionDialog}
         onSaved={handleSaved}
       />
+
+      {findOpen && activeConnId && activeDb && (
+        <FindDialog
+          connId={activeConnId}
+          database={activeDb}
+          onClose={() => setFindOpen(false)}
+          onOpenResult={(table) => {
+            useAppStore.getState().addTableTab(activeConnId, activeDb, table);
+          }}
+        />
+      )}
     </div>
   );
 }

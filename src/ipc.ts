@@ -80,6 +80,28 @@ export const getSchema = (connId: string, database: string) =>
     database,
   });
 
+export interface SearchHit {
+  kind: "table" | "column" | "data";
+  table: string;
+  column?: string;
+  value?: string;
+}
+
+export const findInDatabase = (
+  connId: string,
+  database: string,
+  term: string,
+  caseInsensitive: boolean,
+  includeData: boolean,
+) =>
+  invoke<SearchHit[]>("find_in_database", {
+    conn_id: connId,
+    database,
+    term,
+    case_insensitive: caseInsensitive,
+    include_data: includeData,
+  });
+
 export interface CellRef {
   column: string;
   value: string | null;

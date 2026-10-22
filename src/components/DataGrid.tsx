@@ -353,7 +353,7 @@ export default function DataGrid({
       // Surface the real DB error (e.g. a read-only user without UPDATE rights)
       // in the table's error bar, and keep the cell's original value.
       setError(errorMessage(updateError));
-      setCopied("Dəyişiklik rədd edildi");
+      setCopied("Edit denied");
     }
   }
 

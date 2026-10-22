@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import type { CSSProperties, MouseEvent, ReactNode } from "react";
+import type {
+  CSSProperties,
+  DragEvent,
+  MouseEvent,
+  ReactNode,
+} from "react";
 import {
   connectConnection,
   deleteConnection,
@@ -10,6 +15,7 @@ import {
   listTables,
 } from "../ipc";
 import { useAppStore } from "../store";
+import type { FavoriteTable } from "../store";
 import type { ColumnInfo, ConnectionMeta, TableInfo } from "../types";
 
 interface Props {
@@ -75,7 +81,23 @@ interface TreeRowProps {
   onDoubleClick?: () => void;
   onContextMenu?: (event: MouseEvent<HTMLDivElement>) => void;
   title?: string;
+  trailing?: ReactNode;
+  draggable?: boolean;
+  onDragStart?: (event: DragEvent<HTMLDivElement>) => void;
+  onDragOver?: (event: DragEvent<HTMLDivElement>) => void;
+  onDragLeave?: (event: DragEvent<HTMLDivElement>) => void;
+  onDrop?: (event: DragEvent<HTMLDivElement>) => void;
 }
+
+const CONN_COLORS: Array<{ name: string; value?: string }> = [
+  { name: "None", value: undefined },
+  { name: "Red", value: "#e5534b" },
+  { name: "Amber", value: "#caa23a" },
+  { name: "Green", value: "#43b581" },
+  { name: "Blue", value: "#4c8bf5" },
+  { name: "Purple", value: "#a371f7" },
+  { name: "Gray", value: "#8b929c" },
+];
 
 function TreeRow({
   pad,
@@ -95,6 +117,12 @@ function TreeRow({
   onDoubleClick,
   onContextMenu,
   title,
+  trailing,
+  draggable,
+  onDragStart,
+  onDragOver,
+  onDragLeave,
+  onDrop,
 }: TreeRowProps) {
   const style = {
     position: "relative",
@@ -118,6 +146,11 @@ function TreeRow({
       onDoubleClick={onDoubleClick}
       onContextMenu={onContextMenu}
       title={title}
+      draggable={draggable}
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
     >
       {guides.map((x) => (
         <span
@@ -184,6 +217,7 @@ function TreeRow({
           {meta}
         </span>
       )}
+      {trailing}
     </div>
   );
 }
@@ -299,6 +333,14 @@ export default function Sidebar({
   const activeTabId = useAppStore((state) => state.activeTabId);
   const setActiveDb = useAppStore((state) => state.setActiveDb);
   const setDatabases = useAppStore((state) => state.setDatabases);
+  const connPrefs = useAppStore((state) => state.connPrefs);
+  const setConnPref = useAppStore((state) => state.setConnPref);
+  const favorites = useAppStore((state) => state.favorites);
+  const toggleFavorite = useAppStore((state) => state.toggleFavorite);
+  const connGroups = useAppStore((state) => state.connGroups);
+  const setConnGroup = useAppStore((state) => state.setConnGroup);
+  const groupStars = useAppStore((state) => state.groupStars);
+  const toggleGroupStar = useAppStore((state) => state.toggleGroupStar);
 
   const [localDatabases, setLocalDatabases] = useState<
     Record<string, string[]>
@@ -312,10 +354,41 @@ export default function Sidebar({
   const [selected, setSelected] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
   const [contextMenu, setContextMenu] = useState<ContextMenu | null>(null);
+  const [showHidden, setShowHidden] = useState(false);
+  const [showStarredOnly, setShowStarredOnly] = useState(false);
+  const [collapsedGroups, setCollapsedGroups] = useState<
+    Record<string, boolean>
+  >({});
+  const [groupEditFor, setGroupEditFor] = useState<string | null>(null);
+  const [groupEditValue, setGroupEditValue] = useState("");
   const inFlight = useRef(new Set<string>());
   const activeConnected = activeConnId ? !!connected[activeConnId] : false;
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
   const activeTableTab = activeTab?.type === "table" ? activeTab : null;
+
+  const hiddenCount = connections.filter(
+    (connection) => connPrefs[connection.id]?.hidden,
+  ).length;
+  const visibleConnections = connections
+    .filter(
+      (connection) =>
+        (showHidden || !connPrefs[connection.id]?.hidden) &&
+        (!showStarredOnly || connPrefs[connection.id]?.starred),
+    )
+    .slice()
+    .sort((a, b) => {
+      const ga = connGroups[a.id] ?? "";
+      const gb = connGroups[b.id] ?? "";
+      if (ga !== gb) {
+        const ra = ga === "" ? 1 : groupStars[ga] ? 0 : 2;
+        const rb = gb === "" ? 1 : groupStars[gb] ? 0 : 2;
+        if (ra !== rb) return ra - rb;
+        return ga < gb ? -1 : 1;
+      }
+      const sa = connPrefs[a.id]?.starred ? 0 : 1;
+      const sb = connPrefs[b.id]?.starred ? 0 : 1;
+      return sa - sb;
+    });
 
   useEffect(() => {
     if (!activeConnId) {
@@ -733,6 +806,27 @@ export default function Sidebar({
     useAppStore.getState().addQueryTab(`SELECT *\nFROM ${table}\nLIMIT 100;`);
   }
 
+  function openFavorite(fav: FavoriteTable) {
+    const connection = connections.find((item) => item.id === fav.connId);
+    if (!connection) return;
+    openTable(connection, fav.database, fav.table);
+  }
+
+  function locateActiveTab() {
+    const store = useAppStore.getState();
+    const tab = store.tabs.find((item) => item.id === store.activeTabId);
+    if (!tab || tab.type !== "table") return;
+    setShowStarredOnly(false);
+    setShowHidden(true);
+    setExpanded((current) => ({
+      ...current,
+      [tab.connectionId]: true,
+      [`${tab.connectionId}/${tab.database}`]: true,
+    }));
+    setSelected(`${tab.connectionId}/${tab.database}/table/${tab.table}`);
+    void loadTablesFor(tab.connectionId, tab.database);
+  }
+
   const query = filter.trim().toLowerCase();
 
   function matchingColumns(
@@ -750,7 +844,102 @@ export default function Sidebar({
     const guides = (depth: number) =>
       Array.from({ length: depth }, (_, index) => 15 + index * 14);
 
-    for (const connection of connections) {
+    if (favorites.length > 0 && !query) {
+      const favExpanded = expanded["__favorites"] !== false;
+      rows.push(
+        <TreeRow
+          key="__fav_header"
+          pad={6}
+          guides={[]}
+          caret={favExpanded ? "icon-chevron-down" : "icon-chevron-right"}
+          icon="icon-star"
+          ic="var(--wn)"
+          label="Favorites"
+          color="var(--tx)"
+          fs={12.5}
+          onClick={() =>
+            setExpanded((current) => ({
+              ...current,
+              __favorites: current["__favorites"] === false,
+            }))
+          }
+        />,
+      );
+      if (favExpanded) {
+        for (const fav of favorites) {
+          const conn = connections.find((item) => item.id === fav.connId);
+          rows.push(
+            <TreeRow
+              key={`fav-${fav.connId}-${fav.database}-${fav.table}`}
+              pad={20}
+              guides={guides(1)}
+              icon="icon-table"
+              ic="var(--mu)"
+              label={fav.table}
+              meta={conn ? `${conn.name}·${fav.database}` : fav.database}
+              color="var(--tx)"
+              fs={12.5}
+              onClick={() => openFavorite(fav)}
+            />,
+          );
+        }
+      }
+    }
+
+    let lastHeaderGroup: string | null = null;
+    for (const connection of visibleConnections) {
+      const group = connGroups[connection.id] ?? "";
+      if (!query && group && group !== lastHeaderGroup) {
+        lastHeaderGroup = group;
+        const collapsed = !!collapsedGroups[group];
+        rows.push(
+          <TreeRow
+            key={`grp-${group}`}
+            pad={6}
+            guides={[]}
+            caret={collapsed ? "icon-chevron-right" : "icon-chevron-down"}
+            icon="icon-folder"
+            ic="var(--mu)"
+            label={group}
+            color="var(--mu)"
+            fs={11.5}
+            onClick={() =>
+              setCollapsedGroups((current) => ({
+                ...current,
+                [group]: !current[group],
+              }))
+            }
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => {
+              event.preventDefault();
+              const connId = event.dataTransfer.getData(
+                "application/df-conn",
+              );
+              if (connId) setConnGroup(connId, group);
+            }}
+            trailing={
+              <span
+                onClick={(event) => {
+                  event.stopPropagation();
+                  toggleGroupStar(group);
+                }}
+                title="Star group"
+                style={{
+                  flex: "none",
+                  display: "flex",
+                  alignItems: "center",
+                  color: groupStars[group] ? "var(--wn)" : "var(--fa)",
+                  cursor: "default",
+                }}
+              >
+                <i className="icon-star" style={{ fontSize: 12 }} />
+              </span>
+            }
+          />,
+        );
+      }
+      if (!query && group && collapsedGroups[group]) continue;
+
       const dbs = databasesFor(connection);
       const connectionKey = connection.id;
       const connectionOpen = query ? true : !!expanded[connectionKey];
@@ -788,7 +977,10 @@ export default function Sidebar({
           key={connectionKey}
           pad={6}
           guides={[]}
-          bl={isActive ? "var(--ac)" : "transparent"}
+          bl={
+            connPrefs[connection.id]?.color ??
+            (isActive ? "var(--ac)" : "transparent")
+          }
           caret={
             connectionOpen ? "icon-chevron-down" : "icon-chevron-right"
           }
@@ -797,7 +989,9 @@ export default function Sidebar({
           }
           label={connection.name}
           fs={12.5}
-          meta={ENGINE_SHORT[connection.dialect] ?? connection.dialect}
+          meta={`${connPrefs[connection.id]?.starred ? "★ " : ""}${
+            ENGINE_SHORT[connection.dialect] ?? connection.dialect
+          }`}
           onClick={() => {
             if (!connected[connection.id]) {
               void connectAndSelect(connection);
@@ -812,6 +1006,11 @@ export default function Sidebar({
               return;
             }
             void connectAndSelect(connection);
+          }}
+          draggable
+          onDragStart={(event) => {
+            event.dataTransfer.effectAllowed = "move";
+            event.dataTransfer.setData("application/df-conn", connection.id);
           }}
           onContextMenu={(event) => openContextMenu(event, connection)}
           title={`${connection.dialect} · ${connection.host}:${connection.port} · ${
@@ -999,6 +1198,24 @@ export default function Sidebar({
       }
     }
 
+    if (hiddenCount > 0 && !query) {
+      rows.push(
+        <TreeRow
+          key="__show_hidden"
+          pad={6}
+          guides={[]}
+          icon={showHidden ? "icon-eye-off" : "icon-eye"}
+          ic="var(--fa)"
+          label={
+            showHidden ? "Hide hidden" : `Show hidden (${hiddenCount})`
+          }
+          color="var(--fa)"
+          fs={11.5}
+          onClick={() => setShowHidden((value) => !value)}
+        />,
+      );
+    }
+
     return rows;
   }
 
@@ -1048,6 +1265,48 @@ export default function Sidebar({
             color: "var(--tx)",
           }}
         />
+        <button
+          type="button"
+          className="df2-icon-btn"
+          onClick={() => setShowStarredOnly((value) => !value)}
+          title="Show starred only"
+          style={{
+            width: 22,
+            height: 22,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            border: 0,
+            borderRadius: 4,
+            background: "transparent",
+            color: showStarredOnly ? "var(--wn)" : "var(--mu)",
+            cursor: "default",
+            padding: 0,
+          }}
+        >
+          <i className="icon-star" style={{ fontSize: 13 }} />
+        </button>
+        <button
+          type="button"
+          className="df2-icon-btn"
+          onClick={locateActiveTab}
+          title="Locate active tab"
+          style={{
+            width: 22,
+            height: 22,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            border: 0,
+            borderRadius: 4,
+            background: "transparent",
+            color: "var(--mu)",
+            cursor: "default",
+            padding: 0,
+          }}
+        >
+          <i className="icon-crosshair" style={{ fontSize: 13 }} />
+        </button>
         <button
           type="button"
           className="df2-icon-btn"
@@ -1158,6 +1417,89 @@ export default function Sidebar({
                   }}
                 />
                 <MenuSeparator />
+                <div
+                  style={{ display: "flex", gap: 5, padding: "5px 8px 3px" }}
+                >
+                  {CONN_COLORS.map((color) => {
+                    const active =
+                      (connPrefs[contextConnection.id]?.color ?? undefined) ===
+                      color.value;
+                    return (
+                      <button
+                        key={color.name}
+                        type="button"
+                        title={color.name}
+                        onClick={() => {
+                          setConnPref(contextConnection.id, {
+                            color: color.value,
+                          });
+                          setContextMenu(null);
+                        }}
+                        style={{
+                          width: 16,
+                          height: 16,
+                          flex: "none",
+                          borderRadius: 4,
+                          border: active
+                            ? "2px solid var(--tx)"
+                            : "1px solid var(--bd2)",
+                          background: color.value ?? "transparent",
+                          cursor: "default",
+                        }}
+                      />
+                    );
+                  })}
+                </div>
+                <MenuItem
+                  icon="icon-star"
+                  label={
+                    connPrefs[contextConnection.id]?.starred ? "Unstar" : "Star"
+                  }
+                  onClick={() => {
+                    setConnPref(contextConnection.id, {
+                      starred: !connPrefs[contextConnection.id]?.starred,
+                    });
+                    setContextMenu(null);
+                  }}
+                />
+                <MenuItem
+                  icon={
+                    connPrefs[contextConnection.id]?.hidden
+                      ? "icon-eye"
+                      : "icon-eye-off"
+                  }
+                  label={
+                    connPrefs[contextConnection.id]?.hidden ? "Unhide" : "Hide"
+                  }
+                  onClick={() => {
+                    setConnPref(contextConnection.id, {
+                      hidden: !connPrefs[contextConnection.id]?.hidden,
+                    });
+                    setContextMenu(null);
+                  }}
+                />
+                <MenuItem
+                  icon="icon-folder"
+                  label="Set group…"
+                  onClick={() => {
+                    setGroupEditValue(
+                      connGroups[contextConnection.id] ?? "",
+                    );
+                    setGroupEditFor(contextConnection.id);
+                    setContextMenu(null);
+                  }}
+                />
+                {connGroups[contextConnection.id] && (
+                  <MenuItem
+                    icon="icon-folder-minus"
+                    label="Remove from group"
+                    onClick={() => {
+                      setConnGroup(contextConnection.id, undefined);
+                      setContextMenu(null);
+                    }}
+                  />
+                )}
+                <MenuSeparator />
                 <MenuItem
                   icon="icon-trash-2"
                   label="Delete connection"
@@ -1224,6 +1566,27 @@ export default function Sidebar({
                       .catch(() => {});
                   }}
                 />
+                <MenuItem
+                  icon="icon-star"
+                  label={
+                    favorites.some(
+                      (fav) =>
+                        fav.connId === contextConnection.id &&
+                        fav.database === contextMenu.database &&
+                        fav.table === contextMenu.table,
+                    )
+                      ? "Remove from Favorites"
+                      : "Add to Favorites"
+                  }
+                  onClick={() => {
+                    setContextMenu(null);
+                    toggleFavorite({
+                      connId: contextConnection.id,
+                      database: contextMenu.database,
+                      table: contextMenu.table,
+                    });
+                  }}
+                />
                 <MenuSeparator />
                 <MenuItem
                   icon="icon-refresh-cw"
@@ -1239,6 +1602,89 @@ export default function Sidebar({
                 />
               </>
             )}
+          </div>
+        </>
+      )}
+
+      {groupEditFor && (
+        <>
+          <div
+            onMouseDown={() => setGroupEditFor(null)}
+            style={{
+              position: "fixed",
+              inset: 0,
+              zIndex: 60,
+              background: "var(--ov)",
+            }}
+          />
+          <div
+            style={{
+              position: "fixed",
+              left: "50%",
+              top: "40%",
+              transform: "translate(-50%, -50%)",
+              zIndex: 61,
+              width: 300,
+              padding: 14,
+              background: "var(--sf)",
+              border: "1px solid var(--bd2)",
+              borderRadius: 8,
+              boxShadow: "var(--sh)",
+              display: "flex",
+              flexDirection: "column",
+              gap: 10,
+            }}
+          >
+            <span style={{ fontSize: 12.5, fontWeight: 500 }}>Set group</span>
+            <input
+              autoFocus
+              value={groupEditValue}
+              onChange={(event) => setGroupEditValue(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  setConnGroup(groupEditFor, groupEditValue);
+                  setGroupEditFor(null);
+                } else if (event.key === "Escape") {
+                  setGroupEditFor(null);
+                }
+              }}
+              placeholder="Group name (empty = none)"
+              spellCheck={false}
+              style={{
+                height: 28,
+                padding: "0 8px",
+                border: "1px solid var(--bd2)",
+                borderRadius: 4,
+                background: "var(--bg)",
+                color: "var(--tx)",
+                fontSize: 12.5,
+              }}
+            />
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "flex-end",
+                gap: 8,
+              }}
+            >
+              <button
+                type="button"
+                className="v2-btn"
+                onClick={() => setGroupEditFor(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="v2-btn v2-btn-primary"
+                onClick={() => {
+                  setConnGroup(groupEditFor, groupEditValue);
+                  setGroupEditFor(null);
+                }}
+              >
+                Save
+              </button>
+            </div>
           </div>
         </>
       )}
