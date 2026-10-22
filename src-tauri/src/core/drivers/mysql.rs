@@ -97,6 +97,13 @@ impl MySqlDriver {
         let pool = MySqlPoolOptions::new()
             .max_connections(5)
             .acquire_timeout(Duration::from_secs(10))
+            // Remote MySQL (PlanetScale, managed hosts) drops idle connections,
+            // so validate on acquire and recycle idle/old handles to avoid
+            // queries failing against a dead socket.
+            .test_before_acquire(true)
+            .idle_timeout(Duration::from_secs(60))
+            .max_lifetime(Duration::from_secs(30 * 60))
+            .min_connections(0)
             .connect_with(options.clone())
             .await
             .map_err(db_error)?;

@@ -3,15 +3,16 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::core::drivers::Dialect;
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
 const MAX_TABLES: usize = 100;
 const ROWS_PER_TABLE: i64 = 3;
 const MAX_HITS: usize = 200;
-/// How many per-table data queries run at once. Bounded so we never exceed the
-/// connection pool; parallelism is the main speed-up over scanning serially.
-const CONCURRENCY: usize = 8;
+/// How many per-table data queries run at once. Kept at/under the smallest
+/// driver pool (Postgres uses 5) so a remote DB such as Neon is never starved,
+/// while still overlapping round-trips for a big speed-up over serial scanning.
+const CONCURRENCY: usize = 4;
 
 #[derive(Serialize)]
 pub struct SearchHit {
@@ -66,7 +67,9 @@ pub async fn find_in_database(
     let dialect = driver.dialect();
     let schema = driver.get_schema(Some(&database)).await?;
 
-    let lower = needle.to_ascii_lowercase();
+    // Unicode-aware lowercasing so non-ASCII letters (ə, ı, ş, ç, ğ, ö, ü, …)
+    // match regardless of case — ASCII-only folding silently dropped them.
+    let lower = needle.to_lowercase();
     let mut hits: Vec<SearchHit> = Vec::new();
 
     // When scoped to a single table, restrict the whole search to it.
@@ -77,7 +80,7 @@ pub async fn find_in_database(
 
     // 1) Structure: table + column name matches (always).
     for table in &tables {
-        if table.name.to_ascii_lowercase().contains(&lower) {
+        if table.name.to_lowercase().contains(&lower) {
             hits.push(SearchHit {
                 kind: "table".into(),
                 table: table.name.clone(),
@@ -86,7 +89,7 @@ pub async fn find_in_database(
             });
         }
         for column in &table.columns {
-            if column.name.to_ascii_lowercase().contains(&lower) {
+            if column.name.to_lowercase().contains(&lower) {
                 hits.push(SearchHit {
                     kind: "column".into(),
                     table: table.name.clone(),
@@ -122,15 +125,32 @@ pub async fn find_in_database(
                 if text_cols.is_empty() {
                     return None;
                 }
+                // Postgres has strict types: uuid/json/jsonb/enum columns reject
+                // ILIKE directly ("operator does not exist: uuid ~~* unknown"),
+                // so cast every searched column to text first. MySQL's text types
+                // match LIKE as-is.
                 let where_parts: Vec<String> = text_cols
                     .iter()
                     .map(|name| {
-                        format!("{} {} {}", quote_ident(dialect, name), like, pattern)
+                        let col = quote_ident(dialect, name);
+                        let expr = if dialect == Dialect::Postgres {
+                            format!("{col}::text")
+                        } else {
+                            col
+                        };
+                        format!("{expr} {like} {pattern}")
                     })
                     .collect();
                 let select_cols: Vec<String> = text_cols
                     .iter()
-                    .map(|name| quote_ident(dialect, name))
+                    .map(|name| {
+                        let col = quote_ident(dialect, name);
+                        if dialect == Dialect::Postgres {
+                            format!("{col}::text AS {col}")
+                        } else {
+                            col
+                        }
+                    })
                     .collect();
                 let table_ref = match dialect {
                     Dialect::Mysql => format!(
@@ -165,36 +185,63 @@ pub async fn find_in_database(
         .collect::<Vec<_>>()
         .await;
 
+        let mut first_error: Option<AppError> = None;
         for (table_name, outcome) in results {
             if hits.len() >= MAX_HITS {
                 break;
             }
             let result = match outcome {
                 Ok(result) => result,
-                Err(_) => continue, // skip tables we can't read
+                Err(error) => {
+                    // Remember the first failure so a totally empty result can
+                    // report WHY instead of looking like "nothing matched".
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                    continue;
+                }
             };
             for row in &result.rows {
+                // Prefer the exact column whose text contains the term; fall back
+                // to the first text cell so DB-level matches that a strict
+                // substring check can't reproduce (e.g. MySQL accent-insensitive
+                // collations) still surface as a hit.
+                let mut best: Option<(usize, &String)> = None;
+                let mut fallback: Option<(usize, &String)> = None;
                 for (index, cell) in row.iter().enumerate() {
                     if let serde_json::Value::String(text) = cell {
-                        if text.to_ascii_lowercase().contains(&lower) {
-                            let mut snippet = text.clone();
-                            if snippet.chars().count() > 120 {
-                                snippet = snippet.chars().take(120).collect::<String>()
-                                    + "…";
-                            }
-                            hits.push(SearchHit {
-                                kind: "data".into(),
-                                table: table_name.clone(),
-                                column: result.columns.get(index).cloned(),
-                                value: Some(snippet),
-                            });
+                        if fallback.is_none() && !text.is_empty() {
+                            fallback = Some((index, text));
+                        }
+                        if text.to_lowercase().contains(&lower) {
+                            best = Some((index, text));
                             break;
                         }
                     }
                 }
+                if let Some((index, text)) = best.or(fallback) {
+                    let mut snippet = text.clone();
+                    if snippet.chars().count() > 120 {
+                        snippet = snippet.chars().take(120).collect::<String>() + "…";
+                    }
+                    hits.push(SearchHit {
+                        kind: "data".into(),
+                        table: table_name.clone(),
+                        column: result.columns.get(index).cloned(),
+                        value: Some(snippet),
+                    });
+                }
                 if hits.len() >= MAX_HITS {
                     break;
                 }
+            }
+        }
+
+        // If nothing matched anywhere AND a query failed, the empty result is a
+        // failure, not a genuine "no matches" — surface the cause to the user.
+        if hits.is_empty() {
+            if let Some(error) = first_error {
+                return Err(error);
             }
         }
     }

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent, ReactNode } from "react";
-import { errorMessage, findInDatabase } from "../ipc";
+import { aiNl2Sql, errorMessage, findInDatabase } from "../ipc";
 import type { SearchHit } from "../ipc";
 import { quoteIdentifier } from "../sql";
 import type { Dialect } from "../types";
@@ -14,6 +14,8 @@ interface Props {
   onClose: () => void;
   /** Opens the hit's table; `where` filters it to just the matching rows. */
   onOpenResult: (table: string, where?: string) => void;
+  /** Opens AI-generated SQL in a new query tab for review. */
+  onRunSql: (sql: string) => void;
 }
 
 const KIND_META: Record<SearchHit["kind"], { icon: string; label: string }> = {
@@ -47,10 +49,13 @@ export default function FindDialog({
   onlyTable,
   onClose,
   onOpenResult,
+  onRunSql,
 }: Props) {
   const [term, setTerm] = useState("");
   const [caseInsensitive, setCaseInsensitive] = useState(true);
   const [includeData, setIncludeData] = useState(true);
+  const [aiMode, setAiMode] = useState(false);
+  const [aiBusy, setAiBusy] = useState(false);
   const [results, setResults] = useState<SearchHit[] | null>(null);
   // The term the current results were produced with (so highlighting and the
   // open-filter stay correct even if the user edits the box without re-running).
@@ -92,10 +97,34 @@ export default function FindDialog({
     }
   };
 
+  // AI mode: send the natural-language question (any language) to nl2sql, which
+  // already feeds the live schema to the model, then open the SQL for review.
+  const ask = async () => {
+    const value = term.trim();
+    if (!value) return;
+    setAiBusy(true);
+    setError(null);
+    try {
+      const result = await aiNl2Sql(connId, value, true, database);
+      if (result.sql && result.sql.trim()) {
+        onRunSql(result.sql.trim());
+        onClose();
+      } else {
+        setError("The AI did not return any SQL. Try rephrasing the question.");
+      }
+    } catch (aiError) {
+      setError(errorMessage(aiError));
+    } finally {
+      setAiBusy(false);
+    }
+  };
+
+  const submit = () => (aiMode ? void ask() : void run());
+
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === "Enter") {
       event.preventDefault();
-      void run();
+      submit();
     }
   };
 
@@ -154,7 +183,11 @@ export default function FindDialog({
               value={term}
               onChange={(event) => setTerm(event.target.value)}
               onKeyDown={onKeyDown}
-              placeholder={`Find in ${onlyTable ? `${database}.${onlyTable}` : database}…`}
+              placeholder={
+                aiMode
+                  ? "Ask in any language, e.g. ən çox satılan 5 məhsul…"
+                  : `Find in ${onlyTable ? `${database}.${onlyTable}` : database}…`
+              }
               spellCheck={false}
               style={{
                 flex: 1,
@@ -171,22 +204,35 @@ export default function FindDialog({
             <button
               type="button"
               className="v2-btn v2-btn-primary"
-              onClick={() => void run()}
-              disabled={loading || !term.trim()}
+              onClick={submit}
+              disabled={loading || aiBusy || !term.trim()}
             >
-              {loading ? "Searching…" : "Find"}
+              {aiMode
+                ? aiBusy
+                  ? "Asking…"
+                  : "Ask AI"
+                : loading
+                  ? "Searching…"
+                  : "Find"}
             </button>
           </div>
           <div style={{ display: "flex", gap: 16, paddingLeft: 22 }}>
             <Toggle
               checked={includeData}
               label="Search data (rows)"
+              disabled={aiMode}
               onChange={() => setIncludeData((value) => !value)}
             />
             <Toggle
               checked={caseInsensitive}
               label="Case-insensitive"
+              disabled={aiMode}
               onChange={() => setCaseInsensitive((value) => !value)}
+            />
+            <Toggle
+              checked={aiMode}
+              label="Ask AI (natural language)"
+              onChange={() => setAiMode((value) => !value)}
             />
           </div>
         </div>
@@ -349,16 +395,19 @@ function Highlighted({ text, term }: { text: string; term: string }) {
 function Toggle({
   checked,
   label,
+  disabled,
   onChange,
 }: {
   checked: boolean;
   label: string;
+  disabled?: boolean;
   onChange: () => void;
 }) {
   return (
     <button
       type="button"
       onClick={onChange}
+      disabled={disabled}
       style={{
         display: "flex",
         alignItems: "center",
@@ -369,6 +418,7 @@ function Toggle({
         color: "var(--mu)",
         fontSize: 11.5,
         cursor: "default",
+        opacity: disabled ? 0.4 : 1,
       }}
     >
       <span

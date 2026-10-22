@@ -102,6 +102,14 @@ impl PostgresDriver {
         let pool = PgPoolOptions::new()
             .max_connections(5)
             .acquire_timeout(Duration::from_secs(10))
+            // Serverless Postgres (Neon, Supabase, …) suspends idle connections,
+            // so a pooled handle can be dead by the next query. Ping-and-replace
+            // on acquire and recycle idle/old connections so queries don't fail
+            // silently against a stale socket.
+            .test_before_acquire(true)
+            .idle_timeout(Duration::from_secs(60))
+            .max_lifetime(Duration::from_secs(30 * 60))
+            .min_connections(0)
             .connect_with(options.clone())
             .await
             .map_err(db_error)?;

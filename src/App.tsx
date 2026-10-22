@@ -1731,6 +1731,12 @@ export default function App() {
               .tabs.find((item) => item.id === tabId);
             if (tab?.type === "table") void loadTableData(tab);
           }}
+          onRunSql={(sql) => {
+            const store = useAppStore.getState();
+            store.setActiveConn(findOpen.connId);
+            if (findOpen.database) store.setActiveDb(findOpen.database);
+            store.addQueryTab(sql, "AI search");
+          }}
         />
       )}
 
