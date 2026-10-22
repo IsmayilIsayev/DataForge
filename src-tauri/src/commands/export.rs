@@ -1,5 +1,6 @@
 use rust_xlsxwriter::{Format, Workbook, XlsxError};
 use serde_json::Value;
+use tauri_plugin_dialog::DialogExt;
 
 use crate::error::{AppError, AppResult};
 
@@ -11,45 +12,29 @@ fn xlsx_err(error: XlsxError) -> AppError {
 }
 
 /// Native "Save As" dialog. Returns None when the user cancels.
-async fn save_file_dialog(default_name: String) -> AppResult<Option<String>> {
-    #[cfg(target_os = "windows")]
-    {
-        let script = format!(
-            "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; \
-             Add-Type -AssemblyName System.Windows.Forms | Out-Null; \
-             $dialog = New-Object System.Windows.Forms.SaveFileDialog; \
-             $dialog.Filter = 'Excel workbook (*.xlsx)|*.xlsx|All files (*.*)|*.*'; \
-             $dialog.FileName = '{}'; \
-             if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{ \
-               [Console]::Out.Write($dialog.FileName) \
-             }}",
-            default_name.replace('\'', "''")
-        );
-        let output = tokio::task::spawn_blocking(move || {
-            std::process::Command::new("powershell")
-                .args(["-NoProfile", "-STA", "-Command", &script])
-                .output()
-        })
-        .await
-        .map_err(|error| AppError::Config(format!("save dialog: {error}")))?
-        .map_err(|error| AppError::Config(format!("save dialog: {error}")))?;
+async fn save_file_dialog(
+    app: &tauri::AppHandle,
+    default_name: String,
+) -> AppResult<Option<String>> {
+    let app = app.clone();
+    let path = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .add_filter("Excel workbook", &["xlsx"])
+            .set_file_name(default_name)
+            .blocking_save_file()
+    })
+    .await
+    .map_err(|error| AppError::Config(format!("save dialog: {error}")))?;
 
-        if !output.status.success() {
-            return Err(AppError::Config(format!(
-                "save dialog: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
-        }
-        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        Ok(if path.is_empty() { None } else { Some(path) })
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = default_name;
-        Err(AppError::Config(
-            "the Excel save dialog is only implemented on Windows".into(),
-        ))
+    match path {
+        Some(path) => Ok(Some(
+            path.into_path()
+                .map_err(|error| AppError::Config(format!("save dialog: {error}")))?
+                .to_string_lossy()
+                .into_owned(),
+        )),
+        None => Ok(None),
     }
 }
 
@@ -112,6 +97,7 @@ fn clamp(text: &str) -> String {
 /// Returns the saved path, or None if the save dialog was cancelled.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn export_result_xlsx(
+    app: tauri::AppHandle,
     columns: Vec<String>,
     rows: Vec<Vec<Value>>,
     default_name: String,
@@ -119,7 +105,7 @@ pub async fn export_result_xlsx(
     if columns.is_empty() {
         return Err(AppError::Config("nothing to export".into()));
     }
-    let path = match save_file_dialog(default_name).await? {
+    let path = match save_file_dialog(&app, default_name).await? {
         Some(path) => path,
         None => return Ok(None),
     };

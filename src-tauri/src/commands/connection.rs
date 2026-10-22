@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
+use tauri_plugin_dialog::DialogExt;
 
 use crate::core::drivers::{self, ConnectionInput, ConnectionMeta, Dialect};
 use crate::core::secrets;
@@ -164,47 +165,25 @@ pub async fn delete_connection(state: State<'_, AppState>, id: String) -> AppRes
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub async fn pick_sqlite_file() -> AppResult<Option<String>> {
-    #[cfg(target_os = "windows")]
-    {
-        let output = tokio::task::spawn_blocking(|| {
-            std::process::Command::new("powershell")
-                .args([
-                    "-NoProfile",
-                    "-STA",
-                    "-Command",
-                    "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; \
-                     Add-Type -AssemblyName System.Windows.Forms | Out-Null; \
-                     $dialog = New-Object System.Windows.Forms.OpenFileDialog; \
-                     $dialog.Filter = 'SQLite files (*.db;*.sqlite;*.sqlite3)|*.db;*.sqlite;*.sqlite3|All files (*.*)|*.*'; \
-                     if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { \
-                       [Console]::Out.Write($dialog.FileName) \
-                     }",
-                ])
-                .output()
-        })
-        .await
-        .map_err(|error| AppError::Config(format!("file picker: {error}")))?
-        .map_err(|error| AppError::Config(format!("file picker: {error}")))?;
+pub async fn pick_sqlite_file(app: tauri::AppHandle) -> AppResult<Option<String>> {
+    let path = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .add_filter("SQLite files", &["db", "sqlite", "sqlite3", "db3"])
+            .add_filter("All files", &["*"])
+            .blocking_pick_file()
+    })
+    .await
+    .map_err(|error| AppError::Config(format!("file picker: {error}")))?;
 
-        if !output.status.success() {
-            return Err(AppError::Config(format!(
-                "file picker: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
-        }
-
-        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if path.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(path))
-        }
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        Ok(None)
+    match path {
+        Some(path) => Ok(Some(
+            path.into_path()
+                .map_err(|error| AppError::Config(format!("file picker: {error}")))?
+                .to_string_lossy()
+                .into_owned(),
+        )),
+        None => Ok(None),
     }
 }
 
