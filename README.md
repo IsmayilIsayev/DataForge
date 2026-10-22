@@ -38,8 +38,8 @@ No Node or Rust needed — the installer bundles everything.
 Requirements: **Node 18+**, **Rust 1.77+**, and (Windows) the MSVC Build Tools.
 
 ```bash
-git clone https://github.com/ismayilisayev/deltaforge.git
-cd deltaforge
+git clone https://github.com/IsmayilIsayev/DeltaForge.git
+cd DeltaForge
 npm install
 npm run tauri dev      # run in development
 npm run tauri build    # produce installers in src-tauri/target/release/bundle/
