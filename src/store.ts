@@ -55,6 +55,7 @@ function loadGroupStars(): Record<string, boolean> {
 
 const QUERY_HISTORY_KEY = "df-query-history";
 const QUERY_HISTORY_MAX = 100;
+const QUERY_HISTORY_SECRET = /(IDENTIFIED\s+BY|PASSWORD|SECRET|TOKEN|API_KEY)/i;
 
 export interface QueryHistoryEntry {
   sql: string;
@@ -321,7 +322,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   pushQueryHistory: (sql, connId, database) =>
     set((state) => {
       const trimmed = sql.trim();
-      if (!trimmed) return {};
+      if (!trimmed || QUERY_HISTORY_SECRET.test(trimmed)) return {};
       const entry: QueryHistoryEntry = {
         sql: trimmed,
         ...(connId ? { connId } : {}),

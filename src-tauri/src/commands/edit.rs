@@ -30,11 +30,18 @@ fn quote_lit(dialect: Dialect, value: Option<&str>) -> String {
         Some(v) => {
             // MySQL treats backslash as an escape char inside string literals, so it
             // must be doubled too; PostgreSQL / SQLite only need quote doubling.
+            // PostgreSQL uses E'...' so backslashes stay escaped even when the
+            // server runs with standard_conforming_strings=off.
             let escaped = match dialect {
-                Dialect::Mysql => v.replace('\\', "\\\\").replace('\'', "''"),
+                Dialect::Mysql | Dialect::Postgres => {
+                    v.replace('\\', "\\\\").replace('\'', "''")
+                }
                 _ => v.replace('\'', "''"),
             };
-            format!("'{escaped}'")
+            match dialect {
+                Dialect::Postgres => format!("E'{escaped}'"),
+                _ => format!("'{escaped}'"),
+            }
         }
     }
 }
@@ -202,7 +209,7 @@ pub async fn insert_row(
 
 #[cfg(test)]
 mod tests {
-    use super::{delete_sql, insert_sql, CellRef};
+    use super::{delete_sql, insert_sql, quote_lit, CellRef};
     use crate::core::drivers::Dialect;
 
     fn cell(column: &str, value: &str) -> CellRef {
@@ -238,7 +245,23 @@ mod tests {
                 &[cell("name", "Alice"), cell("age", "30")]
             )
             .unwrap(),
-            "INSERT INTO \"users\" (\"name\", \"age\") VALUES ('Alice', '30')"
+            "INSERT INTO \"users\" (\"name\", \"age\") VALUES (E'Alice', E'30')"
+        );
+    }
+
+    #[test]
+    fn postgres_literals_stay_closed_with_standard_conforming_strings_off() {
+        assert_eq!(
+            quote_lit(Dialect::Postgres, Some(r"\'; DROP TABLE users; --")),
+            r"E'\\''; DROP TABLE users; --'"
+        );
+        assert_eq!(
+            quote_lit(Dialect::Mysql, Some(r"\'; DROP TABLE users; --")),
+            r"'\\''; DROP TABLE users; --'"
+        );
+        assert_eq!(
+            quote_lit(Dialect::Sqlite, Some(r"\'; DROP TABLE users; --")),
+            r"'\''; DROP TABLE users; --'"
         );
     }
 
@@ -253,7 +276,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             sql,
-            "DELETE FROM \"users\" WHERE (\"id\" = '1') OR (\"id\" = '2')"
+            "DELETE FROM \"users\" WHERE (\"id\" = E'1') OR (\"id\" = E'2')"
         );
 
         let single =

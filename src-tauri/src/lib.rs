@@ -90,13 +90,14 @@ fn setup_native_menu(app: &tauri::App) -> tauri::Result<()> {
     let minimize = MenuItemBuilder::with_id("minimize", "Minimize")
         .accelerator("CmdOrCtrl+M")
         .build(app)?;
+    #[cfg(debug_assertions)]
     let devtools = MenuItemBuilder::with_id("toggle-devtools", "Toggle Developer Tools")
         .accelerator("F12")
         .build(app)?;
     let close_all = MenuItemBuilder::with_id("close-all-tabs", "Close All Tabs")
         .accelerator("CmdOrCtrl+Shift+W")
         .build(app)?;
-    let view = SubmenuBuilder::new(app, "View")
+    let mut view = SubmenuBuilder::new(app, "View")
         .item(&toggle_theme)
         .item(&toggle_ai)
         .item(&toggle_sidebar)
@@ -108,11 +109,12 @@ fn setup_native_menu(app: &tauri::App) -> tauri::Result<()> {
         .item(&zoom_out)
         .item(&zoom_reset)
         .separator()
-        .item(&minimize)
-        .item(&devtools)
-        .separator()
-        .item(&close_all)
-        .build()?;
+        .item(&minimize);
+    #[cfg(debug_assertions)]
+    {
+        view = view.separator().item(&devtools);
+    }
+    let view = view.separator().item(&close_all).build()?;
 
     let about = MenuItemBuilder::with_id("about", "About DataForge").build(app)?;
     let check_updates =
@@ -180,6 +182,7 @@ fn setup_native_menu(app: &tauri::App) -> tauri::Result<()> {
                     let _ = window.minimize();
                 }
             }
+            #[cfg(debug_assertions)]
             "toggle-devtools" => {
                 if let Some(window) = app.get_webview_window("main") {
                     if window.is_devtools_open() {

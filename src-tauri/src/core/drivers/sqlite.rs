@@ -20,6 +20,12 @@ fn trim_statement(sql: &str) -> &str {
     sql.trim().trim_end_matches(';').trim_end()
 }
 
+/// A read-only SQLite connection must never create the database file either.
+fn read_only_flags(read_only: Option<bool>) -> (bool, bool) {
+    let read_only = read_only.unwrap_or(false);
+    (read_only, !read_only)
+}
+
 fn first_keyword(sql: &str) -> String {
     let mut rest = sql.trim_start();
 
@@ -93,9 +99,11 @@ impl SqliteDriver {
             ));
         }
 
+        let (read_only, create_if_missing) = read_only_flags(input.read_only);
         let options = SqliteConnectOptions::new()
             .filename(&path)
-            .create_if_missing(true);
+            .read_only(read_only)
+            .create_if_missing(create_if_missing);
 
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
@@ -451,4 +459,16 @@ fn cell_to_json(row: &SqliteRow, index: usize) -> Value {
     }
 
     Value::Null
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_only_flags;
+
+    #[test]
+    fn read_only_disables_file_creation() {
+        assert_eq!(read_only_flags(None), (false, true));
+        assert_eq!(read_only_flags(Some(false)), (false, true));
+        assert_eq!(read_only_flags(Some(true)), (true, false));
+    }
 }

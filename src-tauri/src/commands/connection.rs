@@ -1,10 +1,24 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::core::drivers::{self, ConnectionInput, ConnectionMeta};
+use crate::core::drivers::{self, ConnectionInput, ConnectionMeta, Dialect};
 use crate::core::secrets;
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
+
+/// The keychain password belongs to one concrete endpoint. Reuse it only when
+/// every connection-relevant field still points at that same endpoint.
+fn stored_password_reusable(input: &ConnectionInput, meta: &ConnectionMeta) -> bool {
+    if input.dialect != meta.dialect {
+        return false;
+    }
+
+    if input.dialect == Dialect::Sqlite {
+        return input.database == meta.database;
+    }
+
+    input.host == meta.host && input.port == meta.port && input.username == meta.username
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestConnectionResult {
@@ -47,17 +61,29 @@ pub async fn update_connection(
     id: String,
     input: ConnectionInput,
 ) -> AppResult<ConnectionMeta> {
-    let exists = state.connections.read().await.find(&id).is_some();
-    if !exists {
-        return Err(AppError::NoConnection);
-    }
+    let meta = state
+        .connections
+        .read()
+        .await
+        .find(&id)
+        .ok_or(AppError::NoConnection)?;
 
     let old_password = secrets::get_connection_password(&id)?;
     let new_password = input
         .password
         .clone()
         .filter(|password| !password.is_empty());
-    let password = new_password.clone().or_else(|| old_password.clone());
+    let reuse_stored = stored_password_reusable(&input, &meta);
+
+    if new_password.is_none() && old_password.is_some() && !reuse_stored {
+        return Err(AppError::Config(
+            "The host, port, user or dialect changed — re-enter the password.".to_string(),
+        ));
+    }
+
+    let password = new_password
+        .clone()
+        .or_else(|| old_password.clone().filter(|_| reuse_stored));
 
     let driver = drivers::connect(&input, password.as_deref()).await?;
 
@@ -184,17 +210,28 @@ pub async fn pick_sqlite_file() -> AppResult<Option<String>> {
 
 #[tauri::command(rename_all = "snake_case")]
 pub async fn test_connection(
+    state: State<'_, AppState>,
     input: ConnectionInput,
     id: Option<String>,
 ) -> AppResult<TestConnectionResult> {
+    let stored_password = match id.as_deref() {
+        Some(id) => {
+            let meta = state.connections.read().await.find(id);
+            match meta {
+                Some(meta) if stored_password_reusable(&input, &meta) => {
+                    secrets::get_connection_password(id).ok().flatten()
+                }
+                _ => None,
+            }
+        }
+        None => None,
+    };
+
     let password = input
         .password
         .clone()
         .filter(|password| !password.is_empty())
-        .or_else(|| {
-            id.as_deref()
-                .and_then(|id| secrets::get_connection_password(id).ok().flatten())
-        })
+        .or(stored_password)
         .unwrap_or_default();
 
     match drivers::connect(&input, Some(&password)).await {
@@ -212,5 +249,75 @@ pub async fn test_connection(
             ok: false,
             message: format!("Bağlantı alınmadı: {error}"),
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stored_password_reusable;
+    use crate::core::drivers::{ConnectionInput, ConnectionMeta, Dialect};
+
+    fn input(dialect: Dialect, host: &str, port: u16, username: &str, database: Option<&str>) -> ConnectionInput {
+        ConnectionInput {
+            name: "saved".to_string(),
+            dialect,
+            host: host.to_string(),
+            port,
+            username: username.to_string(),
+            database: database.map(str::to_string),
+            password: None,
+            save_password: true,
+            read_only: None,
+        }
+    }
+
+    fn meta(dialect: Dialect, host: &str, port: u16, username: &str, database: Option<&str>) -> ConnectionMeta {
+        ConnectionMeta {
+            id: "id".to_string(),
+            name: "saved".to_string(),
+            dialect,
+            host: host.to_string(),
+            port,
+            username: username.to_string(),
+            database: database.map(str::to_string),
+            read_only: None,
+        }
+    }
+
+    #[test]
+    fn reuses_password_only_for_the_same_endpoint() {
+        let stored = meta(Dialect::Postgres, "db.example", 5432, "app", Some("shop"));
+        let same = input(Dialect::Postgres, "db.example", 5432, "app", Some("other"));
+        assert!(stored_password_reusable(&same, &stored));
+
+        assert!(!stored_password_reusable(
+            &input(Dialect::Postgres, "attacker.example", 5432, "app", None),
+            &stored
+        ));
+        assert!(!stored_password_reusable(
+            &input(Dialect::Postgres, "db.example", 5433, "app", None),
+            &stored
+        ));
+        assert!(!stored_password_reusable(
+            &input(Dialect::Postgres, "db.example", 5432, "other", None),
+            &stored
+        ));
+        assert!(!stored_password_reusable(
+            &input(Dialect::Mysql, "db.example", 5432, "app", None),
+            &stored
+        ));
+    }
+
+    #[test]
+    fn reuses_sqlite_password_only_for_the_same_file() {
+        let stored = meta(Dialect::Sqlite, "", 0, "", Some("/data/app.db"));
+        assert!(stored_password_reusable(
+            &input(Dialect::Sqlite, "", 0, "", Some("/data/app.db")),
+            &stored
+        ));
+        assert!(!stored_password_reusable(
+            &input(Dialect::Sqlite, "", 0, "", Some("/data/other.db")),
+            &stored
+        ));
     }
 }

@@ -8,6 +8,7 @@ export interface ConnectionMeta {
   port: number;
   username: string;
   database?: string;
+  read_only?: boolean;
 }
 
 export interface ConnectionInput extends Omit<ConnectionMeta, "id"> {

@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import "./monaco";
 import "lucide-static/font/lucide.css";
 import "./styles/tokens.css";
 import "./styles/base.css";

@@ -97,7 +97,9 @@ function prettyValue(value: CellValue, pretty: boolean): string {
 
 function csvCell(value: CellValue): string {
   if (value === null) return "";
-  const text = displayValue(value);
+  const raw = displayValue(value);
+  // Only text can carry a spreadsheet formula; numbers like -5 stay numeric.
+  const text = typeof value === "string" && /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
   if (/[",\r\n]/.test(text)) {
     return `"${text.replace(/"/g, '""')}"`;
   }

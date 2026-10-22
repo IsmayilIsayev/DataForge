@@ -208,6 +208,12 @@ export default function AiPanel({ onClose }: Props) {
 
   const isConnected = activeConnId ? !!connected[activeConnId] : false;
   const hasKey = !!config?.has_key;
+  const normalizedBaseUrl = baseUrl.trim().replace(/\/+$/, "");
+  const keyMatchesProvider =
+    hasKey &&
+    config?.provider === provider &&
+    (provider !== "openai_compatible" ||
+      (config.base_url ?? "").replace(/\/+$/, "") === normalizedBaseUrl);
   const activeDialect =
     connections.find((connection) => connection.id === activeConnId)?.dialect ??
     "mysql";
@@ -502,7 +508,11 @@ export default function AiPanel({ onClose }: Props) {
           type="password"
           autoComplete="off"
           spellCheck={false}
-          placeholder={hasKey ? "Leave blank to keep saved key" : "sk-..."}
+          placeholder={
+            keyMatchesProvider
+              ? "Leave blank to keep saved key"
+              : "Enter an API key for this provider"
+          }
           className="v2-input"
           style={inputStyle}
         />

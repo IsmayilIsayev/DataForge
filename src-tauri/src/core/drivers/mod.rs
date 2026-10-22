@@ -72,6 +72,8 @@ pub struct ConnectionMeta {
     pub username: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub database: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_only: Option<bool>,
 }
 
 impl ConnectionMeta {
@@ -84,6 +86,7 @@ impl ConnectionMeta {
             port: input.port,
             username: input.username.clone(),
             database: input.database.clone(),
+            read_only: input.read_only,
         }
     }
 
@@ -97,6 +100,7 @@ impl ConnectionMeta {
             database: self.database.clone(),
             password: None,
             save_password: true,
+            read_only: self.read_only,
         }
     }
 }
@@ -114,6 +118,8 @@ pub struct ConnectionInput {
     pub password: Option<String>,
     #[serde(default = "default_true")]
     pub save_password: bool,
+    #[serde(default)]
+    pub read_only: Option<bool>,
 }
 
 fn default_true() -> bool {

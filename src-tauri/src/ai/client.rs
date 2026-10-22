@@ -100,6 +100,13 @@ pub async fn complete(settings: &AiSettings, system: &str, user: &str) -> AppRes
         return Err(AppError::Config("AI model is not configured".to_string()));
     }
 
+    if !settings.key_matches_scope() {
+        return Err(AppError::Config(
+            "The AI API key was saved for a different provider or base URL — re-enter it."
+                .to_string(),
+        ));
+    }
+
     let api_key = secrets::get_api_key()?;
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(90))

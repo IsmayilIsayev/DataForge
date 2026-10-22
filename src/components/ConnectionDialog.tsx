@@ -191,6 +191,7 @@ function parseConnectionUrl(raw: string): {
 function buildInput(
   form: FormState,
   dialect: DialectOption,
+  sqliteReadOnly: boolean,
 ): ConnectionInput {
   if (dialect === "sqlite") {
     return {
@@ -202,6 +203,7 @@ function buildInput(
       database: form.database.trim() || undefined,
       password: undefined,
       save_password: false,
+      read_only: sqliteReadOnly,
     };
   }
 
@@ -310,6 +312,14 @@ function Check({
   );
 }
 
+function ComingSoonNote() {
+  return (
+    <p style={{ margin: 0, color: "var(--fa)", fontSize: 11 }}>
+      Coming soon — this option is not used by the backend yet.
+    </p>
+  );
+}
+
 function CycleButton({
   value,
   onClick,
@@ -385,7 +395,10 @@ export default function ConnectionDialog({
     setActiveTab("general");
     setStatus(null);
     setShowPassword(false);
-    setExtra(initialExtra);
+    setExtra({
+      ...initialExtra,
+      sqliteReadOnly: connection?.read_only ?? false,
+    });
 
     if (connection) {
       const nextDialect = isSupportedDialect(connection.dialect)
@@ -525,7 +538,7 @@ export default function ConnectionDialog({
 
     try {
       const result = await testConnection(
-        buildInput(form, dialect),
+        buildInput(form, dialect, extra.sqliteReadOnly),
         connection?.id,
       );
       setStatus({
@@ -552,7 +565,7 @@ export default function ConnectionDialog({
     setStatus({ tone: "info", text: "Connecting and saving…" });
 
     try {
-      const input = buildInput(form, dialect);
+      const input = buildInput(form, dialect, extra.sqliteReadOnly);
       const meta = connection
         ? await updateConnection(connection.id, input)
         : await saveConnection(input);
@@ -570,6 +583,15 @@ export default function ConnectionDialog({
   const mono = {
     fontFamily: "var(--mono)",
   } as const;
+  const disabledGroup = {
+    border: 0,
+    margin: 0,
+    padding: 0,
+    display: "flex",
+    flexDirection: "column" as const,
+    gap: 8,
+    opacity: 0.55,
+  };
 
   const statusDot =
     status?.tone === "ok"
@@ -852,7 +874,9 @@ export default function ConnectionDialog({
 
           {activeTab === "advanced" && (
             <>
-              <Row label="Statement timeout">
+              <ComingSoonNote />
+              <fieldset disabled style={disabledGroup}>
+                <Row label="Statement timeout">
                 <input
                   value={extra.timeout}
                   onChange={(event) =>
@@ -900,6 +924,7 @@ export default function ConnectionDialog({
                   }
                 />
               </Row>
+              </fieldset>
             </>
           )}
 
@@ -930,7 +955,9 @@ export default function ConnectionDialog({
 
           {activeTab === "ssl" && (
             <>
-              <Row label="Mode">
+              <ComingSoonNote />
+              <fieldset disabled style={disabledGroup}>
+                <Row label="Mode">
                 <CycleButton value={extra.sslMode} onClick={nextSslMode} />
               </Row>
               <Row label="CA certificate">
@@ -975,14 +1002,17 @@ export default function ConnectionDialog({
                   Browse…
                 </button>
               </Row>
+              </fieldset>
             </>
           )}
 
           {activeTab === "ssh" && (
             <>
-              <Row label="">
-                <Check
-                  checked={extra.sshUse}
+              <ComingSoonNote />
+              <fieldset disabled style={disabledGroup}>
+                <Row label="">
+                  <Check
+                    checked={extra.sshUse}
                   label="Use SSH tunnel"
                   onChange={() => setExtraField("sshUse", !extra.sshUse)}
                 />
@@ -1039,14 +1069,17 @@ export default function ConnectionDialog({
                   Browse…
                 </button>
               </Row>
+              </fieldset>
             </>
           )}
 
           {activeTab === "http" && (
             <>
-              <Row label="">
-                <Check
-                  checked={extra.httpUse}
+              <ComingSoonNote />
+              <fieldset disabled style={disabledGroup}>
+                <Row label="">
+                  <Check
+                    checked={extra.httpUse}
                   label="Use HTTP tunnel"
                   onChange={() => setExtraField("httpUse", !extra.httpUse)}
                 />
@@ -1062,6 +1095,7 @@ export default function ConnectionDialog({
                   style={{ ...mono, height: 26, flex: 1, minWidth: 0, padding: "0 8px", background: "var(--bg)", border: "1px solid var(--bd2)", borderRadius: 4, color: "var(--tx)", fontSize: 12.5 }}
                 />
               </Row>
+              </fieldset>
             </>
           )}
         </div>
