@@ -207,11 +207,7 @@ function buildInput(
 
   const requestedDatabase = form.database.trim();
   const database =
-    dialect === "postgres"
-      ? requestedDatabase || "postgres"
-      : dialect === "mysql"
-        ? ""
-        : requestedDatabase;
+    dialect === "postgres" ? requestedDatabase || "postgres" : requestedDatabase;
 
   return {
     name: form.name.trim(),
@@ -407,9 +403,7 @@ export default function ConnectionDialog({
         database:
           nextDialect === "postgres"
             ? connection.database || "postgres"
-            : nextDialect === "sqlite"
-              ? connection.database ?? ""
-              : "",
+            : connection.database ?? "",
         savePassword: true,
       });
     } else {

@@ -60,6 +60,8 @@ export default function App() {
   const activeTabId = useAppStore((state) => state.activeTabId);
   const connPrefs = useAppStore((state) => state.connPrefs);
   const error = useAppStore((state) => state.error);
+  const running = useAppStore((state) => state.running);
+  const activeView = useAppStore((state) => state.tabStates[state.activeTabId]);
   const setActiveDb = useAppStore((state) => state.setActiveDb);
 
   const [theme, setTheme] = useState<Theme>(() =>
@@ -150,6 +152,9 @@ export default function App() {
     y: number;
     value: number;
   } | null>(null);
+  // Monotonic per-tab execution id: a slow earlier run must never overwrite the
+  // result of a newer run in the same tab.
+  const requestIdsRef = useRef<Record<string, number>>({});
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
@@ -403,12 +408,20 @@ export default function App() {
       const target = tabId ?? store.activeTabId;
       const queryTab = store.tabs.find((tab) => tab.id === target)?.type === "query";
       const started = performance.now();
+      const requestId = (requestIdsRef.current[target] ?? 0) + 1;
+      requestIdsRef.current[target] = requestId;
+      const isCurrent = () => requestIdsRef.current[target] === requestId;
+
       store.setRunning(true, target);
       store.setError(null, target);
+      store.setExecutedSql(query, target);
 
       try {
         const result = await runQuery(connId, query, maxRows, database);
-        useAppStore.getState().setResult(result, target);
+        if (!isCurrent()) return;
+        useAppStore
+          .getState()
+          .setResult(result, target, connId, database ?? null);
         const elapsed = Math.round(performance.now() - started);
         if (queryTab && elapsed >= 1500) {
           const rows = result.rows.length
@@ -417,14 +430,17 @@ export default function App() {
           void notify("Query complete", `${rows} · ${elapsed} ms`);
         }
       } catch (runError) {
-        useAppStore.getState().setResult(null, target);
+        if (!isCurrent()) return;
+        useAppStore.getState().setResult(null, target, connId, database ?? null);
         useAppStore.getState().setError(errorMessage(runError), target);
         const elapsed = Math.round(performance.now() - started);
         if (queryTab && elapsed >= 1500) {
           void notify("Query failed", `After ${elapsed} ms — ${errorMessage(runError)}`);
         }
       } finally {
-        useAppStore.getState().setRunning(false, target);
+        if (isCurrent()) {
+          useAppStore.getState().setRunning(false, target);
+        }
       }
     },
     [],
@@ -488,6 +504,10 @@ export default function App() {
 
       const query = sqlOverride ?? store.selection ?? store.sql;
 
+      if (store.tabStates[tab.id]?.running) {
+        store.setError("A query is already running in this tab.", tab.id);
+        return;
+      }
       if (!store.activeConnId) {
         store.setError("Select a connection first.");
         return;
@@ -501,7 +521,7 @@ export default function App() {
         return;
       }
 
-      store.pushQueryHistory(query);
+      store.pushQueryHistory(query, store.activeConnId, store.activeDb ?? undefined);
       await executeSql(
         store.activeConnId,
         query,
@@ -558,9 +578,9 @@ export default function App() {
   );
 
   const handleTopRun = useCallback(() => {
-    const tab = useAppStore
-      .getState()
-      .tabs.find((item) => item.id === useAppStore.getState().activeTabId);
+    const store = useAppStore.getState();
+    const tab = store.tabs.find((item) => item.id === store.activeTabId);
+    if (tab && store.tabStates[tab.id]?.running) return;
     if (tab?.type === "table") {
       void handleTableRefresh(tab, tab.where);
       return;
@@ -942,6 +962,7 @@ export default function App() {
           type="button"
           className="df2-run"
           onClick={handleTopRun}
+          disabled={running}
           title="Run (⌘↵)"
           style={{
             height: 24,
@@ -953,7 +974,8 @@ export default function App() {
             borderRadius: 4,
             color: "#fff",
             fontWeight: 500,
-            cursor: "default",
+            cursor: running ? "not-allowed" : "default",
+            opacity: running ? 0.6 : 1,
           }}
         >
           <i className="icon-play" style={{ fontSize: 12 }} />
@@ -1204,6 +1226,7 @@ export default function App() {
                   type="button"
                   className="df2-quiet"
                   onClick={() => void handleRun()}
+                  disabled={running}
                   style={{
                     height: 24,
                     display: "flex",
@@ -1212,7 +1235,8 @@ export default function App() {
                     padding: "0 8px",
                     border: 0,
                     borderRadius: 4,
-                    cursor: "default",
+                    cursor: running ? "not-allowed" : "default",
+                    opacity: running ? 0.6 : 1,
                   }}
                 >
                   <i
@@ -1341,10 +1365,10 @@ export default function App() {
               )}
               <DataGrid
                 key={activeTab.id}
-                viewKey={activeTab.id}
+                viewKey={`${activeTab.id}:${activeView?.resultVersion ?? 0}`}
                 dialect={activeConnection?.dialect ?? "mysql"}
                 database={activeDb}
-                sql={activeTab.sql}
+                sql={activeView?.executedSql ?? undefined}
                 theme={theme}
               />
             </>
@@ -1743,15 +1767,44 @@ export default function App() {
       {historyOpen && (
         <HistoryDialog
           onClose={() => setHistoryOpen(false)}
-          onPick={(sql) => {
+          onPick={(entry) => {
             const store = useAppStore.getState();
+            const origin = entry.connId
+              ? store.connections.find((item) => item.id === entry.connId)
+              : null;
+
+            if (entry.connId && entry.connId !== store.activeConnId) {
+              const target = origin?.name ?? entry.connId;
+              const label = entry.database
+                ? `${target} / ${entry.database}`
+                : target;
+              if (
+                !window.confirm(
+                  `This query was run on ${label}. Switch to that connection and load it?`,
+                )
+              ) {
+                return;
+              }
+              store.setActiveConn(entry.connId);
+              if (entry.database) store.setActiveDb(entry.database);
+            } else if (entry.database && entry.database !== store.activeDb) {
+              if (
+                !window.confirm(
+                  `This query was run on database ${entry.database}. Switch to it and load the query?`,
+                )
+              ) {
+                return;
+              }
+              store.setActiveDb(entry.database);
+            }
+
             const active = store.tabs.find(
               (item) => item.id === store.activeTabId,
             );
             if (active?.type === "query") {
-              store.setSql(sql);
+              store.setSql(entry.sql);
             } else {
-              store.addQueryTab(sql);
+              store.addQueryTab(entry.sql);
             }
           }}
         />

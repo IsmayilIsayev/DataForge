@@ -16,6 +16,7 @@ import {
   runQuery,
 } from "../ipc";
 import { dropTableSql } from "../ddl";
+import { qualifiedTable } from "../sql";
 import CreateTableDialog from "./CreateTableDialog";
 import StructureDialog from "./StructureDialog";
 import { useAppStore } from "../store";
@@ -824,8 +825,23 @@ export default function Sidebar({
     onOpenTable(connection, database, table);
   }
 
-  function newQueryForTable(table: string) {
-    useAppStore.getState().addQueryTab(`SELECT *\nFROM ${table}\nLIMIT 100;`);
+  function newQueryForTable(
+    connection: ConnectionMeta,
+    database: string,
+    table: string,
+  ) {
+    // Use the table's own connection/database rather than whichever connection
+    // happened to be active, and quote/qualify the identifier.
+    void activateDatabase(connection, database);
+    useAppStore
+      .getState()
+      .addQueryTab(
+        `SELECT *\nFROM ${qualifiedTable(
+          connection.dialect,
+          database,
+          table,
+        )}\nLIMIT 100;`,
+      );
   }
 
   function openFavorite(fav: FavoriteTable) {
@@ -1587,7 +1603,11 @@ export default function Sidebar({
                   label="New query"
                   onClick={() => {
                     setContextMenu(null);
-                    newQueryForTable(contextMenu.table);
+                    newQueryForTable(
+                      contextConnection,
+                      contextMenu.database,
+                      contextMenu.table,
+                    );
                   }}
                 />
                 <MenuItem

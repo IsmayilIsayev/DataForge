@@ -8,8 +8,8 @@ use sqlx::sqlite::{
 use sqlx::{Column, Executor, Row, Statement, TypeInfo, ValueRef};
 
 use crate::core::drivers::{
-    BoxFuture, ColumnInfo, ConnectionInput, Dialect, Driver, QueryResult, SchemaSnapshot,
-    SchemaTable, TableInfo, TableKind,
+    int_json, BoxFuture, ColumnInfo, ConnectionInput, Dialect, Driver, QueryResult,
+    SchemaSnapshot, SchemaTable, TableInfo, TableKind,
 };
 use crate::error::{AppError, AppResult};
 
@@ -425,7 +425,7 @@ fn cell_to_json(row: &SqliteRow, index: usize) -> Value {
     }
 
     match value_type.as_str() {
-        "INTEGER" => int_value!(i64, Value::from),
+        "INTEGER" => int_value!(i64, int_json),
         "REAL" => int_value!(f64, number),
         "TEXT" => string_value!(),
         "BLOB" => {

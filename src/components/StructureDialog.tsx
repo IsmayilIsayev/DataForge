@@ -7,6 +7,7 @@ import {
   renameColumnSql,
 } from "../ddl";
 import { errorMessage, listColumns, runQuery } from "../ipc";
+import { quoteIdentifier } from "../sql";
 import type { ColumnInfo, Dialect } from "../types";
 
 interface Props {
@@ -27,6 +28,7 @@ export default function StructureDialog({
   onApplied,
 }: Props) {
   const [columns, setColumns] = useState<ColumnInfo[]>([]);
+  const [mysqlCreate, setMysqlCreate] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
   const [editType, setEditType] = useState("");
@@ -45,7 +47,28 @@ export default function StructureDialog({
     listColumns(connId, database, table)
       .then(setColumns)
       .catch((loadError) => setError(errorMessage(loadError)));
-  }, [connId, database, table]);
+
+    if (dialect !== "mysql") {
+      setMysqlCreate(null);
+      return;
+    }
+
+    // MySQL MODIFY COLUMN replaces the whole definition. Keep the original
+    // CREATE statement so DEFAULT / AUTO_INCREMENT / EXTRA survive a type change.
+    const target = database
+      ? `${quoteIdentifier("mysql", database)}.${quoteIdentifier("mysql", table)}`
+      : quoteIdentifier("mysql", table);
+    runQuery(connId, `SHOW CREATE TABLE ${target}`, 0, database)
+      .then((result) => {
+        const index = result.columns.findIndex(
+          (column) => column.toLowerCase() === "create table",
+        );
+        const value =
+          index >= 0 ? result.rows[0]?.[index] : result.rows[0]?.[1];
+        setMysqlCreate(typeof value === "string" ? value : null);
+      })
+      .catch(() => setMysqlCreate(null));
+  }, [connId, database, table, dialect]);
 
   useEffect(() => {
     reload();
@@ -57,26 +80,50 @@ export default function StructureDialog({
   }, [reload, onClose, busy]);
 
   const beginEdit = (col: ColumnInfo) => {
+    setError(null);
     setEditing(col.name);
     setEditName(col.name);
     setEditType(col.data_type);
     setEditNull(col.nullable);
   };
 
-  const buildEdit = (original: ColumnInfo): string[] => {
+  const buildEdit = (original: ColumnInfo): string[] | null => {
     const statements: string[] = [];
-    if (editName.trim() && editName.trim() !== original.name) {
-      statements.push(
-        renameColumnSql(dialect, database, table, original.name, editName.trim()),
-      );
-    }
     const typeChanged = editType.trim() !== original.data_type;
     const nullChanged = editNull !== original.nullable;
+
     if ((typeChanged || nullChanged) && canChangeType(dialect)) {
       // Use the (possibly) new name so the statement applies after a rename.
       const name = editName.trim() || original.name;
-      const sql = changeTypeSql(dialect, database, table, name, editType.trim(), editNull);
-      if (sql) statements.push(sql);
+      const sql = changeTypeSql(
+        dialect,
+        database,
+        table,
+        name,
+        editType.trim(),
+        editNull,
+        dialect === "mysql" && mysqlCreate
+          ? {
+              definition: mysqlCreate,
+              currentType: original.data_type,
+              currentName: original.name,
+            }
+          : undefined,
+      );
+      if (!sql) {
+        setError(
+          "Cannot change this column because its full definition (DEFAULT / AUTO_INCREMENT) could not be read. Reload the table and try again.",
+        );
+        return null;
+      }
+      statements.push(sql);
+    }
+
+    if (editName.trim() && editName.trim() !== original.name) {
+      // Rename after MODIFY so the definition still references the old name.
+      statements.push(
+        renameColumnSql(dialect, database, table, original.name, editName.trim()),
+      );
     }
     return statements;
   };
@@ -200,6 +247,7 @@ export default function StructureDialog({
                       disabled={busy}
                       onClick={() => {
                         const statements = buildEdit(col);
+                        if (!statements) return;
                         if (statements.length === 0) {
                           setEditing(null);
                         } else {

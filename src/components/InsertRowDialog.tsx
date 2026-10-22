@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { errorMessage, insertRow } from "../ipc";
 import type { CellRef } from "../ipc";
-import type { ColumnInfo } from "../types";
+import { sqliteBooleanLiteral } from "../sql";
+import type { ColumnInfo, Dialect } from "../types";
 
 interface Props {
   connId: string;
   database: string;
   table: string;
+  dialect: Dialect;
   columns: ColumnInfo[];
   onClose: () => void;
   onInserted: () => void;
@@ -23,6 +25,7 @@ export default function InsertRowDialog({
   connId,
   database,
   table,
+  dialect,
   columns,
   onClose,
   onInserted,
@@ -30,12 +33,10 @@ export default function InsertRowDialog({
   const [fields, setFields] = useState<Record<string, FieldState>>(() => {
     const initial: Record<string, FieldState> = {};
     for (const column of columns) {
-      // Primary keys are usually auto-increment, so default to the DB default;
-      // every other column starts ready to type a value.
-      initial[column.name] = {
-        mode: column.key === "PRI" ? "default" : "value",
-        text: "",
-      };
+      // Start every column on DEFAULT (including primary keys, which are often
+      // auto-increment). Columns the user does not touch are omitted from the
+      // INSERT so the database's own defaults apply.
+      initial[column.name] = { mode: "default", text: "" };
     }
     return initial;
   });
@@ -63,14 +64,18 @@ export default function InsertRowDialog({
     for (const column of columns) {
       const field = fields[column.name];
       if (field.mode === "default") continue; // let the DB fill it
-      values.push({
-        column: column.name,
-        value: field.mode === "null" ? null : field.text,
-      });
-    }
-    if (values.length === 0) {
-      setError("Set at least one column (every field is on DEFAULT).");
-      return;
+      let value: string | null =
+        field.mode === "null" ? null : field.text;
+      if (
+        value !== null &&
+        dialect === "sqlite" &&
+        /bool/i.test(column.data_type)
+      ) {
+        // SQLite BOOLEAN has NUMERIC affinity: the text 'false' would be
+        // stored verbatim, while 0/1 behave as a boolean.
+        value = sqliteBooleanLiteral(value) ?? value;
+      }
+      values.push({ column: column.name, value });
     }
     setSaving(true);
     setError(null);
@@ -130,7 +135,8 @@ export default function InsertRowDialog({
         <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "4px 0" }}>
           {columns.map((column, index) => {
             const field = fields[column.name];
-            const disabled = field.mode !== "value";
+            const disabled = field.mode === "null";
+            const muted = field.mode !== "value";
             return (
               <div
                 key={column.name}
@@ -171,9 +177,16 @@ export default function InsertRowDialog({
                   value={field.mode === "value" ? field.text : ""}
                   disabled={disabled}
                   placeholder={field.mode === "null" ? "NULL" : field.mode === "default" ? "DEFAULT" : ""}
-                  onChange={(event) =>
-                    setField(column.name, { text: event.target.value })
-                  }
+                  onChange={(event) => {
+                    const text = event.target.value;
+                    // Typing a value switches the field to VALUE; clearing it
+                    // back to empty restores DEFAULT so untouched columns stay
+                    // omitted from the INSERT.
+                    setField(column.name, {
+                      text,
+                      mode: text === "" ? "default" : "value",
+                    });
+                  }}
                   onKeyDown={(event) => {
                     if (event.key === "Enter") {
                       event.preventDefault();
@@ -187,9 +200,9 @@ export default function InsertRowDialog({
                     height: 26,
                     border: "1px solid var(--bd2)",
                     borderRadius: 4,
-                    background: disabled ? "var(--sf2)" : "var(--bg)",
-                    color: disabled ? "var(--fa)" : "var(--tx)",
-                    fontStyle: disabled ? "italic" : "normal",
+                    background: muted ? "var(--sf2)" : "var(--bg)",
+                    color: muted ? "var(--fa)" : "var(--tx)",
+                    fontStyle: muted ? "italic" : "normal",
                     padding: "0 8px",
                     fontFamily: "var(--mono)",
                     fontSize: 12,

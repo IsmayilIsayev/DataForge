@@ -20,6 +20,9 @@ export default function TableDataView({ tab, onRefresh, theme }: Props) {
   const [where, setWhere] = useState(tab.where);
   const [columns, setColumns] = useState<ColumnInfo[]>([]);
   const [insertOpen, setInsertOpen] = useState(false);
+  const resultVersion = useAppStore(
+    (state) => state.tabStates[tab.id]?.resultVersion ?? 0,
+  );
 
   const pkColumns = columns.filter((c) => c.key === "PRI").map((c) => c.name);
 
@@ -165,6 +168,7 @@ export default function TableDataView({ tab, onRefresh, theme }: Props) {
           connId={tab.connectionId}
           database={tab.database}
           table={tab.table}
+          dialect={dialect}
           columns={columns}
           onClose={() => setInsertOpen(false)}
           onInserted={refresh}
@@ -208,7 +212,7 @@ export default function TableDataView({ tab, onRefresh, theme }: Props) {
 
       <DataGrid
         key={tab.id}
-        viewKey={tab.id}
+        viewKey={`${tab.id}:${resultVersion}`}
         dialect={dialect}
         database={tab.database}
         table={tab.table}

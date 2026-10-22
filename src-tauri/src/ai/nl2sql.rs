@@ -439,7 +439,10 @@ fn contains_sql_keyword(text: &str) -> bool {
 fn extract_fenced_sql(raw: &str) -> Option<String> {
     let mut search_from = 0;
 
-    while let Some(relative_start) = raw[search_from..].find("```") {
+    while let Some(rest) = raw.get(search_from..) {
+        let Some(relative_start) = rest.find("```") else {
+            break;
+        };
         let block_start = search_from + relative_start;
         let after_fence = block_start + 3;
         let line_end = raw[after_fence..]
@@ -454,12 +457,12 @@ fn extract_fenced_sql(raw: &str) -> Option<String> {
         } else if info == "sql" || info.starts_with("sql ") {
             (line_end + 1).min(raw.len())
         } else if info == "json" || info.starts_with("json ") {
-            search_from = line_end.saturating_add(1);
+            search_from = line_end.saturating_add(1).min(raw.len());
             continue;
         } else if contains_sql_keyword(first_line) {
             after_fence
         } else {
-            search_from = line_end.saturating_add(1);
+            search_from = line_end.saturating_add(1).min(raw.len());
             continue;
         };
 
@@ -475,7 +478,10 @@ fn extract_fenced_sql(raw: &str) -> Option<String> {
             return Some(content.trim_matches('`').trim().to_string());
         }
 
-        search_from = close.map(|value| value + 3).unwrap_or(raw.len());
+        search_from = close
+            .map(|value| value + 3)
+            .unwrap_or(raw.len())
+            .min(raw.len());
     }
 
     None
@@ -755,6 +761,14 @@ mod tests {
         let raw = "The result:\n```\nSELECT COUNT(*) FROM receipts;\n```";
         let (result, _) = parse_nl2sql_result(raw);
         assert_eq!(result.sql, "SELECT COUNT(*) FROM receipts;");
+    }
+
+    #[test]
+    fn handles_a_fence_at_end_of_string_without_newline() {
+        let raw = "Here is the output:\n```text";
+        let (result, fallback) = parse_nl2sql_result(raw);
+        assert!(result.sql.is_empty());
+        assert!(fallback);
     }
 
     #[test]

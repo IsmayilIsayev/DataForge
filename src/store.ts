@@ -56,10 +56,44 @@ function loadGroupStars(): Record<string, boolean> {
 const QUERY_HISTORY_KEY = "df-query-history";
 const QUERY_HISTORY_MAX = 100;
 
-function loadQueryHistory(): string[] {
+export interface QueryHistoryEntry {
+  sql: string;
+  connId?: string;
+  database?: string;
+}
+
+function loadQueryHistory(): QueryHistoryEntry[] {
   try {
     const value = JSON.parse(localStorage.getItem(QUERY_HISTORY_KEY) || "[]");
-    return Array.isArray(value) ? value : [];
+    if (!Array.isArray(value)) return [];
+    return value.flatMap((item): QueryHistoryEntry[] => {
+      // Older builds stored a plain string[]; keep the SQL and leave the
+      // connection/database unknown until the entry is re-recorded.
+      if (typeof item === "string") return [{ sql: item }];
+      if (
+        item &&
+        typeof item === "object" &&
+        typeof (item as { sql?: unknown }).sql === "string"
+      ) {
+        const entry = item as {
+          sql: string;
+          connId?: unknown;
+          database?: unknown;
+        };
+        return [
+          {
+            sql: entry.sql,
+            ...(typeof entry.connId === "string"
+              ? { connId: entry.connId }
+              : {}),
+            ...(typeof entry.database === "string"
+              ? { database: entry.database }
+              : {}),
+          },
+        ];
+      }
+      return [];
+    });
   } catch {
     return [];
   }
@@ -77,6 +111,10 @@ export interface TabViewState {
   result: QueryResult | null;
   error: string | null;
   running: boolean;
+  connId: string | null;
+  database: string | null;
+  executedSql: string | null;
+  resultVersion: number;
 }
 
 export interface QueryTab {
@@ -127,8 +165,8 @@ interface AppStore {
   setConnGroup: (id: string, group: string | undefined) => void;
   groupStars: Record<string, boolean>;
   toggleGroupStar: (group: string) => void;
-  queryHistory: string[];
-  pushQueryHistory: (sql: string) => void;
+  queryHistory: QueryHistoryEntry[];
+  pushQueryHistory: (sql: string, connId?: string, database?: string) => void;
   clearQueryHistory: () => void;
   setActiveConn: (id: string | null) => void;
   setDatabases: (databases: string[]) => void;
@@ -149,13 +187,34 @@ interface AppStore {
   setTableWhere: (id: string, where: string) => void;
   setSql: (sql: string) => void;
   setSelection: (selection: string | null) => void;
-  setResult: (result: QueryResult | null, tabId?: string) => void;
+  setResult: (
+    result: QueryResult | null,
+    tabId?: string,
+    connId?: string,
+    database?: string | null,
+  ) => void;
   setError: (error: string | null, tabId?: string) => void;
   setRunning: (running: boolean, tabId?: string) => void;
+  setExecutedSql: (sql: string | null, tabId?: string) => void;
 }
 
 function emptyView(): TabViewState {
-  return { result: null, error: null, running: false };
+  return {
+    result: null,
+    error: null,
+    running: false,
+    connId: null,
+    database: null,
+    executedSql: null,
+    resultVersion: 0,
+  };
+}
+
+function viewMatchesConnection(
+  view: TabViewState,
+  activeConnId: string | null,
+): boolean {
+  return view.connId === null || view.connId === activeConnId;
 }
 
 const initialTab: QueryTab = {
@@ -259,14 +318,19 @@ export const useAppStore = create<AppStore>((set, get) => ({
       }
       return { groupStars: next };
     }),
-  pushQueryHistory: (sql) =>
+  pushQueryHistory: (sql, connId, database) =>
     set((state) => {
       const trimmed = sql.trim();
       if (!trimmed) return {};
-      // Newest first, no consecutive/earlier duplicate, capped.
+      const entry: QueryHistoryEntry = {
+        sql: trimmed,
+        ...(connId ? { connId } : {}),
+        ...(database ? { database } : {}),
+      };
+      // Newest first, no earlier duplicate of the same SQL, capped.
       const next = [
-        trimmed,
-        ...state.queryHistory.filter((item) => item !== trimmed),
+        entry,
+        ...state.queryHistory.filter((item) => item.sql !== trimmed),
       ].slice(0, QUERY_HISTORY_MAX);
       try {
         localStorage.setItem(QUERY_HISTORY_KEY, JSON.stringify(next));
@@ -378,6 +442,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
     const activeTab = tabs[Math.min(index, tabs.length - 1)] ?? tabs[0];
     const view = tabStates[activeTab.id] ?? emptyView();
+    const matches = viewMatchesConnection(view, state.activeConnId);
     set({
       tabs,
       tabStates,
@@ -385,9 +450,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
       activeTabId: activeTab.id,
       sql: activeTab.type === "query" ? activeTab.sql : "",
       selection: null,
-      result: view.result,
-      error: view.error,
-      running: view.running,
+      result: matches ? view.result : null,
+      error: matches ? view.error : null,
+      running: matches ? view.running : false,
     });
   },
   closeAllTabs: () =>
@@ -428,13 +493,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
     if (!tab || state.activeTabId === id) return;
 
     const view = state.tabStates[id] ?? emptyView();
+    const matches = viewMatchesConnection(view, state.activeConnId);
     set({
       activeTabId: id,
       sql: tab.type === "query" ? tab.sql : "",
       selection: null,
-      result: view.result,
-      error: view.error,
-      running: view.running,
+      result: matches ? view.result : null,
+      error: matches ? view.error : null,
+      running: matches ? view.running : false,
     });
   },
   setTableLimit: (id, limit) =>
@@ -492,14 +558,29 @@ export const useAppStore = create<AppStore>((set, get) => ({
     });
   },
   setSelection: (selection) => set({ selection }),
-  setResult: (result, tabId) =>
+  setResult: (result, tabId, connId, database) =>
     set((state) => {
       const target = tabId ?? state.activeTabId;
       const view = state.tabStates[target] ?? emptyView();
+      // Only executions (which pass connId) start a new result "version".
+      // In-place row edits/deletes call setResult without it, so the grid can
+      // keep its sort, column order and selection.
+      const isExecution = connId !== undefined;
+      const nextView: TabViewState = {
+        ...view,
+        result,
+        ...(isExecution
+          ? {
+              connId,
+              database: database ?? null,
+              resultVersion: view.resultVersion + 1,
+            }
+          : {}),
+      };
       return {
         tabStates: {
           ...state.tabStates,
-          [target]: { ...view, result },
+          [target]: nextView,
         },
         ...(target === state.activeTabId ? { result } : {}),
       };
@@ -526,6 +607,17 @@ export const useAppStore = create<AppStore>((set, get) => ({
           [target]: { ...view, running },
         },
         ...(target === state.activeTabId ? { running } : {}),
+      };
+    }),
+  setExecutedSql: (sql, tabId) =>
+    set((state) => {
+      const target = tabId ?? state.activeTabId;
+      const view = state.tabStates[target] ?? emptyView();
+      return {
+        tabStates: {
+          ...state.tabStates,
+          [target]: { ...view, executedSql: sql },
+        },
       };
     }),
 }));

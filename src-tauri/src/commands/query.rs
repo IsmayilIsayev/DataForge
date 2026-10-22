@@ -1,6 +1,6 @@
 use tauri::State;
 
-use crate::core::drivers::{ColumnInfo, QueryResult, SchemaSnapshot, TableInfo};
+use crate::core::drivers::{ColumnInfo, Dialect, QueryResult, SchemaSnapshot, TableInfo};
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
@@ -17,12 +17,12 @@ pub async fn run_query(
         return Err(AppError::Config("SQL boşdur".to_string()));
     }
 
-    let statements = split_statements(sql);
+    let driver = state.pool.get(&conn_id).await?;
+    let statements = split_statements(sql, driver.dialect());
     if statements.is_empty() {
         return Err(AppError::Config("SQL boşdur".to_string()));
     }
 
-    let driver = state.pool.get(&conn_id).await?;
     let limit = max_rows.unwrap_or(1000).clamp(1, 100_000);
     driver.run_statements(&statements, limit, database).await
 }
@@ -41,7 +41,7 @@ enum ScanState {
     BlockComment,
 }
 
-fn split_statements(sql: &str) -> Vec<String> {
+fn split_statements(sql: &str, dialect: Dialect) -> Vec<String> {
     let chars: Vec<char> = sql.chars().collect();
     let len = chars.len();
     let mut statements = Vec::new();
@@ -111,7 +111,7 @@ fn split_statements(sql: &str) -> Vec<String> {
                     _ => '`',
                 };
 
-                if current == '\\' && index + 1 < len {
+                if dialect == Dialect::Mysql && current == '\\' && index + 1 < len {
                     buffer.push(chars[index + 1]);
                     index += 2;
                 } else if current == quote {
@@ -197,9 +197,14 @@ pub async fn get_schema(
 #[cfg(test)]
 mod tests {
     use super::{split_statements, trim_sql};
+    use crate::core::drivers::Dialect;
+
+    fn split_with(sql: &str, dialect: Dialect) -> Vec<String> {
+        split_statements(trim_sql(sql), dialect)
+    }
 
     fn split(sql: &str) -> Vec<String> {
-        split_statements(trim_sql(sql))
+        split_with(sql, Dialect::Postgres)
     }
 
     fn expected(items: &[&str]) -> Vec<String> {
@@ -244,6 +249,23 @@ mod tests {
         assert_eq!(
             split("SELECT 'it''s; ok'; SELECT 2"),
             expected(&["SELECT 'it''s; ok'", "SELECT 2"])
+        );
+    }
+
+    #[test]
+    fn treats_backslash_as_an_escape_only_for_mysql() {
+        let sql = "SELECT 'C:\\'; SELECT 2;";
+        assert_eq!(
+            split_with(sql, Dialect::Postgres),
+            expected(&["SELECT 'C:\\'", "SELECT 2"])
+        );
+        assert_eq!(
+            split_with(sql, Dialect::Sqlite),
+            expected(&["SELECT 'C:\\'", "SELECT 2"])
+        );
+        assert_eq!(
+            split_with(sql, Dialect::Mysql),
+            expected(&["SELECT 'C:\\'; SELECT 2"])
         );
     }
 }

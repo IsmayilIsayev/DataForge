@@ -44,6 +44,13 @@ export function quoteIdentifier(dialect: Dialect, value: string): string {
   return `"${value.replace(/"/g, '""')}"`;
 }
 
+export function sqliteBooleanLiteral(value: string): string | null {
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "t", "yes", "y"].includes(normalized)) return "1";
+  if (["0", "false", "f", "no", "n"].includes(normalized)) return "0";
+  return null;
+}
+
 export function qualifiedTable(
   dialect: Dialect,
   database: string,

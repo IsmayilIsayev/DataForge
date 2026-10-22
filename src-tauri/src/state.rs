@@ -1,3 +1,4 @@
+use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -12,26 +13,55 @@ use crate::error::{AppError, AppResult};
 pub struct ConnectionStore {
     path: PathBuf,
     items: Vec<ConnectionMeta>,
+    /// Set when connections.json exists but cannot be read. Persisting then
+    /// would overwrite the user's (possibly recoverable) file with an empty or
+    /// partial list, so writes are blocked until the problem is fixed.
+    load_error: Option<String>,
+}
+
+fn read_error_message(error: &std::io::Error) -> Option<String> {
+    if error.kind() == ErrorKind::NotFound {
+        None
+    } else {
+        Some(format!(
+            "connections.json could not be read ({error}); refusing to overwrite it. \
+             Fix the file permissions or restore the file, then restart DataForge."
+        ))
+    }
 }
 
 impl ConnectionStore {
     fn load(path: PathBuf) -> Self {
-        let items = match std::fs::read_to_string(&path) {
-            Ok(text) => match serde_json::from_str(&text) {
-                Ok(items) => items,
+        let (items, load_error) = match std::fs::read_to_string(&path) {
+            Ok(text) => match serde_json::from_str::<Vec<ConnectionMeta>>(&text) {
+                Ok(items) => (items, None),
                 Err(error) => {
                     // Don't silently lose saved connections on a parse error —
                     // back the file up so the user can recover it.
                     eprintln!("connections.json parse error ({error}); backing up");
                     let backup = path.with_extension("corrupt.json");
                     let _ = std::fs::rename(&path, &backup);
-                    Vec::new()
+                    (Vec::new(), None)
                 }
             },
-            Err(_) => Vec::new(),
+            Err(error) => match read_error_message(&error) {
+                Some(message) => {
+                    eprintln!("{message}");
+                    (Vec::new(), Some(message))
+                }
+                None => (Vec::new(), None),
+            },
         };
 
-        Self { path, items }
+        Self {
+            path,
+            items,
+            load_error,
+        }
+    }
+
+    pub fn load_error(&self) -> Option<&str> {
+        self.load_error.as_deref()
     }
 
     pub fn list(&self) -> Vec<ConnectionMeta> {
@@ -56,6 +86,10 @@ impl ConnectionStore {
     }
 
     fn persist(&self) -> AppResult<()> {
+        if let Some(message) = &self.load_error {
+            return Err(AppError::Config(message.clone()));
+        }
+
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|error| AppError::Config(format!("konfiqurasiya qovluğu: {error}")))?;
@@ -133,5 +167,31 @@ impl AppState {
         let driver = drivers::connect(&input, password.as_deref()).await?;
         self.pool.insert(conn_id.to_string(), driver.clone()).await;
         Ok(driver)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{read_error_message, ConnectionStore};
+    use std::io::ErrorKind;
+    use std::path::PathBuf;
+
+    #[test]
+    fn only_not_found_is_treated_as_an_empty_store() {
+        let missing = std::io::Error::from(ErrorKind::NotFound);
+        assert!(read_error_message(&missing).is_none());
+
+        let denied = std::io::Error::new(ErrorKind::PermissionDenied, "denied");
+        assert!(read_error_message(&denied).is_some());
+    }
+
+    #[test]
+    fn a_failed_load_blocks_persistence() {
+        let store = ConnectionStore {
+            path: PathBuf::from("unused-connections.json"),
+            items: Vec::new(),
+            load_error: Some("connections.json could not be read".to_string()),
+        };
+        assert!(store.persist().is_err());
     }
 }

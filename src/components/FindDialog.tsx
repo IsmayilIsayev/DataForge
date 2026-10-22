@@ -39,7 +39,8 @@ function filterFor(
     .replace(/_/g, "\\_")
     .replace(/'/g, "''");
   const op = caseInsensitive && dialect === "postgres" ? "ILIKE" : "LIKE";
-  return `${quoteIdentifier(dialect, hit.column)} ${op} '%${escaped}%'`;
+  const escape = dialect === "sqlite" ? " ESCAPE '\\'" : "";
+  return `${quoteIdentifier(dialect, hit.column)} ${op} '%${escaped}%'${escape}`;
 }
 
 export default function FindDialog({

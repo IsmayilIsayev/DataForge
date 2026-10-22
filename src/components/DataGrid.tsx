@@ -10,7 +10,7 @@ import {
   updateCell,
 } from "../ipc";
 import type { CellRef } from "../ipc";
-import { quoteIdentifier } from "../sql";
+import { quoteIdentifier, sqliteBooleanLiteral } from "../sql";
 import { useAppStore } from "../store";
 import type { CellValue, Dialect } from "../types";
 
@@ -55,6 +55,13 @@ function displayValue(value: CellValue): string {
 function rawValue(value: CellValue): string {
   if (value === null) return "NULL";
   return displayValue(value);
+}
+
+// Preserve string values exactly: 64-bit PKs arrive as JSON strings to avoid
+// precision loss, and must not be round-tripped through a JS number.
+function pkValue(value: CellValue): string | null {
+  if (value === null || value === undefined) return null;
+  return typeof value === "string" ? value : String(value);
 }
 
 function cellType(value: CellValue): string {
@@ -205,7 +212,7 @@ export default function DataGrid({
     setCopied(null);
     setDragging(false);
     setConfirmDelete(null);
-  }, [viewKey, result]);
+  }, [viewKey]);
 
   useEffect(() => {
     if (!dragging) return;
@@ -342,19 +349,26 @@ export default function DataGrid({
       return; // no change
     }
 
+    let payload = next;
+    let displayNext: CellValue = next;
+    if (dialect === "sqlite" && typeof original === "boolean") {
+      const bool = sqliteBooleanLiteral(next);
+      if (bool !== null) {
+        payload = bool;
+        displayNext = bool === "1";
+      }
+    }
+
     const pk = (pkColumns ?? []).map((name) => {
       const index = columns.indexOf(name);
       const value = index >= 0 ? source.row[index] : null;
-      return {
-        column: name,
-        value: value === null || value === undefined ? null : String(value),
-      };
+      return { column: name, value: pkValue(value) };
     });
 
     try {
-      await updateCell(connId, database ?? "", table, pk, columnName, next);
+      await updateCell(connId, database ?? "", table, pk, columnName, payload);
       const rows = result.rows.map((row) => row.slice());
-      rows[source.index][current.col] = next;
+      rows[source.index][current.col] = displayNext;
       setResult({ ...result, rows });
       setError(null);
       setCopied("Updated");
@@ -391,10 +405,7 @@ export default function DataGrid({
       const pk = (pkColumns ?? []).map((name) => {
         const index = columns.indexOf(name);
         const value = index >= 0 ? source.row[index] : null;
-        return {
-          column: name,
-          value: value === null || value === undefined ? null : String(value),
-        };
+        return { column: name, value: pkValue(value) };
       });
       pkList.push(pk);
       sourceIndexes.push(source.index);

@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { useAppStore } from "../store";
+import type { QueryHistoryEntry } from "../store";
 
 interface Props {
   onClose: () => void;
-  onPick: (sql: string) => void;
+  onPick: (entry: QueryHistoryEntry) => void;
 }
 
 export default function HistoryDialog({ onClose, onPick }: Props) {
@@ -21,11 +22,11 @@ export default function HistoryDialog({ onClose, onPick }: Props) {
 
   const needle = filter.trim().toLowerCase();
   const shown = needle
-    ? history.filter((item) => item.toLowerCase().includes(needle))
+    ? history.filter((item) => item.sql.toLowerCase().includes(needle))
     : history;
 
-  const pick = (sql: string) => {
-    onPick(sql);
+  const pick = (entry: QueryHistoryEntry) => {
+    onPick(entry);
     onClose();
   };
 
@@ -141,7 +142,7 @@ export default function HistoryDialog({ onClose, onPick }: Props) {
                     textOverflow: "ellipsis",
                   }}
                 >
-                  {item.replace(/\s+/g, " ")}
+                  {item.sql.replace(/\s+/g, " ")}
                 </span>
                 <button
                   type="button"

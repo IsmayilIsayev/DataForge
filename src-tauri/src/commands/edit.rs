@@ -88,6 +88,65 @@ async fn run_write(
     Ok(result.rows_affected.unwrap_or(0))
 }
 
+fn insert_sql(
+    dialect: Dialect,
+    database: &str,
+    table: &str,
+    values: &[CellRef],
+) -> AppResult<String> {
+    let target = table_ref(dialect, database, table);
+    if values.is_empty() {
+        // Every column is on DEFAULT: let the database generate the row. MySQL
+        // spells this as an empty column/value list, Postgres/SQLite use the
+        // standard DEFAULT VALUES form.
+        return match dialect {
+            Dialect::Mysql => Ok(format!("INSERT INTO {target} () VALUES ()")),
+            Dialect::Postgres | Dialect::Sqlite => {
+                Ok(format!("INSERT INTO {target} DEFAULT VALUES"))
+            }
+            _ => Err(AppError::Config(
+                "this dialect does not support insert-with-defaults".to_string(),
+            )),
+        };
+    }
+
+    let columns: Vec<String> = values
+        .iter()
+        .map(|cell| quote_ident(dialect, &cell.column))
+        .collect();
+    let literals: Vec<String> = values
+        .iter()
+        .map(|cell| quote_lit(dialect, cell.value.as_deref()))
+        .collect();
+    Ok(format!(
+        "INSERT INTO {target} ({}) VALUES ({})",
+        columns.join(", "),
+        literals.join(", "),
+    ))
+}
+
+fn delete_sql(
+    dialect: Dialect,
+    database: &str,
+    table: &str,
+    rows: &[Vec<CellRef>],
+) -> AppResult<String> {
+    let mut predicates: Vec<String> = Vec::with_capacity(rows.len());
+    for pk in rows {
+        let predicate = where_clause(dialect, pk)?;
+        if rows.len() > 1 {
+            predicates.push(format!("({predicate})"));
+        } else {
+            predicates.push(predicate);
+        }
+    }
+    Ok(format!(
+        "DELETE FROM {} WHERE {}",
+        table_ref(dialect, database, table),
+        predicates.join(" OR "),
+    ))
+}
+
 #[tauri::command(rename_all = "snake_case")]
 pub async fn update_cell(
     state: State<'_, AppState>,
@@ -117,17 +176,15 @@ pub async fn delete_rows(
     table: String,
     rows: Vec<Vec<CellRef>>,
 ) -> AppResult<u64> {
-    let dialect = state.pool.get(&conn_id).await?.dialect();
-    let mut total = 0u64;
-    for pk in &rows {
-        let sql = format!(
-            "DELETE FROM {} WHERE {}",
-            table_ref(dialect, &database, &table),
-            where_clause(dialect, pk)?,
-        );
-        total += run_write(&state, &conn_id, &database, &sql).await?;
+    if rows.is_empty() {
+        return Ok(0);
     }
-    Ok(total)
+    let dialect = state.pool.get(&conn_id).await?.dialect();
+    // One statement with an OR of PK predicates keeps a multi-row delete
+    // all-or-nothing: if one row is protected, the database rolls back the
+    // whole statement instead of leaving earlier rows deleted.
+    let sql = delete_sql(dialect, &database, &table, &rows)?;
+    run_write(&state, &conn_id, &database, &sql).await
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -138,23 +195,69 @@ pub async fn insert_row(
     table: String,
     values: Vec<CellRef>,
 ) -> AppResult<u64> {
-    if values.is_empty() {
-        return Err(AppError::Config("no values provided for the new row".to_string()));
-    }
     let dialect = state.pool.get(&conn_id).await?.dialect();
-    let columns: Vec<String> = values
-        .iter()
-        .map(|cell| quote_ident(dialect, &cell.column))
-        .collect();
-    let literals: Vec<String> = values
-        .iter()
-        .map(|cell| quote_lit(dialect, cell.value.as_deref()))
-        .collect();
-    let sql = format!(
-        "INSERT INTO {} ({}) VALUES ({})",
-        table_ref(dialect, &database, &table),
-        columns.join(", "),
-        literals.join(", "),
-    );
+    let sql = insert_sql(dialect, &database, &table, &values)?;
     run_write(&state, &conn_id, &database, &sql).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{delete_sql, insert_sql, CellRef};
+    use crate::core::drivers::Dialect;
+
+    fn cell(column: &str, value: &str) -> CellRef {
+        CellRef {
+            column: column.to_string(),
+            value: Some(value.to_string()),
+        }
+    }
+
+    #[test]
+    fn insert_with_no_explicit_columns_uses_default_values() {
+        assert_eq!(
+            insert_sql(Dialect::Postgres, "", "users", &[]).unwrap(),
+            "INSERT INTO \"users\" DEFAULT VALUES"
+        );
+        assert_eq!(
+            insert_sql(Dialect::Sqlite, "", "users", &[]).unwrap(),
+            "INSERT INTO \"users\" DEFAULT VALUES"
+        );
+        assert_eq!(
+            insert_sql(Dialect::Mysql, "shop", "users", &[]).unwrap(),
+            "INSERT INTO `shop`.`users` () VALUES ()"
+        );
+    }
+
+    #[test]
+    fn insert_with_explicit_columns_still_builds_a_normal_values_list() {
+        assert_eq!(
+            insert_sql(
+                Dialect::Postgres,
+                "",
+                "users",
+                &[cell("name", "Alice"), cell("age", "30")]
+            )
+            .unwrap(),
+            "INSERT INTO \"users\" (\"name\", \"age\") VALUES ('Alice', '30')"
+        );
+    }
+
+    #[test]
+    fn multi_row_delete_is_a_single_atomic_statement() {
+        let sql = delete_sql(
+            Dialect::Postgres,
+            "",
+            "users",
+            &[vec![cell("id", "1")], vec![cell("id", "2")]],
+        )
+        .unwrap();
+        assert_eq!(
+            sql,
+            "DELETE FROM \"users\" WHERE (\"id\" = '1') OR (\"id\" = '2')"
+        );
+
+        let single =
+            delete_sql(Dialect::Sqlite, "", "users", &[vec![cell("id", "1")]]).unwrap();
+        assert_eq!(single, "DELETE FROM \"users\" WHERE \"id\" = '1'");
+    }
 }

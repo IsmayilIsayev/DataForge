@@ -85,7 +85,11 @@ pub async fn update_connection(
 
 #[tauri::command(rename_all = "snake_case")]
 pub async fn list_connections(state: State<'_, AppState>) -> AppResult<Vec<ConnectionMeta>> {
-    Ok(state.connections.read().await.list())
+    let store = state.connections.read().await;
+    if let Some(error) = store.load_error() {
+        return Err(AppError::Config(error.to_string()));
+    }
+    Ok(store.list())
 }
 
 #[tauri::command(rename_all = "snake_case")]

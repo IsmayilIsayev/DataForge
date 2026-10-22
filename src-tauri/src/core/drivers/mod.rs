@@ -13,6 +13,27 @@ use crate::error::{AppError, AppResult};
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+/// Largest integer JavaScript can represent exactly (2^53 - 1). Larger SQL
+/// integers are serialized as strings so the frontend cannot silently round
+/// primary keys and update/delete the wrong row.
+pub(crate) const MAX_SAFE_JSON_INT: i64 = 9_007_199_254_740_991;
+
+pub(crate) fn int_json(value: i64) -> serde_json::Value {
+    if (-MAX_SAFE_JSON_INT..=MAX_SAFE_JSON_INT).contains(&value) {
+        serde_json::Value::from(value)
+    } else {
+        serde_json::Value::String(value.to_string())
+    }
+}
+
+pub(crate) fn uint_json(value: u64) -> serde_json::Value {
+    if value <= MAX_SAFE_JSON_INT as u64 {
+        serde_json::Value::from(value)
+    } else {
+        serde_json::Value::String(value.to_string())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Dialect {
@@ -184,5 +205,37 @@ pub async fn connect(
             "{} dialekti MVP-də dəstəklənmir",
             other
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{int_json, uint_json, MAX_SAFE_JSON_INT};
+    use serde_json::Value;
+
+    #[test]
+    fn keeps_small_integers_as_json_numbers() {
+        assert_eq!(int_json(0), Value::from(0));
+        assert_eq!(int_json(MAX_SAFE_JSON_INT), Value::from(MAX_SAFE_JSON_INT));
+        assert_eq!(
+            int_json(-MAX_SAFE_JSON_INT),
+            Value::from(-MAX_SAFE_JSON_INT)
+        );
+    }
+
+    #[test]
+    fn serializes_large_integers_as_exact_strings() {
+        assert_eq!(
+            int_json(MAX_SAFE_JSON_INT + 1),
+            Value::String((MAX_SAFE_JSON_INT + 1).to_string())
+        );
+        assert_eq!(
+            int_json(-MAX_SAFE_JSON_INT - 1),
+            Value::String((-MAX_SAFE_JSON_INT - 1).to_string())
+        );
+        assert_eq!(
+            uint_json(MAX_SAFE_JSON_INT as u64 + 1),
+            Value::String((MAX_SAFE_JSON_INT as u64 + 1).to_string())
+        );
     }
 }

@@ -7,8 +7,8 @@ use sqlx::types::chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use sqlx::{Column, Connection, Executor, Row, Statement, TypeInfo, ValueRef};
 
 use crate::core::drivers::{
-    BoxFuture, ColumnInfo, ConnectionInput, Dialect, Driver, QueryResult, SchemaSnapshot,
-    SchemaTable, TableInfo, TableKind,
+    int_json, uint_json, BoxFuture, ColumnInfo, ConnectionInput, Dialect, Driver, QueryResult,
+    SchemaSnapshot, SchemaTable, TableInfo, TableKind,
 };
 use crate::error::{AppError, AppResult};
 
@@ -450,8 +450,8 @@ fn cell_to_json(row: &MySqlRow, index: usize) -> Value {
         "MEDIUMINT UNSIGNED" | "INT UNSIGNED" | "INTEGER UNSIGNED" => {
             int_value!(u32, |v| Value::from(v as u64))
         }
-        "BIGINT" => int_value!(i64, Value::from),
-        "BIGINT UNSIGNED" => int_value!(u64, Value::from),
+        "BIGINT" => int_value!(i64, int_json),
+        "BIGINT UNSIGNED" => int_value!(u64, uint_json),
         "FLOAT" | "DOUBLE" | "FLOAT UNSIGNED" | "DOUBLE UNSIGNED" => {
             match row.try_get_unchecked::<Option<f64>, _>(index) {
                 Ok(Some(value)) => return number(value),

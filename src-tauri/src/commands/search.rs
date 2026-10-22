@@ -40,13 +40,24 @@ fn is_text_type(data_type: &str) -> bool {
 }
 
 fn like_literal(term: &str) -> String {
-    // Escape LIKE wildcards and the quote, wrap for a "contains" match.
+    // Escape LIKE wildcards, the escape character itself and the quote, then
+    // wrap for a "contains" match.
     let escaped = term
         .replace('\\', "\\\\")
         .replace('%', "\\%")
         .replace('_', "\\_")
         .replace('\'', "''");
     format!("'%{escaped}%'")
+}
+
+fn like_escape_clause(dialect: Dialect) -> &'static str {
+    // SQLite only honours backslash as the LIKE escape character when an
+    // explicit ESCAPE clause is present. MySQL/Postgres use it by default.
+    if dialect == Dialect::Sqlite {
+        " ESCAPE '\\'"
+    } else {
+        ""
+    }
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -110,6 +121,7 @@ pub async fn find_in_database(
             "LIKE"
         };
         let pattern = like_literal(&needle);
+        let escape = like_escape_clause(dialect);
 
         // Build one SQL job per table that has text columns.
         let jobs: Vec<(String, String)> = tables
@@ -138,7 +150,7 @@ pub async fn find_in_database(
                         } else {
                             col
                         };
-                        format!("{expr} {like} {pattern}")
+                        format!("{expr} {like} {pattern}{escape}")
                     })
                     .collect();
                 let select_cols: Vec<String> = text_cols
@@ -247,4 +259,24 @@ pub async fn find_in_database(
     }
 
     Ok(hits)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{like_escape_clause, like_literal};
+    use crate::core::drivers::Dialect;
+
+    #[test]
+    fn escapes_backslashes_and_wildcards() {
+        assert_eq!(like_literal("100%"), "'%100\\%'");
+        assert_eq!(like_literal("a_b"), "'%a\\_b%'");
+        assert_eq!(like_literal("a\\b"), "'%a\\\\b%'");
+    }
+
+    #[test]
+    fn only_sqlite_needs_an_explicit_escape_clause() {
+        assert_eq!(like_escape_clause(Dialect::Sqlite), " ESCAPE '\\'");
+        assert_eq!(like_escape_clause(Dialect::Mysql), "");
+        assert_eq!(like_escape_clause(Dialect::Postgres), "");
+    }
 }

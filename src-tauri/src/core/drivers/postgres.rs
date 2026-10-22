@@ -8,7 +8,7 @@ use sqlx::{Column, Connection, Executor, Row, Statement, TypeInfo, ValueRef};
 use uuid::Uuid;
 
 use crate::core::drivers::{
-    BoxFuture, ColumnInfo, ConnectionInput, Dialect, Driver, QueryResult, SchemaSnapshot,
+    int_json, BoxFuture, ColumnInfo, ConnectionInput, Dialect, Driver, QueryResult, SchemaSnapshot,
     SchemaTable, TableInfo, TableKind,
 };
 use crate::error::{AppError, AppResult};
@@ -629,7 +629,7 @@ fn cell_to_json(row: &PgRow, index: usize) -> Value {
         },
         "INT2" => int_value!(i16, |v| Value::from(v as i64)),
         "INT4" => int_value!(i32, |v| Value::from(v as i64)),
-        "INT8" => int_value!(i64, Value::from),
+        "INT8" => int_value!(i64, int_json),
         "OID" => int_value!(i32, |v: i32| Value::from((v as u32) as u64)),
         "FLOAT4" => int_value!(f32, |v| number(v as f64)),
         "FLOAT8" => int_value!(f64, number),
