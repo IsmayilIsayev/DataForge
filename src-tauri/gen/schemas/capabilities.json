@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Default desktop capability for DataForge.","local":true,"windows":["main"],"permissions":["core:default","clipboard-manager:allow-read-text","clipboard-manager:allow-write-text","notification:default"]}}
+{"default":{"identifier":"default","description":"Default desktop capability for DataForge.","local":true,"windows":["main"],"permissions":["core:default","clipboard-manager:allow-read-text","clipboard-manager:allow-write-text","notification:default","updater:default","process:default"]}}

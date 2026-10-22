@@ -264,10 +264,30 @@ export default function App() {
         setAboutOpen(true);
       });
       await bind("menu:check-updates", () => {
-        void notify(
-          "DataForge",
-          "Update checks will be available after the updater is configured.",
-        );
+        void (async () => {
+          try {
+            const { check } = await import("@tauri-apps/plugin-updater");
+            const update = await check();
+            if (update) {
+              await notify(
+                "DataForge",
+                `Downloading update ${update.version}…`,
+              );
+              await update.downloadAndInstall();
+              const { relaunch } = await import(
+                "@tauri-apps/plugin-process"
+              );
+              await relaunch();
+            } else {
+              await notify("DataForge", "You're on the latest version.");
+            }
+          } catch (updateError) {
+            await notify(
+              "DataForge",
+              "Update check failed: " + String(updateError),
+            );
+          }
+        })();
       });
     })();
 

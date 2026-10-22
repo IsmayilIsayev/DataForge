@@ -28,6 +28,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "icon": [
       "icons/32x32.png",
@@ -36,6 +37,14 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/ismayilisayev/deltaforge/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdCQzRFODlEODdFNEU4MTkKUldRWjZPU0huZWpFZXc4U051bHlrYmNzQ1ZNS0REYkYrV0ZaZEh4YzR0TnJDT25yaEh5a09jbnkK"
+    }
   }
 }
 
