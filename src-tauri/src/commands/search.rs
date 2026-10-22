@@ -268,7 +268,7 @@ mod tests {
 
     #[test]
     fn escapes_backslashes_and_wildcards() {
-        assert_eq!(like_literal("100%"), "'%100\\%'");
+        assert_eq!(like_literal("100%"), "'%100\\%%'");
         assert_eq!(like_literal("a_b"), "'%a\\_b%'");
         assert_eq!(like_literal("a\\b"), "'%a\\\\b%'");
     }
