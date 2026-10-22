@@ -53,6 +53,18 @@ function loadGroupStars(): Record<string, boolean> {
   }
 }
 
+const QUERY_HISTORY_KEY = "df-query-history";
+const QUERY_HISTORY_MAX = 100;
+
+function loadQueryHistory(): string[] {
+  try {
+    const value = JSON.parse(localStorage.getItem(QUERY_HISTORY_KEY) || "[]");
+    return Array.isArray(value) ? value : [];
+  } catch {
+    return [];
+  }
+}
+
 function sameFavorite(a: FavoriteTable, b: FavoriteTable): boolean {
   return (
     a.connId === b.connId &&
@@ -115,6 +127,9 @@ interface AppStore {
   setConnGroup: (id: string, group: string | undefined) => void;
   groupStars: Record<string, boolean>;
   toggleGroupStar: (group: string) => void;
+  queryHistory: string[];
+  pushQueryHistory: (sql: string) => void;
+  clearQueryHistory: () => void;
   setActiveConn: (id: string | null) => void;
   setDatabases: (databases: string[]) => void;
   setActiveDb: (database: string | null) => void;
@@ -124,6 +139,7 @@ interface AppStore {
     database: string,
     table: string,
     limit?: number,
+    where?: string,
   ) => string;
   closeTab: (id: string) => void;
   closeAllTabs: () => void;
@@ -157,6 +173,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   favorites: loadFavorites(),
   connGroups: loadConnGroups(),
   groupStars: loadGroupStars(),
+  queryHistory: loadQueryHistory(),
   activeConnId: null,
   databases: [],
   activeDb: null,
@@ -242,6 +259,30 @@ export const useAppStore = create<AppStore>((set, get) => ({
       }
       return { groupStars: next };
     }),
+  pushQueryHistory: (sql) =>
+    set((state) => {
+      const trimmed = sql.trim();
+      if (!trimmed) return {};
+      // Newest first, no consecutive/earlier duplicate, capped.
+      const next = [
+        trimmed,
+        ...state.queryHistory.filter((item) => item !== trimmed),
+      ].slice(0, QUERY_HISTORY_MAX);
+      try {
+        localStorage.setItem(QUERY_HISTORY_KEY, JSON.stringify(next));
+      } catch {
+        // storage may be unavailable
+      }
+      return { queryHistory: next };
+    }),
+  clearQueryHistory: () => {
+    try {
+      localStorage.removeItem(QUERY_HISTORY_KEY);
+    } catch {
+      // storage may be unavailable
+    }
+    set({ queryHistory: [] });
+  },
   setActiveConn: (activeConnId) =>
     set({
       activeConnId,
@@ -278,7 +319,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
     return id;
   },
-  addTableTab: (connectionId, database, table, limit = 1000) => {
+  addTableTab: (connectionId, database, table, limit = 1000, where = "") => {
     const state = get();
     const id = `tab-${state.nextTab}`;
     const tab: TableTab = {
@@ -289,7 +330,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       database,
       table,
       limit,
-      where: "",
+      where,
     };
 
     set({

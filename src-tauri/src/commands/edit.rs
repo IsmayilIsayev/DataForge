@@ -52,7 +52,7 @@ fn table_ref(dialect: Dialect, database: &str, table: &str) -> String {
 fn where_clause(dialect: Dialect, pk: &[CellRef]) -> AppResult<String> {
     if pk.is_empty() {
         return Err(AppError::Config(
-            "cədvəldə primary key yoxdur — redaktə mümkün deyil".to_string(),
+            "this table has no primary key — editing is not possible".to_string(),
         ));
     }
     let parts: Vec<String> = pk
@@ -139,7 +139,7 @@ pub async fn insert_row(
     values: Vec<CellRef>,
 ) -> AppResult<u64> {
     if values.is_empty() {
-        return Err(AppError::Config("yeni sətir üçün dəyər yoxdur".to_string()));
+        return Err(AppError::Config("no values provided for the new row".to_string()));
     }
     let dialect = state.pool.get(&conn_id).await?.dialect();
     let columns: Vec<String> = values

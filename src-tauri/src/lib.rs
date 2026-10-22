@@ -276,6 +276,7 @@ pub fn run() {
             commands::edit::insert_row,
             commands::edit::delete_rows,
             commands::search::find_in_database,
+            commands::export::export_result_xlsx,
             commands::ai::ai_nl2sql,
             commands::ai::ai_explain,
             commands::ai::ai_get_config,

@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import type { KeyboardEvent } from "react";
 import DataGrid from "./DataGrid";
+import InsertRowDialog from "./InsertRowDialog";
 import { listColumns } from "../ipc";
+import type { ColumnInfo } from "../types";
 import type { TableTab } from "../store";
 import { useAppStore } from "../store";
 
@@ -16,7 +18,10 @@ export default function TableDataView({ tab, onRefresh, theme }: Props) {
   const connections = useAppStore((state) => state.connections);
   const setTableWhere = useAppStore((state) => state.setTableWhere);
   const [where, setWhere] = useState(tab.where);
-  const [pkColumns, setPkColumns] = useState<string[]>([]);
+  const [columns, setColumns] = useState<ColumnInfo[]>([]);
+  const [insertOpen, setInsertOpen] = useState(false);
+
+  const pkColumns = columns.filter((c) => c.key === "PRI").map((c) => c.name);
 
   useEffect(() => {
     setWhere(tab.where);
@@ -25,15 +30,11 @@ export default function TableDataView({ tab, onRefresh, theme }: Props) {
   useEffect(() => {
     let cancelled = false;
     listColumns(tab.connectionId, tab.database, tab.table)
-      .then((columns) => {
-        if (!cancelled) {
-          setPkColumns(
-            columns.filter((c) => c.key === "PRI").map((c) => c.name),
-          );
-        }
+      .then((cols) => {
+        if (!cancelled) setColumns(cols);
       })
       .catch(() => {
-        if (!cancelled) setPkColumns([]);
+        if (!cancelled) setColumns([]);
       });
     return () => {
       cancelled = true;
@@ -116,6 +117,29 @@ export default function TableDataView({ tab, onRefresh, theme }: Props) {
         <button
           type="button"
           className="v2-icon-btn"
+          onClick={() => setInsertOpen(true)}
+          disabled={columns.length === 0}
+          title="Add row"
+          style={{
+            height: 24,
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
+            border: 0,
+            borderRadius: 4,
+            background: "transparent",
+            color: columns.length === 0 ? "var(--fa)" : "var(--mu)",
+            cursor: "default",
+            padding: "0 6px",
+            fontSize: 12,
+          }}
+        >
+          <i className="icon-plus" style={{ fontSize: 13 }} />
+          <span>Add row</span>
+        </button>
+        <button
+          type="button"
+          className="v2-icon-btn"
           onClick={refresh}
           title="Refresh"
           style={{
@@ -135,6 +159,17 @@ export default function TableDataView({ tab, onRefresh, theme }: Props) {
           <i className="icon-refresh-cw" style={{ fontSize: 13 }} />
         </button>
       </div>
+
+      {insertOpen && (
+        <InsertRowDialog
+          connId={tab.connectionId}
+          database={tab.database}
+          table={tab.table}
+          columns={columns}
+          onClose={() => setInsertOpen(false)}
+          onInserted={refresh}
+        />
+      )}
 
       {error && (
         <div

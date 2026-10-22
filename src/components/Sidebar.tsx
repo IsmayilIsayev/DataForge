@@ -13,14 +13,19 @@ import {
   listColumns,
   listDatabases,
   listTables,
+  runQuery,
 } from "../ipc";
+import { dropTableSql } from "../ddl";
+import CreateTableDialog from "./CreateTableDialog";
+import StructureDialog from "./StructureDialog";
 import { useAppStore } from "../store";
 import type { FavoriteTable } from "../store";
-import type { ColumnInfo, ConnectionMeta, TableInfo } from "../types";
+import type { ColumnInfo, ConnectionMeta, Dialect, TableInfo } from "../types";
 
 interface Props {
   onNewConnection: () => void;
   onEditConnection: (connection: ConnectionMeta) => void;
+  onFindInTable: (connId: string, database: string, table: string) => void;
   onOpenTable: (
     connection: ConnectionMeta,
     database: string,
@@ -321,6 +326,7 @@ function TreeError({ children }: { children: ReactNode }) {
 export default function Sidebar({
   onNewConnection,
   onEditConnection,
+  onFindInTable,
   onOpenTable,
   width,
 }: Props) {
@@ -348,6 +354,22 @@ export default function Sidebar({
   const [tables, setTables] = useState<Record<string, TableInfo[]>>({});
   const [columns, setColumns] = useState<Record<string, ColumnInfo[]>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  // DDL dialogs
+  const [structureFor, setStructureFor] = useState<{
+    connection: ConnectionMeta;
+    database: string;
+    table: string;
+  } | null>(null);
+  const [createFor, setCreateFor] = useState<{
+    connection: ConnectionMeta;
+    database: string;
+  } | null>(null);
+  const [dropFor, setDropFor] = useState<{
+    connection: ConnectionMeta;
+    database: string;
+    table: string;
+  } | null>(null);
+  const [dropBusy, setDropBusy] = useState(false);
   const [loading, setLoading] = useState<Record<string, boolean>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [filter, setFilter] = useState("");
@@ -1523,6 +1545,18 @@ export default function Sidebar({
                   }}
                 />
                 <MenuItem
+                  icon="icon-table-2"
+                  label="Create table…"
+                  onClick={() => {
+                    const menu = contextMenu;
+                    setContextMenu(null);
+                    setCreateFor({
+                      connection: contextConnection,
+                      database: menu.database,
+                    });
+                  }}
+                />
+                <MenuItem
                   icon="icon-refresh-cw"
                   label="Refresh"
                   onClick={() => {
@@ -1554,6 +1588,15 @@ export default function Sidebar({
                   onClick={() => {
                     setContextMenu(null);
                     newQueryForTable(contextMenu.table);
+                  }}
+                />
+                <MenuItem
+                  icon="icon-search"
+                  label="Search in this table…"
+                  onClick={() => {
+                    const menu = contextMenu;
+                    setContextMenu(null);
+                    onFindInTable(menu.connectionId, menu.database, menu.table);
                   }}
                 />
                 <MenuItem
@@ -1589,6 +1632,19 @@ export default function Sidebar({
                 />
                 <MenuSeparator />
                 <MenuItem
+                  icon="icon-table-2"
+                  label="Design table…"
+                  onClick={() => {
+                    const menu = contextMenu;
+                    setContextMenu(null);
+                    setStructureFor({
+                      connection: contextConnection,
+                      database: menu.database,
+                      table: menu.table,
+                    });
+                  }}
+                />
+                <MenuItem
                   icon="icon-refresh-cw"
                   label="Refresh"
                   onClick={() => {
@@ -1600,8 +1656,121 @@ export default function Sidebar({
                     );
                   }}
                 />
+                <MenuSeparator />
+                <MenuItem
+                  icon="icon-trash-2"
+                  label="Drop table…"
+                  danger
+                  onClick={() => {
+                    const menu = contextMenu;
+                    setContextMenu(null);
+                    setDropFor({
+                      connection: contextConnection,
+                      database: menu.database,
+                      table: menu.table,
+                    });
+                  }}
+                />
               </>
             )}
+          </div>
+        </>
+      )}
+
+      {structureFor && (
+        <StructureDialog
+          connId={structureFor.connection.id}
+          database={structureFor.database}
+          table={structureFor.table}
+          dialect={structureFor.connection.dialect as Dialect}
+          onClose={() => setStructureFor(null)}
+          onApplied={() =>
+            refreshTable(
+              structureFor.connection,
+              structureFor.database,
+              structureFor.table,
+            )
+          }
+        />
+      )}
+
+      {createFor && (
+        <CreateTableDialog
+          connId={createFor.connection.id}
+          database={createFor.database}
+          dialect={createFor.connection.dialect as Dialect}
+          onClose={() => setCreateFor(null)}
+          onCreated={() => refreshDatabase(createFor.connection, createFor.database)}
+        />
+      )}
+
+      {dropFor && (
+        <>
+          <div
+            onMouseDown={() => !dropBusy && setDropFor(null)}
+            style={{ position: "fixed", inset: 0, zIndex: 72, background: "var(--ov)" }}
+          />
+          <div
+            style={{
+              position: "fixed",
+              left: "50%",
+              top: "34%",
+              transform: "translateX(-50%)",
+              zIndex: 73,
+              width: 380,
+              maxWidth: "90vw",
+              padding: 16,
+              background: "var(--sf)",
+              border: "1px solid var(--bd2)",
+              borderRadius: 8,
+              boxShadow: "var(--sh)",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+              <i className="icon-trash-2" style={{ fontSize: 15, color: "var(--er)" }} />
+              <span style={{ fontSize: 13, fontWeight: 500 }}>Drop table</span>
+            </div>
+            <p style={{ margin: "0 0 14px", fontSize: 12, color: "var(--mu)", lineHeight: 1.5 }}>
+              Permanently drop{" "}
+              <code style={{ fontFamily: "var(--mono)" }}>
+                {dropFor.database}.{dropFor.table}
+              </code>{" "}
+              and all its data? This cannot be undone.
+            </p>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button
+                type="button"
+                className="v2-btn"
+                disabled={dropBusy}
+                onClick={() => setDropFor(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="v2-btn"
+                disabled={dropBusy}
+                onClick={() => {
+                  const target = dropFor;
+                  const sql = dropTableSql(
+                    target.connection.dialect as Dialect,
+                    target.database,
+                    target.table,
+                  );
+                  setDropBusy(true);
+                  void runQuery(target.connection.id, sql, 0, target.database)
+                    .then(() => {
+                      setDropFor(null);
+                      refreshDatabase(target.connection, target.database);
+                    })
+                    .catch((dropError) => storeError(errorMessage(dropError)))
+                    .finally(() => setDropBusy(false));
+                }}
+                style={{ background: "var(--er)", borderColor: "var(--er)", color: "#fff" }}
+              >
+                {dropBusy ? "Dropping…" : "Drop table"}
+              </button>
+            </div>
           </div>
         </>
       )}

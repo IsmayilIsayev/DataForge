@@ -1,13 +1,19 @@
 import { useEffect, useRef, useState } from "react";
-import type { KeyboardEvent } from "react";
+import type { KeyboardEvent, ReactNode } from "react";
 import { errorMessage, findInDatabase } from "../ipc";
 import type { SearchHit } from "../ipc";
+import { quoteIdentifier } from "../sql";
+import type { Dialect } from "../types";
 
 interface Props {
   connId: string;
   database: string;
+  dialect: Dialect;
+  /** When set, the search is scoped to just this one table. */
+  onlyTable?: string;
   onClose: () => void;
-  onOpenResult: (table: string) => void;
+  /** Opens the hit's table; `where` filters it to just the matching rows. */
+  onOpenResult: (table: string, where?: string) => void;
 }
 
 const KIND_META: Record<SearchHit["kind"], { icon: string; label: string }> = {
@@ -16,9 +22,29 @@ const KIND_META: Record<SearchHit["kind"], { icon: string; label: string }> = {
   data: { icon: "icon-search", label: "DATA" },
 };
 
+// Build a WHERE condition (no "WHERE" keyword) that filters a data hit's table
+// down to the rows that actually contain the term, in the matching column.
+function filterFor(
+  hit: SearchHit,
+  dialect: Dialect,
+  term: string,
+  caseInsensitive: boolean,
+): string | undefined {
+  if (hit.kind !== "data" || !hit.column) return undefined;
+  const escaped = term
+    .replace(/\\/g, "\\\\")
+    .replace(/%/g, "\\%")
+    .replace(/_/g, "\\_")
+    .replace(/'/g, "''");
+  const op = caseInsensitive && dialect === "postgres" ? "ILIKE" : "LIKE";
+  return `${quoteIdentifier(dialect, hit.column)} ${op} '%${escaped}%'`;
+}
+
 export default function FindDialog({
   connId,
   database,
+  dialect,
+  onlyTable,
   onClose,
   onOpenResult,
 }: Props) {
@@ -26,6 +52,9 @@ export default function FindDialog({
   const [caseInsensitive, setCaseInsensitive] = useState(true);
   const [includeData, setIncludeData] = useState(true);
   const [results, setResults] = useState<SearchHit[] | null>(null);
+  // The term the current results were produced with (so highlighting and the
+  // open-filter stay correct even if the user edits the box without re-running).
+  const [searchedTerm, setSearchedTerm] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -52,7 +81,9 @@ export default function FindDialog({
         value,
         caseInsensitive,
         includeData,
+        onlyTable,
       );
+      setSearchedTerm(value);
       setResults(hits);
     } catch (searchError) {
       setError(errorMessage(searchError));
@@ -69,7 +100,7 @@ export default function FindDialog({
   };
 
   const open = (hit: SearchHit) => {
-    onOpenResult(hit.table);
+    onOpenResult(hit.table, filterFor(hit, dialect, searchedTerm, caseInsensitive));
     onClose();
   };
 
@@ -123,7 +154,7 @@ export default function FindDialog({
               value={term}
               onChange={(event) => setTerm(event.target.value)}
               onKeyDown={onKeyDown}
-              placeholder={`Find in ${database}…`}
+              placeholder={`Find in ${onlyTable ? `${database}.${onlyTable}` : database}…`}
               spellCheck={false}
               style={{
                 flex: 1,
@@ -188,7 +219,7 @@ export default function FindDialog({
                 fontSize: 12.5,
               }}
             >
-              No matches for “{term.trim()}”.
+              No matches for “{searchedTerm}”.
             </div>
           )}
 
@@ -226,13 +257,16 @@ export default function FindDialog({
               <span
                 style={{
                   fontFamily: "var(--mono)",
-                  color: "var(--tx)",
                   whiteSpace: "nowrap",
                 }}
               >
-                {hit.table}
+                <span style={{ color: "var(--ac)", fontWeight: 600 }}>
+                  <Highlighted text={hit.table} term={searchedTerm} />
+                </span>
                 {hit.column ? (
-                  <span style={{ color: "var(--fa)" }}>.{hit.column}</span>
+                  <span style={{ color: "var(--fa)" }}>
+                    .<Highlighted text={hit.column} term={searchedTerm} />
+                  </span>
                 ) : null}
               </span>
               {hit.value && (
@@ -247,7 +281,7 @@ export default function FindDialog({
                     color: "var(--mu)",
                   }}
                 >
-                  {hit.value}
+                  <Highlighted text={hit.value} term={searchedTerm} />
                 </span>
               )}
             </div>
@@ -276,6 +310,40 @@ export default function FindDialog({
       </div>
     </>
   );
+}
+
+// Wraps every case-insensitive occurrence of `term` in an accent mark so the
+// matched text is easy to spot inside a table name, column, or row snippet.
+function Highlighted({ text, term }: { text: string; term: string }) {
+  const needle = term.trim();
+  if (!needle) return <>{text}</>;
+  const lower = text.toLowerCase();
+  const target = needle.toLowerCase();
+  const parts: ReactNode[] = [];
+  let from = 0;
+  let found = lower.indexOf(target, from);
+  if (found < 0) return <>{text}</>;
+  let key = 0;
+  while (found >= 0) {
+    if (found > from) parts.push(text.slice(from, found));
+    parts.push(
+      <mark
+        key={key++}
+        style={{
+          background: "var(--acs)",
+          color: "var(--ac)",
+          padding: "0 1px",
+          borderRadius: 2,
+        }}
+      >
+        {text.slice(found, found + needle.length)}
+      </mark>,
+    );
+    from = found + needle.length;
+    found = lower.indexOf(target, from);
+  }
+  if (from < text.length) parts.push(text.slice(from));
+  return <>{parts}</>;
 }
 
 function Toggle({

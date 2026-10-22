@@ -11,12 +11,14 @@ import type { CommandAction } from "./components/CommandPalette";
 import ConnectionDialog from "./components/ConnectionDialog";
 import DataGrid from "./components/DataGrid";
 import FindDialog from "./components/FindDialog";
+import HistoryDialog from "./components/HistoryDialog";
 import Sidebar from "./components/Sidebar";
 import SqlEditor from "./components/SqlEditor";
 import TableDataView from "./components/TableDataView";
 import {
   connectConnection,
   errorMessage,
+  exportResultXlsx,
   listConnectionStates,
   listConnections,
   runQuery,
@@ -72,7 +74,12 @@ export default function App() {
   const [appVersion, setAppVersion] = useState("0.1.0");
   const [sideOpen, setSideOpen] = useState(true);
   const [focusMode, setFocusMode] = useState(false);
-  const [findOpen, setFindOpen] = useState(false);
+  const [findOpen, setFindOpen] = useState<{
+    connId: string;
+    database: string;
+    table?: string;
+  } | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [sideW, setSideW] = useState(248);
   const [aiW, setAiW] = useState(320);
   const [editorH, setEditorH] = useState(236);
@@ -82,6 +89,56 @@ export default function App() {
     x: number;
     y: number;
   } | null>(null);
+  const [updateInfo, setUpdateInfo] = useState<{
+    version: string;
+    notes: string;
+  } | null>(null);
+  const [updateBusy, setUpdateBusy] = useState<string | null>(null);
+  // Holds the pending Update handle between "check" and "install" without
+  // forcing re-renders (the object is not serialisable React state).
+  const pendingUpdateRef = useRef<{
+    version: string;
+    body?: string;
+    downloadAndInstall: () => Promise<void>;
+  } | null>(null);
+
+  // Check GitHub for a newer release. `silent` suppresses the "up to date" /
+  // failure toasts used by the automatic startup check.
+  const checkForUpdates = useCallback(async (silent: boolean) => {
+    try {
+      const { check } = await import("@tauri-apps/plugin-updater");
+      const update = await check();
+      if (update) {
+        pendingUpdateRef.current = update as typeof pendingUpdateRef.current;
+        setUpdateInfo({ version: update.version, notes: update.body ?? "" });
+        if (silent) {
+          void notify("DataForge", `Update available: v${update.version}`);
+        }
+      } else {
+        pendingUpdateRef.current = null;
+        if (!silent) void notify("DataForge", "You're on the latest version.");
+      }
+    } catch (updateError) {
+      if (!silent) {
+        void notify("DataForge", "Update check failed: " + String(updateError));
+      }
+    }
+  }, []);
+
+  const installUpdate = useCallback(async () => {
+    const update = pendingUpdateRef.current;
+    if (!update) return;
+    setUpdateBusy("Downloading…");
+    try {
+      await update.downloadAndInstall();
+      setUpdateBusy("Restarting…");
+      const { relaunch } = await import("@tauri-apps/plugin-process");
+      await relaunch();
+    } catch (installError) {
+      setUpdateBusy(null);
+      void notify("DataForge", "Update failed: " + String(installError));
+    }
+  }, []);
 
   const activeConnection =
     connections.find((connection) => connection.id === activeConnId) ?? null;
@@ -98,6 +155,20 @@ export default function App() {
     document.documentElement.setAttribute("data-theme", theme);
     localStorage.setItem("dataforge-theme", theme);
   }, [theme]);
+
+  // Automatically check for a newer release shortly after launch, then once a
+  // day while the app stays open. Shows the in-app banner if one is found.
+  useEffect(() => {
+    const first = window.setTimeout(() => void checkForUpdates(true), 4000);
+    const daily = window.setInterval(
+      () => void checkForUpdates(true),
+      24 * 60 * 60 * 1000,
+    );
+    return () => {
+      window.clearTimeout(first);
+      window.clearInterval(daily);
+    };
+  }, [checkForUpdates]);
 
   useEffect(() => {
     let cancelled = false;
@@ -286,30 +357,7 @@ export default function App() {
       await bind("menu:zoom-out", () => applyZoom(zoom - 0.1));
       await bind("menu:zoom-reset", () => applyZoom(1));
       await bind("menu:check-updates", () => {
-        void (async () => {
-          try {
-            const { check } = await import("@tauri-apps/plugin-updater");
-            const update = await check();
-            if (update) {
-              await notify(
-                "DataForge",
-                `Downloading update ${update.version}…`,
-              );
-              await update.downloadAndInstall();
-              const { relaunch } = await import(
-                "@tauri-apps/plugin-process"
-              );
-              await relaunch();
-            } else {
-              await notify("DataForge", "You're on the latest version.");
-            }
-          } catch (updateError) {
-            await notify(
-              "DataForge",
-              "Update check failed: " + String(updateError),
-            );
-          }
-        })();
+        void checkForUpdates(false);
       });
     })();
 
@@ -453,6 +501,7 @@ export default function App() {
         return;
       }
 
+      store.pushQueryHistory(query);
       await executeSql(
         store.activeConnId,
         query,
@@ -673,13 +722,44 @@ export default function App() {
       run: () => {
         const store = useAppStore.getState();
         if (store.activeConnId && store.activeDb) {
-          setFindOpen(true);
+          setFindOpen({ connId: store.activeConnId, database: store.activeDb });
         } else {
           void notify(
             "DataForge",
             "Select a connection and database first.",
           );
         }
+      },
+    },
+    {
+      id: "query-history",
+      icon: "icon-history",
+      label: "Query history…",
+      group: "View",
+      run: () => setHistoryOpen(true),
+    },
+    {
+      id: "export-excel",
+      icon: "icon-sheet",
+      label: "Export result to Excel…",
+      group: "View",
+      run: () => {
+        const store = useAppStore.getState();
+        const result = store.result;
+        if (!result || result.columns.length === 0) {
+          void notify("DataForge", "No result to export — run a query first.");
+          return;
+        }
+        const active = store.tabs.find((item) => item.id === store.activeTabId);
+        const base =
+          active?.type === "table" ? active.table : "query-result";
+        void exportResultXlsx(result.columns, result.rows, `${base}.xlsx`)
+          .then((saved) => {
+            if (saved) void notify("DataForge", "Exported to Excel.");
+          })
+          .catch((error) =>
+            void notify("DataForge", "Export failed: " + errorMessage(error)),
+          );
       },
     },
     {
@@ -725,6 +805,67 @@ export default function App() {
         overflow: "hidden",
       }}
     >
+      {updateInfo && (
+        <div
+          style={{
+            flex: "none",
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            height: 34,
+            padding: "0 12px",
+            background: "var(--acd)",
+            color: "#fff",
+            fontSize: 12.5,
+          }}
+        >
+          <i className="icon-download" style={{ fontSize: 15 }} />
+          <span style={{ fontWeight: 500 }}>
+            Update available — DataForge v{updateInfo.version}
+          </span>
+          <div style={{ flex: 1 }} />
+          {updateBusy ? (
+            <span style={{ opacity: 0.9 }}>{updateBusy}</span>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={() => void installUpdate()}
+                style={{
+                  height: 22,
+                  padding: "0 12px",
+                  border: 0,
+                  borderRadius: 4,
+                  background: "#fff",
+                  color: "var(--acd)",
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: "default",
+                }}
+              >
+                Install &amp; Restart
+              </button>
+              <button
+                type="button"
+                onClick={() => setUpdateInfo(null)}
+                title="Dismiss until next launch"
+                style={{
+                  height: 22,
+                  padding: "0 10px",
+                  border: "1px solid rgba(255,255,255,.5)",
+                  borderRadius: 4,
+                  background: "transparent",
+                  color: "#fff",
+                  fontSize: 12,
+                  cursor: "default",
+                }}
+              >
+                Later
+              </button>
+            </>
+          )}
+        </div>
+      )}
       <div
         style={{
           height: 32,
@@ -905,6 +1046,9 @@ export default function App() {
           onNewConnection={openNewConnection}
           onEditConnection={openEditConnection}
           onOpenTable={handleOpenTable}
+          onFindInTable={(connId, database, table) =>
+            setFindOpen({ connId, database, table })
+          }
           width={sideOpen ? sideW : 0}
         />
 
@@ -1563,13 +1707,46 @@ export default function App() {
         onSaved={handleSaved}
       />
 
-      {findOpen && activeConnId && activeDb && (
+      {findOpen && (
         <FindDialog
-          connId={activeConnId}
-          database={activeDb}
-          onClose={() => setFindOpen(false)}
-          onOpenResult={(table) => {
-            useAppStore.getState().addTableTab(activeConnId, activeDb, table);
+          connId={findOpen.connId}
+          database={findOpen.database}
+          dialect={
+            connections.find((c) => c.id === findOpen.connId)?.dialect ??
+            "mysql"
+          }
+          onlyTable={findOpen.table}
+          onClose={() => setFindOpen(null)}
+          onOpenResult={(table, where) => {
+            const store = useAppStore.getState();
+            const tabId = store.addTableTab(
+              findOpen.connId,
+              findOpen.database,
+              table,
+              1000,
+              where ?? "",
+            );
+            const tab = useAppStore
+              .getState()
+              .tabs.find((item) => item.id === tabId);
+            if (tab?.type === "table") void loadTableData(tab);
+          }}
+        />
+      )}
+
+      {historyOpen && (
+        <HistoryDialog
+          onClose={() => setHistoryOpen(false)}
+          onPick={(sql) => {
+            const store = useAppStore.getState();
+            const active = store.tabs.find(
+              (item) => item.id === store.activeTabId,
+            );
+            if (active?.type === "query") {
+              store.setSql(sql);
+            } else {
+              store.addQueryTab(sql);
+            }
           }}
         />
       )}

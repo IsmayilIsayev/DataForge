@@ -3,7 +3,13 @@ import type { CSSProperties, KeyboardEvent, MouseEvent } from "react";
 import lockupOnLight from "../assets/lockup.png";
 import lockupOnDark from "../assets/lockup-light.png";
 import { copyText } from "../clipboard";
-import { errorMessage, updateCell } from "../ipc";
+import {
+  deleteRows as deleteRowsIpc,
+  errorMessage,
+  exportResultXlsx,
+  updateCell,
+} from "../ipc";
+import type { CellRef } from "../ipc";
 import { quoteIdentifier } from "../sql";
 import { useAppStore } from "../store";
 import type { CellValue, Dialect } from "../types";
@@ -184,6 +190,8 @@ export default function DataGrid({
   const [pretty, setPretty] = useState(true);
   const [gridMenu, setGridMenu] = useState<GridMenu | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     const columns = result?.columns.length ?? 0;
@@ -196,6 +204,7 @@ export default function DataGrid({
     setGridMenu(null);
     setCopied(null);
     setDragging(false);
+    setConfirmDelete(null);
   }, [viewKey, result]);
 
   useEffect(() => {
@@ -357,6 +366,59 @@ export default function DataGrid({
     }
   }
 
+  // Distinct rows covered by the current selection (whole rows, PK-based).
+  function selectedRowDisplayIndexes(): number[] {
+    if (!selection) return activeCell ? [activeCell.row] : [];
+    const indexes: number[] = [];
+    for (let row = selection.top; row <= selection.bottom; row++) {
+      if (row < sortedRows.length) indexes.push(row);
+    }
+    return indexes;
+  }
+
+  async function deleteSelectedRows() {
+    const displayIndexes = selectedRowDisplayIndexes();
+    if (!canEdit || !connId || !table || !result || displayIndexes.length === 0) {
+      setConfirmDelete(null);
+      return;
+    }
+
+    const pkList: CellRef[][] = [];
+    const sourceIndexes: number[] = [];
+    for (const displayIndex of displayIndexes) {
+      const source = sortedRows[displayIndex];
+      if (!source) continue;
+      const pk = (pkColumns ?? []).map((name) => {
+        const index = columns.indexOf(name);
+        const value = index >= 0 ? source.row[index] : null;
+        return {
+          column: name,
+          value: value === null || value === undefined ? null : String(value),
+        };
+      });
+      pkList.push(pk);
+      sourceIndexes.push(source.index);
+    }
+
+    setDeleting(true);
+    try {
+      const affected = await deleteRowsIpc(connId, database ?? "", table, pkList);
+      const drop = new Set(sourceIndexes);
+      const rows = result.rows.filter((_, index) => !drop.has(index));
+      setResult({ ...result, rows });
+      setError(null);
+      setAnchor(null);
+      setFocus(null);
+      setCopied(`Deleted ${affected} row(s)`);
+    } catch (deleteError) {
+      setError(errorMessage(deleteError));
+      setCopied("Delete denied");
+    } finally {
+      setDeleting(false);
+      setConfirmDelete(null);
+    }
+  }
+
   function selectRow(event: MouseEvent<HTMLDivElement>, row: number) {
     if (event.button !== 0) return;
     event.preventDefault();
@@ -491,6 +553,25 @@ export default function DataGrid({
     const value = sortedRows[viewer.row].row[viewer.col] ?? null;
     const ok = await copyText(prettyValue(value, pretty));
     setCopied(ok ? "Copied cell" : "Copy failed");
+  }
+
+  async function exportExcel() {
+    if (!result || result.columns.length === 0) return;
+    const base =
+      table ?? tableFromSql(sql).table ?? "query-result";
+    setGridMenu(null);
+    setCopied("Exporting…");
+    try {
+      const saved = await exportResultXlsx(
+        result.columns,
+        result.rows,
+        `${base}.xlsx`,
+      );
+      setCopied(saved ? "Exported to Excel" : "Export cancelled");
+    } catch (exportError) {
+      setError(errorMessage(exportError));
+      setCopied("Export failed");
+    }
   }
 
   function handleGridKeyDown(event: KeyboardEvent<HTMLDivElement>) {
@@ -1095,6 +1176,31 @@ export default function DataGrid({
             <i className="icon-copy" style={{ fontSize: 13 }} />
             <span>Copy</span>
           </button>
+          <button
+            type="button"
+            className="v2-icon-btn"
+            onClick={() => void exportExcel()}
+            title="Export the loaded rows to an Excel file"
+            disabled={!hasColumns}
+            style={{
+              height: 24,
+              flex: "none",
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              padding: "0 6px",
+              border: 0,
+              borderRadius: 4,
+              background: "transparent",
+              color: hasColumns ? "var(--mu)" : "var(--fa)",
+              opacity: hasColumns ? 1 : 0.45,
+              fontSize: 12,
+              cursor: "default",
+            }}
+          >
+            <i className="icon-sheet" style={{ fontSize: 13 }} />
+            <span>Excel</span>
+          </button>
         </div>
       )}
 
@@ -1195,6 +1301,11 @@ export default function DataGrid({
               }}
             />
             <GridMenuItem
+              icon="icon-sheet"
+              label="Export to Excel…"
+              onClick={() => void exportExcel()}
+            />
+            <GridMenuItem
               icon="icon-type"
               label="Copy cell value"
               onClick={() => {
@@ -1202,6 +1313,89 @@ export default function DataGrid({
                 void copyActiveCell();
               }}
             />
+            {canEdit && (
+              <>
+                <div
+                  style={{
+                    height: 1,
+                    background: "var(--bd)",
+                    margin: "4px -4px",
+                  }}
+                />
+                <GridMenuItem
+                  icon="icon-trash-2"
+                  label={(() => {
+                    const count = selectedRowDisplayIndexes().length;
+                    return count > 1 ? `Delete ${count} rows` : "Delete row";
+                  })()}
+                  destructive
+                  onClick={() => {
+                    const count = selectedRowDisplayIndexes().length;
+                    setGridMenu(null);
+                    if (count > 0) setConfirmDelete(count);
+                  }}
+                />
+              </>
+            )}
+          </div>
+        </>
+      )}
+
+      {confirmDelete !== null && (
+        <>
+          <div
+            onMouseDown={() => !deleting && setConfirmDelete(null)}
+            style={{ position: "fixed", inset: 0, zIndex: 72, background: "var(--ov)" }}
+          />
+          <div
+            style={{
+              position: "fixed",
+              left: "50%",
+              top: "32%",
+              transform: "translateX(-50%)",
+              zIndex: 73,
+              width: 360,
+              maxWidth: "90vw",
+              padding: 16,
+              background: "var(--sf)",
+              border: "1px solid var(--bd2)",
+              borderRadius: 8,
+              boxShadow: "var(--sh)",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+              <i className="icon-trash-2" style={{ fontSize: 15, color: "var(--er)" }} />
+              <span style={{ fontSize: 13, fontWeight: 500 }}>
+                Delete {confirmDelete} row{confirmDelete > 1 ? "s" : ""}?
+              </span>
+            </div>
+            <p style={{ margin: "0 0 14px", fontSize: 12, color: "var(--mu)", lineHeight: 1.5 }}>
+              This runs <code style={{ fontFamily: "var(--mono)" }}>DELETE</code> against the live
+              database and cannot be undone.
+            </p>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button
+                type="button"
+                className="v2-btn"
+                onClick={() => setConfirmDelete(null)}
+                disabled={deleting}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="v2-btn"
+                onClick={() => void deleteSelectedRows()}
+                disabled={deleting}
+                style={{
+                  background: "var(--er)",
+                  borderColor: "var(--er)",
+                  color: "#fff",
+                }}
+              >
+                {deleting ? "Deleting…" : "Delete"}
+              </button>
+            </div>
           </div>
         </>
       )}
@@ -1228,11 +1422,13 @@ function GridMenuItem({
   icon,
   label,
   kbd,
+  destructive,
   onClick,
 }: {
   icon: string;
   label: string;
   kbd?: string;
+  destructive?: boolean;
   onClick: () => void;
 }) {
   return (
@@ -1249,14 +1445,19 @@ function GridMenuItem({
         padding: "0 8px",
         border: 0,
         borderRadius: 4,
-        color: "var(--tx)",
+        color: destructive ? "var(--er)" : "var(--tx)",
         textAlign: "left",
         cursor: "default",
       }}
     >
       <i
         className={icon}
-        style={{ width: 14, flex: "none", fontSize: 13, color: "var(--mu)" }}
+        style={{
+          width: 14,
+          flex: "none",
+          fontSize: 13,
+          color: destructive ? "var(--er)" : "var(--mu)",
+        }}
       />
       <span style={{ flex: 1, whiteSpace: "nowrap" }}>{label}</span>
       {kbd && (

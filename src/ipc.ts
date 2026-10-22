@@ -3,6 +3,7 @@ import type {
   AiConfig,
   AiExplainResult,
   AiProvider,
+  CellValue,
   ColumnInfo,
   ConnectionInput,
   ConnectionMeta,
@@ -93,6 +94,7 @@ export const findInDatabase = (
   term: string,
   caseInsensitive: boolean,
   includeData: boolean,
+  onlyTable?: string,
 ) =>
   invoke<SearchHit[]>("find_in_database", {
     conn_id: connId,
@@ -100,6 +102,18 @@ export const findInDatabase = (
     term,
     case_insensitive: caseInsensitive,
     include_data: includeData,
+    only_table: onlyTable ?? null,
+  });
+
+export const exportResultXlsx = (
+  columns: string[],
+  rows: CellValue[][],
+  defaultName: string,
+) =>
+  invoke<string | null>("export_result_xlsx", {
+    columns,
+    rows,
+    default_name: defaultName,
   });
 
 export interface CellRef {
