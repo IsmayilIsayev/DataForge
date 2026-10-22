@@ -41,12 +41,13 @@ pub struct AiConfigView {
 #[tauri::command(rename_all = "snake_case")]
 pub async fn ai_get_config(state: State<'_, AppState>) -> AppResult<AiConfigView> {
     let settings = state.ai_settings().await;
+    let has_key = settings.key_matches_scope() && secrets::has_api_key();
     Ok(AiConfigView {
         provider: settings.provider,
         model: settings.model,
         base_url: settings.base_url,
         schema_token_budget: settings.schema_token_budget,
-        has_key: settings.key_matches_scope() && secrets::has_api_key(),
+        has_key,
     })
 }
 
