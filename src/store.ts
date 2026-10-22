@@ -58,6 +58,8 @@ interface AppStore {
     limit?: number,
   ) => string;
   closeTab: (id: string) => void;
+  closeAllTabs: () => void;
+  reorderTabs: (fromId: string, toId: string) => void;
   setActiveTab: (id: string) => void;
   setTableLimit: (id: string, limit: number) => void;
   setTableWhere: (id: string, where: string) => void;
@@ -219,6 +221,38 @@ export const useAppStore = create<AppStore>((set, get) => ({
       running: view.running,
     });
   },
+  closeAllTabs: () =>
+    set((state) => {
+      const id = `tab-${state.nextTab}`;
+      const tab: QueryTab = {
+        id,
+        type: "query",
+        name: `Query ${state.nextTab}`,
+        sql: "",
+        dirty: false,
+      };
+      return {
+        tabs: [tab],
+        tabStates: { [id]: emptyView() },
+        activeTabId: id,
+        nextTab: state.nextTab + 1,
+        sql: "",
+        selection: null,
+        result: null,
+        error: null,
+        running: false,
+      };
+    }),
+  reorderTabs: (fromId, toId) =>
+    set((state) => {
+      const tabs = [...state.tabs];
+      const from = tabs.findIndex((tab) => tab.id === fromId);
+      const to = tabs.findIndex((tab) => tab.id === toId);
+      if (from === -1 || to === -1 || from === to) return {};
+      const [moved] = tabs.splice(from, 1);
+      tabs.splice(to, 0, moved);
+      return { tabs };
+    }),
   setActiveTab: (id) => {
     const state = get();
     const tab = state.tabs.find((item) => item.id === id);

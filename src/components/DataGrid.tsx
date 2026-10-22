@@ -3,6 +3,7 @@ import type { CSSProperties, KeyboardEvent, MouseEvent } from "react";
 import lockupOnLight from "../assets/lockup.png";
 import lockupOnDark from "../assets/lockup-light.png";
 import { copyText } from "../clipboard";
+import { errorMessage, updateCell } from "../ipc";
 import { quoteIdentifier } from "../sql";
 import { useAppStore } from "../store";
 import type { CellValue, Dialect } from "../types";
@@ -20,6 +21,9 @@ interface Props {
   sql?: string;
   emptyText?: string;
   theme: "dark" | "light";
+  connId?: string;
+  editable?: boolean;
+  pkColumns?: string[];
 }
 
 interface Position {
@@ -151,10 +155,17 @@ export default function DataGrid({
   sql,
   emptyText,
   theme,
+  connId,
+  editable,
+  pkColumns,
 }: Props) {
   const result = useAppStore((state) => state.result);
   const running = useAppStore((state) => state.running);
   const error = useAppStore((state) => state.error);
+  const setResult = useAppStore((state) => state.setResult);
+  const setError = useAppStore((state) => state.setError);
+  const [editing, setEditing] = useState<Position | null>(null);
+  const [editText, setEditText] = useState("");
 
   const gridRef = useRef<HTMLDivElement>(null);
   const resizingRef = useRef(false);
@@ -288,6 +299,62 @@ export default function DataGrid({
   function enterCell(row: number, col: number) {
     if (!dragging) return;
     setFocus({ row, col });
+  }
+
+  const canEdit =
+    !!editable &&
+    !!connId &&
+    !!table &&
+    Array.isArray(pkColumns) &&
+    pkColumns.length > 0;
+
+  function startEdit(rowDisplay: number, columnActual: number) {
+    const source = sortedRows[rowDisplay];
+    if (!source) return;
+    const raw = source.row[columnActual];
+    setEditing({ row: rowDisplay, col: columnActual });
+    setEditText(raw === null || raw === undefined ? "" : String(raw));
+    setViewer(null);
+    setGridMenu(null);
+  }
+
+  async function commitEdit() {
+    const current = editing;
+    setEditing(null);
+    if (!current || !canEdit || !connId || !table || !result) return;
+
+    const source = sortedRows[current.row];
+    const columnName = columns[current.col];
+    if (!source || !columnName) return;
+
+    const original = source.row[current.col] ?? null;
+    const next = editText;
+    if ((original === null && next === "") || String(original ?? "") === next) {
+      return; // no change
+    }
+
+    const pk = (pkColumns ?? []).map((name) => {
+      const index = columns.indexOf(name);
+      const value = index >= 0 ? source.row[index] : null;
+      return {
+        column: name,
+        value: value === null || value === undefined ? null : String(value),
+      };
+    });
+
+    try {
+      await updateCell(connId, database ?? "", table, pk, columnName, next);
+      const rows = result.rows.map((row) => row.slice());
+      rows[source.index][current.col] = next;
+      setResult({ ...result, rows });
+      setError(null);
+      setCopied("Updated");
+    } catch (updateError) {
+      // Surface the real DB error (e.g. a read-only user without UPDATE rights)
+      // in the table's error bar, and keep the cell's original value.
+      setError(errorMessage(updateError));
+      setCopied("Dəyişiklik rədd edildi");
+    }
   }
 
   function selectRow(event: MouseEvent<HTMLDivElement>, row: number) {
@@ -732,8 +799,12 @@ export default function DataGrid({
                         onMouseDown={(event) => selectCell(event, rowIndex, columnPosition)}
                         onMouseEnter={() => enterCell(rowIndex, columnPosition)}
                         onDoubleClick={() => {
-                          setViewer({ row: rowIndex, col: column });
-                          setGridMenu(null);
+                          if (canEdit) {
+                            startEdit(rowIndex, column);
+                          } else {
+                            setViewer({ row: rowIndex, col: column });
+                            setGridMenu(null);
+                          }
                         }}
                         onContextMenu={(event) =>
                           openContextMenu(event, rowIndex, columnPosition)
@@ -763,7 +834,41 @@ export default function DataGrid({
                         }}
                         title={displayValue(value)}
                       >
-                        {displayValue(value)}
+                        {editing &&
+                        editing.row === rowIndex &&
+                        editing.col === column ? (
+                          <input
+                            autoFocus
+                            value={editText}
+                            onChange={(event) =>
+                              setEditText(event.target.value)
+                            }
+                            onMouseDown={(event) => event.stopPropagation()}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") {
+                                event.preventDefault();
+                                void commitEdit();
+                              } else if (event.key === "Escape") {
+                                event.preventDefault();
+                                setEditing(null);
+                              }
+                            }}
+                            onBlur={() => void commitEdit()}
+                            style={{
+                              width: "100%",
+                              height: ROW_HEIGHT - 2,
+                              border: "1px solid var(--ac)",
+                              borderRadius: 2,
+                              background: "var(--bg)",
+                              color: "var(--tx)",
+                              font: "inherit",
+                              padding: "0 6px",
+                              outline: "none",
+                            }}
+                          />
+                        ) : (
+                          displayValue(value)
+                        )}
                       </div>
                     );
                   })}

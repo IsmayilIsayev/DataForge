@@ -58,6 +58,9 @@ fn setup_native_menu(app: &tauri::App) -> tauri::Result<()> {
         .build()?;
 
     let edit = SubmenuBuilder::new(app, "Edit")
+        .undo()
+        .redo()
+        .separator()
         .copy()
         .paste()
         .select_all()
@@ -66,10 +69,45 @@ fn setup_native_menu(app: &tauri::App) -> tauri::Result<()> {
     let toggle_theme = MenuItemBuilder::with_id("toggle-theme", "Toggle Theme").build(app)?;
     let toggle_ai = MenuItemBuilder::with_id("toggle-ai", "Toggle AI Panel").build(app)?;
     let toggle_sidebar = MenuItemBuilder::with_id("toggle-sidebar", "Toggle Sidebar").build(app)?;
+    let reload = MenuItemBuilder::with_id("reload", "Reload")
+        .accelerator("CmdOrCtrl+R")
+        .build(app)?;
+    let fullscreen = MenuItemBuilder::with_id("toggle-fullscreen", "Toggle Full Screen")
+        .accelerator("F11")
+        .build(app)?;
+    let zoom_in = MenuItemBuilder::with_id("zoom-in", "Zoom In")
+        .accelerator("CmdOrCtrl+Plus")
+        .build(app)?;
+    let zoom_out = MenuItemBuilder::with_id("zoom-out", "Zoom Out")
+        .accelerator("CmdOrCtrl+-")
+        .build(app)?;
+    let zoom_reset = MenuItemBuilder::with_id("zoom-reset", "Reset Zoom")
+        .accelerator("CmdOrCtrl+0")
+        .build(app)?;
+    let minimize = MenuItemBuilder::with_id("minimize", "Minimize")
+        .accelerator("CmdOrCtrl+M")
+        .build(app)?;
+    let devtools = MenuItemBuilder::with_id("toggle-devtools", "Toggle Developer Tools")
+        .accelerator("F12")
+        .build(app)?;
+    let close_all = MenuItemBuilder::with_id("close-all-tabs", "Close All Tabs")
+        .accelerator("CmdOrCtrl+Shift+W")
+        .build(app)?;
     let view = SubmenuBuilder::new(app, "View")
         .item(&toggle_theme)
         .item(&toggle_ai)
         .item(&toggle_sidebar)
+        .separator()
+        .item(&reload)
+        .item(&fullscreen)
+        .item(&zoom_in)
+        .item(&zoom_out)
+        .item(&zoom_reset)
+        .separator()
+        .item(&minimize)
+        .item(&devtools)
+        .separator()
+        .item(&close_all)
         .build()?;
 
     let about = MenuItemBuilder::with_id("about", "About DataForge").build(app)?;
@@ -108,6 +146,41 @@ fn setup_native_menu(app: &tauri::App) -> tauri::Result<()> {
             }
             "check-updates" => {
                 let _ = app.emit("menu:check-updates", ());
+            }
+            "reload" => {
+                let _ = app.emit("menu:reload", ());
+            }
+            "close-all-tabs" => {
+                let _ = app.emit("menu:close-all-tabs", ());
+            }
+            "zoom-in" => {
+                let _ = app.emit("menu:zoom-in", ());
+            }
+            "zoom-out" => {
+                let _ = app.emit("menu:zoom-out", ());
+            }
+            "zoom-reset" => {
+                let _ = app.emit("menu:zoom-reset", ());
+            }
+            "toggle-fullscreen" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let full = window.is_fullscreen().unwrap_or(false);
+                    let _ = window.set_fullscreen(!full);
+                }
+            }
+            "minimize" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.minimize();
+                }
+            }
+            "toggle-devtools" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    if window.is_devtools_open() {
+                        window.close_devtools();
+                    } else {
+                        window.open_devtools();
+                    }
+                }
             }
             _ => {}
         }
@@ -192,6 +265,9 @@ pub fn run() {
             commands::query::list_tables,
             commands::query::list_columns,
             commands::query::get_schema,
+            commands::edit::update_cell,
+            commands::edit::insert_row,
+            commands::edit::delete_rows,
             commands::ai::ai_nl2sql,
             commands::ai::ai_explain,
             commands::ai::ai_get_config,

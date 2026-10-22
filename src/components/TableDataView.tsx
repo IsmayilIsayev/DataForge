@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { KeyboardEvent } from "react";
 import DataGrid from "./DataGrid";
+import { listColumns } from "../ipc";
 import type { TableTab } from "../store";
 import { useAppStore } from "../store";
 
@@ -15,10 +16,29 @@ export default function TableDataView({ tab, onRefresh, theme }: Props) {
   const connections = useAppStore((state) => state.connections);
   const setTableWhere = useAppStore((state) => state.setTableWhere);
   const [where, setWhere] = useState(tab.where);
+  const [pkColumns, setPkColumns] = useState<string[]>([]);
 
   useEffect(() => {
     setWhere(tab.where);
   }, [tab.id, tab.where]);
+
+  useEffect(() => {
+    let cancelled = false;
+    listColumns(tab.connectionId, tab.database, tab.table)
+      .then((columns) => {
+        if (!cancelled) {
+          setPkColumns(
+            columns.filter((c) => c.key === "PRI").map((c) => c.name),
+          );
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setPkColumns([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tab.connectionId, tab.database, tab.table]);
 
   const dialect =
     connections.find((connection) => connection.id === tab.connectionId)
@@ -55,6 +75,11 @@ export default function TableDataView({ tab, onRefresh, theme }: Props) {
         />
         <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>
           {tab.database}.{tab.table}
+        </span>
+        <span style={{ fontSize: 11, color: "var(--fa)" }}>
+          {pkColumns.length > 0
+            ? "· 2 klik = redaktə"
+            : "· read-only (PK yox)"}
         </span>
         <div
           style={{ width: 1, height: 14, background: "var(--bd)" }}
@@ -152,6 +177,9 @@ export default function TableDataView({ tab, onRefresh, theme }: Props) {
         dialect={dialect}
         database={tab.database}
         table={tab.table}
+        connId={tab.connectionId}
+        editable={pkColumns.length > 0}
+        pkColumns={pkColumns}
         emptyText="No table data loaded"
         theme={theme}
       />

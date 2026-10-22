@@ -80,6 +80,54 @@ export const getSchema = (connId: string, database: string) =>
     database,
   });
 
+export interface CellRef {
+  column: string;
+  value: string | null;
+}
+
+export const updateCell = (
+  connId: string,
+  database: string,
+  table: string,
+  pk: CellRef[],
+  column: string,
+  value: string | null,
+) =>
+  invoke<number>("update_cell", {
+    conn_id: connId,
+    database,
+    table,
+    pk,
+    column,
+    value,
+  });
+
+export const insertRow = (
+  connId: string,
+  database: string,
+  table: string,
+  values: CellRef[],
+) =>
+  invoke<number>("insert_row", {
+    conn_id: connId,
+    database,
+    table,
+    values,
+  });
+
+export const deleteRows = (
+  connId: string,
+  database: string,
+  table: string,
+  rows: CellRef[][],
+) =>
+  invoke<number>("delete_rows", {
+    conn_id: connId,
+    database,
+    table,
+    rows,
+  });
+
 export const aiNl2Sql = (
   connId: string,
   question: string,

@@ -130,6 +130,64 @@ function defaultPort(dialect: DialectOption) {
   return "";
 }
 
+/** Parse a connection URL (postgresql://, mysql://, sqlite://) into form fields. */
+function parseConnectionUrl(raw: string): {
+  dialect: DialectOption;
+  host: string;
+  port: string;
+  username: string;
+  password: string;
+  database: string;
+  sslMode?: string;
+} | null {
+  const text = raw.trim();
+  const schemeMatch = text.match(/^([a-zA-Z][\w+.-]*):\/\//);
+  if (!schemeMatch) return null;
+  const scheme = schemeMatch[1].toLowerCase();
+
+  let dialect: DialectOption | null = null;
+  if (scheme === "postgres" || scheme === "postgresql") dialect = "postgres";
+  else if (scheme === "mysql" || scheme === "mariadb") dialect = "mysql";
+  else if (scheme === "sqlite" || scheme === "sqlite3") dialect = "sqlite";
+  if (!dialect) return null;
+
+  const decode = (value: string) => {
+    try {
+      return decodeURIComponent(value);
+    } catch {
+      return value;
+    }
+  };
+
+  if (dialect === "sqlite") {
+    return {
+      dialect,
+      host: "",
+      port: "",
+      username: "",
+      password: "",
+      database: decode(text.replace(/^sqlite3?:(\/\/)?/i, "")),
+    };
+  }
+
+  let url: URL;
+  try {
+    url = new URL(text.replace(/^[a-zA-Z][\w+.-]*:\/\//, "http://"));
+  } catch {
+    return null;
+  }
+
+  return {
+    dialect,
+    host: url.hostname,
+    port: url.port || defaultPort(dialect),
+    username: decode(url.username),
+    password: decode(url.password),
+    database: decode(url.pathname.replace(/^\//, "")),
+    sslMode: url.searchParams.get("sslmode") ?? undefined,
+  };
+}
+
 function buildInput(
   form: FormState,
   dialect: DialectOption,
@@ -302,6 +360,24 @@ export default function ConnectionDialog({
   const [dialect, setDialect] = useState<DialectOption>("mysql");
   const [form, setForm] = useState<FormState>(initialForm);
   const [extra, setExtra] = useState<ExtraState>(initialExtra);
+
+  const applyUrl = (raw: string) => {
+    const parsed = parseConnectionUrl(raw);
+    if (!parsed) return;
+    setDialect(parsed.dialect);
+    setForm((current) => ({
+      ...current,
+      host: parsed.host || current.host,
+      port: parsed.port || current.port,
+      username: parsed.username || current.username,
+      password: parsed.password || current.password,
+      database: parsed.database || current.database,
+      name: current.name.trim() || parsed.database || parsed.host,
+    }));
+    if (parsed.sslMode) {
+      setExtra((current) => ({ ...current, sslMode: parsed.sslMode as string }));
+    }
+  };
   const [status, setStatus] = useState<Status>(null);
   const [busy, setBusy] = useState<"test" | "save" | null>(null);
   const [browsing, setBrowsing] = useState(false);
@@ -688,6 +764,15 @@ export default function ConnectionDialog({
               </>
             ) : (
               <>
+                <Row label="Connection URL">
+                  <input
+                    onChange={(event) => applyUrl(event.target.value)}
+                    placeholder="postgresql://user:pass@host:5432/db?sslmode=require"
+                    spellCheck={false}
+                    className={inputClass}
+                    style={{ ...mono, height: 26, flex: 1, minWidth: 0, padding: "0 8px", background: "var(--bg)", border: "1px solid var(--bd2)", borderRadius: 4, color: "var(--tx)", fontSize: 12.5 }}
+                  />
+                </Row>
                 <Row label="Connection name">
                   <input
                     autoFocus

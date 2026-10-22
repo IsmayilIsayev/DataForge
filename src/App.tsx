@@ -263,6 +263,21 @@ export default function App() {
       await bind("menu:about", () => {
         setAboutOpen(true);
       });
+
+      let zoom = 1;
+      const applyZoom = (next: number) => {
+        zoom = Math.min(2, Math.max(0.5, Math.round(next * 100) / 100));
+        document.body.style.zoom = String(zoom);
+      };
+      await bind("menu:reload", () => {
+        window.location.reload();
+      });
+      await bind("menu:close-all-tabs", () => {
+        useAppStore.getState().closeAllTabs();
+      });
+      await bind("menu:zoom-in", () => applyZoom(zoom + 0.1));
+      await bind("menu:zoom-out", () => applyZoom(zoom - 0.1));
+      await bind("menu:zoom-reset", () => applyZoom(1));
       await bind("menu:check-updates", () => {
         void (async () => {
           try {
@@ -893,6 +908,19 @@ export default function App() {
               return (
                 <div
                   key={tab.id}
+                  draggable
+                  onDragStart={(event) => {
+                    event.dataTransfer.effectAllowed = "move";
+                    event.dataTransfer.setData("text/plain", tab.id);
+                  }}
+                  onDragOver={(event) => event.preventDefault()}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    const fromId = event.dataTransfer.getData("text/plain");
+                    if (fromId && fromId !== tab.id) {
+                      useAppStore.getState().reorderTabs(fromId, tab.id);
+                    }
+                  }}
                   onClick={() =>
                     useAppStore.getState().setActiveTab(tab.id)
                   }
