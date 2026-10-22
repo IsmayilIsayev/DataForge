@@ -18,6 +18,11 @@ const INDEX_WIDTH = 44;
 const DEFAULT_COL_WIDTH = 160;
 const MIN_COL_WIDTH = 56;
 const ROW_HEIGHT = 22;
+const LONG_TEXT_LENGTH = 60;
+const MIN_VIEWER_WIDTH = 280;
+const MIN_VIEWER_HEIGHT = 120;
+const VIEWER_MAX_RATIO = 0.7;
+const VIEWER_RESIZE_STEP = 16;
 
 interface Props {
   viewKey: string;
@@ -80,6 +85,30 @@ function cellType(value: CellValue): string {
     }
   }
   return "text";
+}
+
+const MONO_FONT =
+  '12px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace';
+let measureContext: CanvasRenderingContext2D | null | undefined;
+
+function measureText(text: string): number {
+  if (measureContext === undefined) {
+    measureContext = document.createElement("canvas").getContext("2d");
+  }
+  if (!measureContext) return text.length * 7;
+  measureContext.font = MONO_FONT;
+  return measureContext.measureText(text).width;
+}
+
+// Long values are easier to read in the viewer panel than in the grid cell.
+// "Wider than the column" is measured with the grid's 12px mono font plus the
+// 8px padding on each side.
+function isLongValue(value: CellValue, columnWidth: number): boolean {
+  if (typeof value !== "string") return false;
+  if (value.length > LONG_TEXT_LENGTH) return true;
+  if (/[\r\n]/.test(value)) return true;
+  if (cellType(value) === "json") return true;
+  return measureText(value) + 16 > columnWidth;
 }
 
 function prettyValue(value: CellValue, pretty: boolean): string {
@@ -179,6 +208,8 @@ export default function DataGrid({
   const error = useAppStore((state) => state.error);
   const setResult = useAppStore((state) => state.setResult);
   const setError = useAppStore((state) => state.setError);
+  const viewerPrefs = useAppStore((state) => state.viewerPrefs);
+  const setViewerPref = useAppStore((state) => state.setViewerPref);
   const [editing, setEditing] = useState<Position | null>(null);
   const [editText, setEditText] = useState("");
 
@@ -195,6 +226,11 @@ export default function DataGrid({
   const [dragCol, setDragCol] = useState<number | null>(null);
   const [overCol, setOverCol] = useState<number | null>(null);
   const [viewer, setViewer] = useState<ViewerState | null>(null);
+  const [viewerSize, setViewerSize] = useState(() =>
+    viewerPrefs.dock === "right"
+      ? viewerPrefs.rightWidth
+      : viewerPrefs.bottomHeight,
+  );
   const [wrap, setWrap] = useState(true);
   const [pretty, setPretty] = useState(true);
   const [gridMenu, setGridMenu] = useState<GridMenu | null>(null);
@@ -228,6 +264,14 @@ export default function DataGrid({
     const timer = window.setTimeout(() => setCopied(null), 1500);
     return () => window.clearTimeout(timer);
   }, [copied]);
+
+  useEffect(() => {
+    setViewerSize(
+      viewerPrefs.dock === "right"
+        ? viewerPrefs.rightWidth
+        : viewerPrefs.bottomHeight,
+    );
+  }, [viewerPrefs.dock, viewerPrefs.rightWidth, viewerPrefs.bottomHeight]);
 
   useEffect(() => {
     if (!viewer && !gridMenu) return;
@@ -309,7 +353,9 @@ export default function DataGrid({
       setAnchor({ row, col });
       setFocus({ row, col });
     }
-    setViewer(null);
+    setViewer((current) =>
+      current ? { row, col: order[col] ?? col } : null,
+    );
     setGridMenu(null);
     setDragging(true);
   }
@@ -590,7 +636,42 @@ export default function DataGrid({
   function handleGridKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     const mod = event.metaKey || event.ctrlKey;
     const key = event.key.toLowerCase();
-    if (!mod) return;
+    if (!mod) {
+      if (editing) return;
+      let rowDelta = 0;
+      let colDelta = 0;
+      if (event.key === "ArrowUp") rowDelta = -1;
+      else if (event.key === "ArrowDown") rowDelta = 1;
+      else if (event.key === "ArrowLeft") colDelta = -1;
+      else if (event.key === "ArrowRight") colDelta = 1;
+      else return;
+      if (sortedRows.length === 0 || order.length === 0) return;
+      event.preventDefault();
+      const current = focus ?? anchor ?? { row: 0, col: 0 };
+      const next = {
+        row: Math.max(
+          0,
+          Math.min(sortedRows.length - 1, current.row + rowDelta),
+        ),
+        col: Math.max(0, Math.min(order.length - 1, current.col + colDelta)),
+      };
+      if (event.shiftKey && anchor) {
+        setFocus(next);
+      } else {
+        setAnchor(next);
+        setFocus(next);
+      }
+      if (viewer) {
+        const actual = order[next.col];
+        if (actual !== undefined) {
+          setViewer({ row: next.row, col: actual });
+        }
+      }
+      gridRef.current
+        ?.querySelector<HTMLElement>(`[data-cell="${next.row}:${next.col}"]`)
+        ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+      return;
+    }
     if (key === "a") {
       event.preventDefault();
       if (sortedRows.length === 0 || columns.length === 0) return;
@@ -636,6 +717,80 @@ export default function DataGrid({
     window.addEventListener("mouseup", onUp);
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
+  }
+
+  function viewerSizeLimit(dock: "right" | "bottom"): number {
+    const container = gridRef.current?.parentElement;
+    if (!container) return Number.POSITIVE_INFINITY;
+    const size =
+      dock === "right" ? container.clientWidth : container.clientHeight;
+    return Math.max(0, size) * VIEWER_MAX_RATIO;
+  }
+
+  function clampViewerSize(dock: "right" | "bottom", size: number): number {
+    const min = dock === "right" ? MIN_VIEWER_WIDTH : MIN_VIEWER_HEIGHT;
+    const max = viewerSizeLimit(dock);
+    return Math.max(min, Math.min(size, Math.max(min, max)));
+  }
+
+  function startViewerResize(event: MouseEvent<HTMLDivElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    const dock = viewerPrefs.dock;
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const startSize = viewerSize;
+
+    const nextSize = (clientX: number, clientY: number) => {
+      const delta = dock === "right" ? startX - clientX : startY - clientY;
+      return clampViewerSize(dock, startSize + delta);
+    };
+
+    const onMove = (moveEvent: globalThis.MouseEvent) => {
+      setViewerSize(nextSize(moveEvent.clientX, moveEvent.clientY));
+    };
+
+    const onUp = (upEvent: globalThis.MouseEvent) => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      const next = nextSize(upEvent.clientX, upEvent.clientY);
+      setViewerSize(next);
+      setViewerPref(
+        dock === "right" ? { rightWidth: next } : { bottomHeight: next },
+      );
+    };
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    document.body.style.cursor = dock === "right" ? "col-resize" : "row-resize";
+    document.body.style.userSelect = "none";
+  }
+
+  function handleViewerResizeKey(event: KeyboardEvent<HTMLDivElement>) {
+    const dock = viewerPrefs.dock;
+    let delta = 0;
+    if (dock === "right") {
+      if (event.key === "ArrowLeft") delta = VIEWER_RESIZE_STEP;
+      else if (event.key === "ArrowRight") delta = -VIEWER_RESIZE_STEP;
+    } else if (event.key === "ArrowUp") {
+      delta = VIEWER_RESIZE_STEP;
+    } else if (event.key === "ArrowDown") {
+      delta = -VIEWER_RESIZE_STEP;
+    }
+    if (delta === 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const next = clampViewerSize(dock, viewerSize + delta);
+    setViewerSize(next);
+    setViewerPref(
+      dock === "right" ? { rightWidth: next } : { bottomHeight: next },
+    );
+  }
+
+  function toggleViewerDock() {
+    setViewerPref({ dock: viewerPrefs.dock === "right" ? "bottom" : "right" });
   }
 
   function cycleSort(column: number) {
@@ -689,6 +844,8 @@ export default function DataGrid({
           flex: 1,
           minHeight: 0,
           display: "flex",
+          flexDirection:
+            viewer && viewerPrefs.dock === "bottom" ? "column" : "row",
           position: "relative",
         }}
       >
@@ -893,7 +1050,12 @@ export default function DataGrid({
                         onMouseDown={(event) => selectCell(event, rowIndex, columnPosition)}
                         onMouseEnter={() => enterCell(rowIndex, columnPosition)}
                         onDoubleClick={() => {
-                          if (canEdit) {
+                          const columnWidth =
+                            widths[column] ?? DEFAULT_COL_WIDTH;
+                          if (isLongValue(value, columnWidth)) {
+                            setViewer({ row: rowIndex, col: column });
+                            setGridMenu(null);
+                          } else if (canEdit) {
                             startEdit(rowIndex, column);
                           } else {
                             setViewer({ row: rowIndex, col: column });
@@ -1028,16 +1190,75 @@ export default function DataGrid({
 
         {viewer && activeCell && (
           <div
+            role="region"
+            aria-label={`${activeColumn} value`}
             style={{
-              width: 360,
+              position: "relative",
+              width:
+                viewerPrefs.dock === "right"
+                  ? `min(${viewerSize}px, 70%)`
+                  : "100%",
+              height:
+                viewerPrefs.dock === "bottom"
+                  ? `min(${viewerSize}px, 70%)`
+                  : undefined,
               flex: "none",
               display: "flex",
               flexDirection: "column",
-              borderLeft: "1px solid var(--bd)",
+              borderLeft:
+                viewerPrefs.dock === "right"
+                  ? "1px solid var(--bd)"
+                  : undefined,
+              borderTop:
+                viewerPrefs.dock === "bottom"
+                  ? "1px solid var(--bd)"
+                  : undefined,
               background: "var(--sf)",
               minHeight: 0,
+              minWidth: viewerPrefs.dock === "right" ? MIN_VIEWER_WIDTH : 0,
             }}
           >
+            <div
+              role="separator"
+              aria-orientation={
+                viewerPrefs.dock === "right" ? "vertical" : "horizontal"
+              }
+              aria-label="Resize value panel"
+              aria-valuenow={Math.round(viewerSize)}
+              aria-valuemin={
+                viewerPrefs.dock === "right"
+                  ? MIN_VIEWER_WIDTH
+                  : MIN_VIEWER_HEIGHT
+              }
+              tabIndex={0}
+              title="Drag to resize"
+              onMouseDown={startViewerResize}
+              onKeyDown={handleViewerResizeKey}
+              className={
+                viewerPrefs.dock === "right"
+                  ? "df2-resize-col"
+                  : "df2-resize-row"
+              }
+              style={{
+                position: "absolute",
+                zIndex: 2,
+                ...(viewerPrefs.dock === "right"
+                  ? {
+                      top: 0,
+                      left: 0,
+                      bottom: 0,
+                      width: 5,
+                      cursor: "col-resize",
+                    }
+                  : {
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      height: 5,
+                      cursor: "row-resize",
+                    }),
+              }}
+            />
             <div
               style={{
                 height: 30,
@@ -1049,11 +1270,22 @@ export default function DataGrid({
                 borderBottom: "1px solid var(--bd)",
               }}
             >
-              <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>
+              <span
+                title={activeColumn}
+                style={{
+                  fontFamily: "var(--mono)",
+                  fontSize: 12,
+                  minWidth: 0,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
                 {activeColumn}
               </span>
               <span
                 style={{
+                  flex: "none",
                   fontFamily: "var(--mono)",
                   fontSize: 11,
                   color: "var(--fa)",
@@ -1063,6 +1295,24 @@ export default function DataGrid({
                 {cellType(activeValue)}
               </span>
               <div style={{ flex: 1 }} />
+              {canEdit && (
+                <button
+                  type="button"
+                  className="v2-icon-btn"
+                  onClick={() => startEdit(viewer.row, viewer.col)}
+                  title="Edit value"
+                  aria-label="Edit value"
+                  style={{
+                    ...viewerButtonStyle(false),
+                    width: "auto",
+                    padding: "0 6px",
+                    gap: 4,
+                  }}
+                >
+                  <i className="icon-pencil" style={{ fontSize: 13 }} />
+                  <span style={{ fontSize: 11 }}>Edit</span>
+                </button>
+              )}
               <button
                 type="button"
                 className="v2-icon-btn"
@@ -1092,6 +1342,31 @@ export default function DataGrid({
               >
                 <i
                   className={copied ? "icon-check" : "icon-copy"}
+                  style={{ fontSize: 13 }}
+                />
+              </button>
+              <button
+                type="button"
+                className="v2-icon-btn"
+                onClick={toggleViewerDock}
+                title={
+                  viewerPrefs.dock === "right"
+                    ? "Dock panel to bottom"
+                    : "Dock panel to right"
+                }
+                aria-label={
+                  viewerPrefs.dock === "right"
+                    ? "Dock panel to bottom"
+                    : "Dock panel to right"
+                }
+                style={viewerButtonStyle(false)}
+              >
+                <i
+                  className={
+                    viewerPrefs.dock === "right"
+                      ? "icon-panel-bottom"
+                      : "icon-panel-right"
+                  }
                   style={{ fontSize: 13 }}
                 />
               </button>

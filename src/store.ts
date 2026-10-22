@@ -53,6 +53,45 @@ function loadGroupStars(): Record<string, boolean> {
   }
 }
 
+export type ViewerDock = "right" | "bottom";
+
+export interface ViewerPrefs {
+  dock: ViewerDock;
+  rightWidth: number;
+  bottomHeight: number;
+}
+
+const VIEWER_PREFS_KEY = "df-viewer-prefs";
+const DEFAULT_VIEWER_PREFS: ViewerPrefs = {
+  dock: "right",
+  rightWidth: 360,
+  bottomHeight: 220,
+};
+
+function loadViewerPrefs(): ViewerPrefs {
+  try {
+    const value = JSON.parse(localStorage.getItem(VIEWER_PREFS_KEY) || "{}");
+    if (!value || typeof value !== "object") {
+      return { ...DEFAULT_VIEWER_PREFS };
+    }
+    const prefs = value as Partial<ViewerPrefs>;
+    return {
+      dock: prefs.dock === "bottom" ? "bottom" : "right",
+      rightWidth:
+        typeof prefs.rightWidth === "number" && Number.isFinite(prefs.rightWidth)
+          ? Math.max(280, prefs.rightWidth)
+          : DEFAULT_VIEWER_PREFS.rightWidth,
+      bottomHeight:
+        typeof prefs.bottomHeight === "number" &&
+        Number.isFinite(prefs.bottomHeight)
+          ? Math.max(120, prefs.bottomHeight)
+          : DEFAULT_VIEWER_PREFS.bottomHeight,
+    };
+  } catch {
+    return { ...DEFAULT_VIEWER_PREFS };
+  }
+}
+
 const QUERY_HISTORY_KEY = "df-query-history";
 const QUERY_HISTORY_MAX = 100;
 const QUERY_HISTORY_SECRET = /(IDENTIFIED\s+BY|PASSWORD|SECRET|TOKEN|API_KEY)/i;
@@ -160,6 +199,8 @@ interface AppStore {
   removeConnectionState: (id: string) => void;
   connPrefs: Record<string, ConnPref>;
   setConnPref: (id: string, patch: Partial<ConnPref>) => void;
+  viewerPrefs: ViewerPrefs;
+  setViewerPref: (patch: Partial<ViewerPrefs>) => void;
   favorites: FavoriteTable[];
   toggleFavorite: (fav: FavoriteTable) => void;
   connGroups: Record<string, string>;
@@ -230,6 +271,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   connections: [],
   connected: {},
   connPrefs: loadConnPrefs(),
+  viewerPrefs: loadViewerPrefs(),
   favorites: loadFavorites(),
   connGroups: loadConnGroups(),
   groupStars: loadGroupStars(),
@@ -275,6 +317,16 @@ export const useAppStore = create<AppStore>((set, get) => ({
         // storage may be unavailable; prefs stay in memory for this session
       }
       return { connPrefs: next };
+    }),
+  setViewerPref: (patch) =>
+    set((state) => {
+      const next = { ...state.viewerPrefs, ...patch };
+      try {
+        localStorage.setItem(VIEWER_PREFS_KEY, JSON.stringify(next));
+      } catch {
+        // storage may be unavailable; prefs stay in memory for this session
+      }
+      return { viewerPrefs: next };
     }),
   toggleFavorite: (fav) =>
     set((state) => {
