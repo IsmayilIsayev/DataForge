@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+src-tauri/target/
+
+# Logs / OS
+*.log
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+
+# Design working folders (large; not needed to build)
+DataForge prototype review/
+DataForge prototype delivery/
+
+# Local env / secrets (none committed, kept here as a guard)
+.env
+.env.*
+*.pem

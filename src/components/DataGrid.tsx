@@ -1,0 +1,1171 @@
+﻿import { useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties, KeyboardEvent, MouseEvent } from "react";
+import lockupOnLight from "../assets/lockup.png";
+import lockupOnDark from "../assets/lockup-light.png";
+import { copyText } from "../clipboard";
+import { quoteIdentifier } from "../sql";
+import { useAppStore } from "../store";
+import type { CellValue, Dialect } from "../types";
+
+const INDEX_WIDTH = 44;
+const DEFAULT_COL_WIDTH = 160;
+const MIN_COL_WIDTH = 56;
+const ROW_HEIGHT = 22;
+
+interface Props {
+  viewKey: string;
+  dialect: Dialect;
+  database?: string | null;
+  table?: string | null;
+  sql?: string;
+  emptyText?: string;
+  theme: "dark" | "light";
+}
+
+interface Position {
+  row: number;
+  col: number;
+}
+
+interface ViewerState extends Position {}
+
+interface GridMenu {
+  x: number;
+  y: number;
+}
+
+type CopyFormat = "tsv" | "headers" | "csv" | "json" | "insert";
+
+function displayValue(value: CellValue): string {
+  if (value === null) return "NULL";
+  if (typeof value === "boolean") return value ? "true" : "false";
+  return String(value);
+}
+
+function rawValue(value: CellValue): string {
+  if (value === null) return "NULL";
+  return displayValue(value);
+}
+
+function cellType(value: CellValue): string {
+  if (value === null) return "null";
+  if (typeof value === "number") return "number";
+  if (typeof value === "boolean") return "bool";
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try {
+        JSON.parse(trimmed);
+        return "json";
+      } catch {
+        return "text";
+      }
+    }
+  }
+  return "text";
+}
+
+function prettyValue(value: CellValue, pretty: boolean): string {
+  if (value === null) return "NULL";
+  const text = displayValue(value);
+  if (!pretty || typeof value !== "string") return text;
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return text;
+  try {
+    return JSON.stringify(JSON.parse(trimmed), null, 2);
+  } catch {
+    return text;
+  }
+}
+
+function csvCell(value: CellValue): string {
+  if (value === null) return "";
+  const text = displayValue(value);
+  if (/[",\r\n]/.test(text)) {
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+  return text;
+}
+
+function tsvCell(value: CellValue): string {
+  return value === null ? "" : displayValue(value);
+}
+
+function jsonCell(value: CellValue): string | number | boolean | null {
+  if (value === null) return null;
+  return value;
+}
+
+function insertCell(value: CellValue): string {
+  if (value === null) return "NULL";
+  if (typeof value === "number") return String(value);
+  if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+function tableRef(
+  dialect: Dialect,
+  database: string | null | undefined,
+  table: string,
+) {
+  const quotedTable = quoteIdentifier(dialect, table);
+  if (!database) return quotedTable;
+  return `${quoteIdentifier(dialect, database)}.${quotedTable}`;
+}
+
+function tableFromSql(sql: string | undefined): {
+  database?: string;
+  table?: string;
+} {
+  if (!sql) return {};
+  const match = sql.match(
+    /\b(?:from|into|update)\s+([`"[\]\w$]+(?:\.[`"[\]\w$]+)*)/i,
+  );
+  if (!match) return {};
+  const parts = match[1]
+    .split(".")
+    .map((part) => part.replace(/^[`"[]|[`"\]]$/g, ""));
+  if (parts.length >= 2) {
+    return {
+      database: parts[parts.length - 2],
+      table: parts[parts.length - 1],
+    };
+  }
+  return { table: parts[0] };
+}
+
+function normalizeRange(a: Position, b: Position) {
+  return {
+    top: Math.min(a.row, b.row),
+    bottom: Math.max(a.row, b.row),
+    left: Math.min(a.col, b.col),
+    right: Math.max(a.col, b.col),
+  };
+}
+
+export default function DataGrid({
+  viewKey,
+  dialect,
+  database,
+  table,
+  sql,
+  emptyText,
+  theme,
+}: Props) {
+  const result = useAppStore((state) => state.result);
+  const running = useAppStore((state) => state.running);
+  const error = useAppStore((state) => state.error);
+
+  const gridRef = useRef<HTMLDivElement>(null);
+  const resizingRef = useRef(false);
+  const [anchor, setAnchor] = useState<Position | null>(null);
+  const [focus, setFocus] = useState<Position | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const [sort, setSort] = useState<{ col: number; dir: "asc" | "desc" } | null>(
+    null,
+  );
+  const [order, setOrder] = useState<number[]>([]);
+  const [widths, setWidths] = useState<Record<number, number>>({});
+  const [dragCol, setDragCol] = useState<number | null>(null);
+  const [overCol, setOverCol] = useState<number | null>(null);
+  const [viewer, setViewer] = useState<ViewerState | null>(null);
+  const [wrap, setWrap] = useState(true);
+  const [pretty, setPretty] = useState(true);
+  const [gridMenu, setGridMenu] = useState<GridMenu | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
+
+  useEffect(() => {
+    const columns = result?.columns.length ?? 0;
+    setOrder(Array.from({ length: columns }, (_, index) => index));
+    setWidths({});
+    setSort(null);
+    setAnchor(null);
+    setFocus(null);
+    setViewer(null);
+    setGridMenu(null);
+    setCopied(null);
+    setDragging(false);
+  }, [viewKey, result]);
+
+  useEffect(() => {
+    if (!dragging) return;
+    const stop = () => setDragging(false);
+    window.addEventListener("mouseup", stop);
+    return () => window.removeEventListener("mouseup", stop);
+  }, [dragging]);
+
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(null), 1500);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+
+  useEffect(() => {
+    if (!viewer && !gridMenu) return;
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setViewer(null);
+        setGridMenu(null);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [viewer, gridMenu]);
+
+  const columns = result?.columns ?? [];
+  const rows = result?.rows ?? [];
+
+  const sortedRows = useMemo(() => {
+    const indexed = rows.map((row, index) => ({ row, index }));
+    if (!sort) return indexed;
+    return [...indexed].sort((a, b) => {
+      const left = a.row[sort.col];
+      const right = b.row[sort.col];
+      if (left === null && right === null) return 0;
+      if (left === null) return 1;
+      if (right === null) return -1;
+      if (typeof left === "number" && typeof right === "number") {
+        return (left - right) * (sort.dir === "asc" ? 1 : -1);
+      }
+      const compared = String(left).localeCompare(String(right), undefined, {
+        numeric: true,
+        sensitivity: "base",
+      });
+      return compared * (sort.dir === "asc" ? 1 : -1);
+    });
+  }, [rows, sort]);
+
+  const numericColumns = useMemo(() => {
+    return columns.map((_, index) => {
+      let seen = false;
+      for (const row of rows) {
+        const value = row[index];
+        if (value === null || value === undefined) continue;
+        seen = true;
+        if (typeof value !== "number") return false;
+      }
+      return seen;
+    });
+  }, [columns, rows]);
+
+  const gridWidth =
+    INDEX_WIDTH +
+    order.reduce(
+      (total, column) => total + (widths[column] ?? DEFAULT_COL_WIDTH),
+      0,
+    );
+
+  const selection = anchor && focus ? normalizeRange(anchor, focus) : null;
+  const activeCell = viewer ?? focus ?? anchor;
+  const activeValue =
+    activeCell && activeCell.row < sortedRows.length
+      ? (sortedRows[activeCell.row].row[activeCell.col] ?? null)
+      : null;
+  const activeColumn =
+    activeCell && activeCell.col < columns.length
+      ? columns[activeCell.col]
+      : "";
+
+  function selectCell(
+    event: MouseEvent<HTMLDivElement>,
+    row: number,
+    col: number,
+  ) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    gridRef.current?.focus({ preventScroll: true });
+    if (event.shiftKey && anchor) {
+      setFocus({ row, col });
+    } else {
+      setAnchor({ row, col });
+      setFocus({ row, col });
+    }
+    setViewer(null);
+    setGridMenu(null);
+    setDragging(true);
+  }
+
+  function enterCell(row: number, col: number) {
+    if (!dragging) return;
+    setFocus({ row, col });
+  }
+
+  function selectRow(event: MouseEvent<HTMLDivElement>, row: number) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    gridRef.current?.focus({ preventScroll: true });
+    if (event.shiftKey && anchor) {
+      setAnchor({ row: anchor.row, col: 0 });
+      setFocus({ row, col: Math.max(0, columns.length - 1) });
+    } else {
+      setAnchor({ row, col: 0 });
+      setFocus({ row, col: Math.max(0, columns.length - 1) });
+    }
+    setViewer(null);
+    setGridMenu(null);
+    setDragging(false);
+  }
+
+  function openContextMenu(
+    event: MouseEvent<HTMLDivElement>,
+    row: number,
+    col: number,
+  ) {
+    event.preventDefault();
+    gridRef.current?.focus({ preventScroll: true });
+    if (!selection || !inSelection(row, col)) {
+      setAnchor({ row, col });
+      setFocus({ row, col });
+    }
+    setViewer(null);
+    setGridMenu({
+      x: Math.min(event.clientX, window.innerWidth - 230),
+      y: Math.min(event.clientY, window.innerHeight - 260),
+    });
+  }
+
+  function inSelection(row: number, col: number) {
+    if (!selection) return false;
+    return (
+      row >= selection.top &&
+      row <= selection.bottom &&
+      col >= selection.left &&
+      col <= selection.right
+    );
+  }
+
+  function selectedMatrix() {
+    if (!selection) return null;
+    const columnIndexes: number[] = [];
+    for (let position = selection.left; position <= selection.right; position++) {
+      const column = order[position];
+      if (column !== undefined) columnIndexes.push(column);
+    }
+    const selectedRows: CellValue[][] = [];
+    for (let row = selection.top; row <= selection.bottom; row++) {
+      const source = sortedRows[row];
+      if (!source) continue;
+      selectedRows.push(columnIndexes.map((column) => source.row[column] ?? null));
+    }
+    return {
+      rowCount: selectedRows.length,
+      headers: columnIndexes.map((column) => columns[column] ?? ""),
+      rows: selectedRows,
+    };
+  }
+
+  function insertStatement(matrix: NonNullable<ReturnType<typeof selectedMatrix>>) {
+    const inferred = tableFromSql(sql);
+    const targetTable = table ?? inferred.table ?? "result";
+    const targetDb = database ?? inferred.database;
+    const target = tableRef(dialect, targetDb, targetTable);
+    const names = matrix.headers
+      .map((name) => quoteIdentifier(dialect, name))
+      .join(", ");
+    const values = matrix.rows.map((row) => {
+      return `(${row.map(insertCell).join(", ")})`;
+    });
+    return `INSERT INTO ${target} (${names}) VALUES\n  ${values.join(",\n  ")};`;
+  }
+
+  async function copySelection(format: CopyFormat) {
+    const matrix = selectedMatrix();
+    if (!matrix) return;
+
+    let text = "";
+    if (format === "tsv" || format === "headers") {
+      const lines = matrix.rows.map((row) => row.map(tsvCell).join("\t"));
+      text =
+        format === "headers"
+          ? [matrix.headers.join("\t"), ...lines].join("\n")
+          : lines.join("\n");
+    } else if (format === "csv") {
+      const lines = matrix.rows.map((row) => row.map(csvCell).join(","));
+      text = [matrix.headers.map(csvCell).join(","), ...lines].join("\r\n");
+    } else if (format === "json") {
+      text = JSON.stringify(
+        matrix.rows.map((row) =>
+          Object.fromEntries(
+            matrix.headers.map((header, index) => [
+              header,
+              jsonCell(row[index] ?? null),
+            ]),
+          ),
+        ),
+        null,
+        2,
+      );
+    } else {
+      text = insertStatement(matrix);
+    }
+
+    gridRef.current?.focus({ preventScroll: true });
+    setGridMenu(null);
+    const ok = await copyText(text);
+    setCopied(
+      ok
+        ? matrix.rowCount === 1
+          ? "Copied 1 row"
+          : `Copied ${matrix.rowCount} rows`
+        : "Copy failed",
+    );
+  }
+
+  async function copyActiveCell() {
+    if (!activeCell || activeCell.row >= sortedRows.length) return;
+    const row = sortedRows[activeCell.row];
+    const value = row.row[activeCell.col] ?? null;
+    const ok = await copyText(rawValue(value));
+    setCopied(ok ? "Copied cell" : "Copy failed");
+  }
+
+  async function copyViewer() {
+    if (!viewer || viewer.row >= sortedRows.length) return;
+    const value = sortedRows[viewer.row].row[viewer.col] ?? null;
+    const ok = await copyText(prettyValue(value, pretty));
+    setCopied(ok ? "Copied cell" : "Copy failed");
+  }
+
+  function handleGridKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    const mod = event.metaKey || event.ctrlKey;
+    const key = event.key.toLowerCase();
+    if (!mod) return;
+    if (key === "a") {
+      event.preventDefault();
+      if (sortedRows.length === 0 || columns.length === 0) return;
+      setAnchor({ row: 0, col: 0 });
+      setFocus({ row: sortedRows.length - 1, col: columns.length - 1 });
+      return;
+    }
+    if (key === "c") {
+      event.preventDefault();
+      void copySelection("tsv");
+    }
+  }
+
+  function startResize(
+    event: MouseEvent<HTMLSpanElement>,
+    column: number,
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+    resizingRef.current = true;
+    const startX = event.clientX;
+    const startWidth = widths[column] ?? DEFAULT_COL_WIDTH;
+
+    const onMove = (moveEvent: globalThis.MouseEvent) => {
+      const next = Math.max(
+        MIN_COL_WIDTH,
+        startWidth + moveEvent.clientX - startX,
+      );
+      setWidths((current) => ({ ...current, [column]: next }));
+    };
+
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.setTimeout(() => {
+        resizingRef.current = false;
+      }, 0);
+    };
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  }
+
+  function cycleSort(column: number) {
+    if (resizingRef.current) return;
+    setViewer(null);
+    setAnchor(null);
+    setFocus(null);
+    setSort((current) => {
+      if (!current || current.col !== column) {
+        return { col: column, dir: "asc" };
+      }
+      if (current.dir === "asc") return { col: column, dir: "desc" };
+      return null;
+    });
+  }
+
+  function handleDrop(target: number) {
+    if (dragCol === null || dragCol === target) {
+      setDragCol(null);
+      setOverCol(null);
+      return;
+    }
+    setOrder((current) => {
+      const next = current.filter((column) => column !== dragCol);
+      const targetIndex = next.indexOf(target);
+      next.splice(targetIndex < 0 ? next.length : targetIndex, 0, dragCol);
+      return next;
+    });
+    setDragCol(null);
+    setOverCol(null);
+    setViewer(null);
+    setAnchor(null);
+    setFocus(null);
+  }
+
+  const hasResult = !!result;
+  const hasColumns = columns.length > 0;
+
+  return (
+    <section
+      style={{
+        flex: 1,
+        minHeight: 0,
+        display: "flex",
+        flexDirection: "column",
+        background: "var(--bg)",
+      }}
+    >
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          display: "flex",
+          position: "relative",
+        }}
+      >
+        {running && (
+          <div
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              height: 2,
+              background: "var(--ac)",
+              zIndex: 6,
+              animation: "df-load 1.2s cubic-bezier(.2,.8,.2,1) forwards",
+            }}
+          />
+        )}
+
+        {hasResult && hasColumns ? (
+          <div
+            ref={gridRef}
+            tabIndex={0}
+            onKeyDown={handleGridKeyDown}
+            onMouseDown={() => setGridMenu(null)}
+            style={{
+              flex: 1,
+              minWidth: 0,
+              overflow: "auto",
+              position: "relative",
+              outline: "none",
+            }}
+          >
+            <div
+              style={{
+                width: gridWidth,
+                fontFamily: "var(--mono)",
+                fontSize: 12,
+                fontVariantNumeric: "tabular-nums",
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  position: "sticky",
+                  top: 0,
+                  zIndex: 2,
+                  height: 24,
+                  background: "var(--sf2)",
+                  borderBottom: "1px solid var(--bd)",
+                }}
+              >
+                <div
+                  style={{
+                    width: INDEX_WIDTH,
+                    flex: "none",
+                    borderRight: "1px solid var(--bd)",
+                  }}
+                />
+                {order.map((column) => {
+                  const label = columns[column] ?? "";
+                  const width = widths[column] ?? DEFAULT_COL_WIDTH;
+                  const activeSort = sort?.col === column ? sort.dir : null;
+                  const numeric = numericColumns[column];
+                  return (
+                    <div
+                      key={column}
+                      draggable
+                      onDragStart={(event) => {
+                        if (resizingRef.current) {
+                          event.preventDefault();
+                          return;
+                        }
+                        event.dataTransfer.effectAllowed = "move";
+                        event.dataTransfer.setData("text/plain", String(column));
+                        setDragCol(column);
+                      }}
+                      onDragOver={(event) => {
+                        event.preventDefault();
+                        setOverCol(column);
+                      }}
+                      onDrop={(event) => {
+                        event.preventDefault();
+                        handleDrop(column);
+                      }}
+                      onDragEnd={() => {
+                        setDragCol(null);
+                        setOverCol(null);
+                      }}
+                      onClick={() => cycleSort(column)}
+                      style={{
+                        position: "relative",
+                        width,
+                        flex: "none",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: numeric ? "flex-end" : "flex-start",
+                        gap: 4,
+                        padding: "0 8px",
+                        borderRight: "1px solid var(--bd)",
+                        boxShadow:
+                          overCol === column &&
+                          dragCol !== null &&
+                          dragCol !== column
+                            ? "inset 2px 0 0 var(--ac)"
+                            : "none",
+                        fontFamily: "var(--ui)",
+                        fontSize: 12,
+                        fontWeight: 500,
+                        color: "var(--tx)",
+                        cursor: "default",
+                        userSelect: "none",
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                      }}
+                      title={label}
+                    >
+                      <span
+                        style={{
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                        }}
+                      >
+                        {label}
+                      </span>
+                      {activeSort && (
+                        <i
+                          className={
+                            activeSort === "asc"
+                              ? "icon-arrow-up"
+                              : "icon-arrow-down"
+                          }
+                          style={{ fontSize: 11, color: "var(--ac)" }}
+                        />
+                      )}
+                      <span
+                        onMouseDown={(event) => startResize(event, column)}
+                        onClick={(event) => event.stopPropagation()}
+                        style={{
+                          position: "absolute",
+                          top: 0,
+                          right: -1,
+                          width: 6,
+                          height: "100%",
+                          cursor: "col-resize",
+                          zIndex: 3,
+                        }}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+
+              {sortedRows.map((source, rowIndex) => (
+                <div
+                  key={source.index}
+                  data-row={rowIndex}
+                  style={{
+                    display: "flex",
+                    height: ROW_HEIGHT,
+                    background:
+                      rowIndex % 2 === 1 ? "var(--zb)" : "transparent",
+                  }}
+                >
+                  <div
+                    data-row-index={rowIndex}
+                    onMouseDown={(event) => selectRow(event, rowIndex)}
+                    style={{
+                      width: INDEX_WIDTH,
+                      flex: "none",
+                      padding: "0 8px",
+                      textAlign: "right",
+                      lineHeight: `${ROW_HEIGHT}px`,
+                      color: "var(--fa)",
+                      borderRight: "1px solid var(--bd)",
+                      fontSize: 11,
+                      background:
+                        selection &&
+                        selection.left === 0 &&
+                        selection.right === order.length - 1 &&
+                        rowIndex >= selection.top &&
+                        rowIndex <= selection.bottom
+                          ? "var(--acs)"
+                          : "transparent",
+                      cursor: "default",
+                      userSelect: "none",
+                    }}
+                  >
+                    {rowIndex + 1}
+                  </div>
+                  {order.map((column, columnPosition) => {
+                    const value = source.row[column] ?? null;
+                    const selected =
+                      selection !== null &&
+                      rowIndex >= selection.top &&
+                      rowIndex <= selection.bottom &&
+                      columnPosition >= selection.left &&
+                      columnPosition <= selection.right;
+                    const numeric = numericColumns[column];
+                    return (
+                      <div
+                        key={column}
+                        data-cell={`${rowIndex}:${columnPosition}`}
+                        onMouseDown={(event) => selectCell(event, rowIndex, columnPosition)}
+                        onMouseEnter={() => enterCell(rowIndex, columnPosition)}
+                        onDoubleClick={() => {
+                          setViewer({ row: rowIndex, col: column });
+                          setGridMenu(null);
+                        }}
+                        onContextMenu={(event) =>
+                          openContextMenu(event, rowIndex, columnPosition)
+                        }
+                        style={{
+                          width: widths[column] ?? DEFAULT_COL_WIDTH,
+                          flex: "none",
+                          padding: "0 8px",
+                          lineHeight: `${ROW_HEIGHT}px`,
+                          textAlign: numeric ? "right" : "left",
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          borderRight: "1px solid var(--bd)",
+                          color:
+                            value === null ? "var(--fa)" : "var(--tx)",
+                          fontStyle: value === null ? "italic" : "normal",
+                          background: selected
+                            ? "var(--acs)"
+                            : "transparent",
+                          outline: selected
+                            ? "1px solid var(--ac)"
+                            : "none",
+                          outlineOffset: -1,
+                          cursor: "default",
+                          userSelect: "text",
+                        }}
+                        title={displayValue(value)}
+                      >
+                        {displayValue(value)}
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : hasResult && !hasColumns ? (
+          <div
+            style={{
+              flex: 1,
+              display: "grid",
+              placeItems: "center",
+              color: "var(--mu)",
+              fontFamily: "var(--mono)",
+              fontSize: 12.5,
+            }}
+          >
+            {typeof result?.rows_affected === "number"
+              ? `Query OK — ${result.rows_affected} row(s) affected.`
+              : "Query completed without a result set."}
+          </div>
+        ) : (
+          <div
+            style={{
+              flex: 1,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 8,
+              color: "var(--mu)",
+            }}
+          >
+            <img
+              src={theme === "dark" ? lockupOnDark : lockupOnLight}
+              alt="DataForge"
+              style={{
+                height: 30,
+                width: "auto",
+                display: "block",
+                opacity: 0.92,
+              }}
+            />
+            <span>
+              {running
+                ? "Running…"
+                : error
+                  ? "Fix the error and run again"
+                  : emptyText ?? "No results — run a query"}
+            </span>
+            <span
+              style={{
+                fontFamily: "var(--mono)",
+                fontSize: 11,
+                color: "var(--fa)",
+              }}
+            >
+              ⌘↵ run · ⌘K commands
+            </span>
+          </div>
+        )}
+
+        {viewer && activeCell && (
+          <div
+            style={{
+              width: 360,
+              flex: "none",
+              display: "flex",
+              flexDirection: "column",
+              borderLeft: "1px solid var(--bd)",
+              background: "var(--sf)",
+              minHeight: 0,
+            }}
+          >
+            <div
+              style={{
+                height: 30,
+                flex: "none",
+                display: "flex",
+                alignItems: "center",
+                gap: 2,
+                padding: "0 4px 0 10px",
+                borderBottom: "1px solid var(--bd)",
+              }}
+            >
+              <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>
+                {activeColumn}
+              </span>
+              <span
+                style={{
+                  fontFamily: "var(--mono)",
+                  fontSize: 11,
+                  color: "var(--fa)",
+                  marginLeft: 6,
+                }}
+              >
+                {cellType(activeValue)}
+              </span>
+              <div style={{ flex: 1 }} />
+              <button
+                type="button"
+                className="v2-icon-btn"
+                onClick={() => setWrap((value) => !value)}
+                title="Wrap"
+                style={viewerButtonStyle(wrap)}
+              >
+                <i className="icon-wrap-text" style={{ fontSize: 13 }} />
+              </button>
+              {cellType(activeValue) === "json" && (
+                <button
+                  type="button"
+                  className="v2-icon-btn"
+                  onClick={() => setPretty((value) => !value)}
+                  title="Pretty-print JSON"
+                  style={viewerButtonStyle(pretty)}
+                >
+                  <i className="icon-braces" style={{ fontSize: 13 }} />
+                </button>
+              )}
+              <button
+                type="button"
+                className="v2-icon-btn"
+                onClick={() => void copyViewer()}
+                title="Copy"
+                style={viewerButtonStyle(false)}
+              >
+                <i
+                  className={copied ? "icon-check" : "icon-copy"}
+                  style={{ fontSize: 13 }}
+                />
+              </button>
+              <button
+                type="button"
+                className="v2-icon-btn"
+                onClick={() => setViewer(null)}
+                title="Close"
+                style={viewerButtonStyle(false)}
+              >
+                <i className="icon-x" style={{ fontSize: 13 }} />
+              </button>
+            </div>
+            <pre
+              className="allow-select"
+              style={{
+                flex: 1,
+                minHeight: 0,
+                margin: 0,
+                padding: "10px 12px",
+                overflow: "auto",
+                fontFamily: "var(--mono)",
+                fontSize: 12,
+                lineHeight: 1.55,
+                whiteSpace: wrap ? "pre-wrap" : "pre",
+                wordBreak: "break-word",
+                color: activeValue === null ? "var(--fa)" : "var(--tx)",
+                fontStyle: activeValue === null ? "italic" : "normal",
+              }}
+            >
+              {prettyValue(activeValue, pretty)}
+            </pre>
+          </div>
+        )}
+      </div>
+
+      {hasResult && (
+        <div
+          style={{
+            height: 24,
+            flex: "none",
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "0 10px",
+            borderTop: "1px solid var(--bd)",
+            fontFamily: "var(--mono)",
+            fontSize: 12,
+            minWidth: 0,
+          }}
+        >
+          <span style={{ flex: "none", color: "var(--fa)" }}>
+            {activeCell
+              ? `${activeColumn} · row ${activeCell.row + 1}`
+              : "No cell selected"}
+          </span>
+          <span
+            style={{
+              flex: 1,
+              minWidth: 0,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              color: activeCell ? "var(--tx)" : "var(--fa)",
+              fontStyle:
+                activeCell && activeValue === null ? "italic" : "normal",
+            }}
+          >
+            {activeCell
+              ? displayValue(activeValue)
+              : "Click a cell to preview · double-click to open"}
+          </span>
+          <button
+            type="button"
+            className="v2-icon-btn"
+            onClick={() => void copyActiveCell()}
+            title="Copy cell value"
+            disabled={!activeCell}
+            style={{
+              height: 24,
+              flex: "none",
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              padding: "0 6px",
+              border: 0,
+              borderRadius: 4,
+              background: "transparent",
+              color: activeCell ? "var(--mu)" : "var(--fa)",
+              opacity: activeCell ? 1 : 0.45,
+              fontSize: 12,
+              cursor: "default",
+            }}
+          >
+            <i className="icon-copy" style={{ fontSize: 13 }} />
+            <span>Copy</span>
+          </button>
+        </div>
+      )}
+
+      <div
+        style={{
+          height: 26,
+          flex: "none",
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          padding: "0 10px",
+          borderTop: "1px solid var(--bd)",
+          background: "var(--sf)",
+          fontFamily: "var(--mono)",
+          fontSize: 11,
+          color: "var(--mu)",
+        }}
+      >
+        <span>
+          {copied ??
+            (running
+              ? "Running…"
+              : result
+                ? `${rows.length.toLocaleString("en-US")} rows · ${result.elapsed_ms} ms`
+                : error
+                  ? "Query failed"
+                  : "Ready")}
+        </span>
+        <div style={{ flex: 1 }} />
+        <span style={{ color: "var(--fa)" }}>
+          {result
+            ? sort
+              ? `sorted by ${columns[sort.col]} ${sort.dir}`
+              : `${order.length} columns`
+            : ""}
+        </span>
+      </div>
+
+      {gridMenu && (
+        <>
+          <div
+            onMouseDown={() => setGridMenu(null)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setGridMenu(null);
+            }}
+            style={{
+              position: "fixed",
+              inset: 0,
+              zIndex: 60,
+            }}
+          />
+          <div
+            style={{
+              position: "fixed",
+              left: gridMenu.x,
+              top: gridMenu.y,
+              zIndex: 61,
+              minWidth: 220,
+              padding: 4,
+              background: "var(--sf)",
+              border: "1px solid var(--bd2)",
+              borderRadius: 6,
+              boxShadow: "var(--sh)",
+            }}
+          >
+            <GridMenuItem
+              icon="icon-copy"
+              label="Copy (TSV)"
+              kbd="⌘C"
+              onClick={() => void copySelection("tsv")}
+            />
+            <GridMenuItem
+              icon="icon-copy"
+              label="Copy with headers"
+              onClick={() => void copySelection("headers")}
+            />
+            <GridMenuItem
+              icon="icon-table"
+              label="Copy as CSV"
+              onClick={() => void copySelection("csv")}
+            />
+            <GridMenuItem
+              icon="icon-braces"
+              label="Copy as JSON"
+              onClick={() => void copySelection("json")}
+            />
+            <GridMenuItem
+              icon="icon-code"
+              label="Copy as INSERT"
+              onClick={() => void copySelection("insert")}
+            />
+            <div
+              style={{
+                height: 1,
+                background: "var(--bd)",
+                margin: "4px -4px",
+              }}
+            />
+            <GridMenuItem
+              icon="icon-type"
+              label="Copy cell value"
+              onClick={() => {
+                setGridMenu(null);
+                void copyActiveCell();
+              }}
+            />
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+function viewerButtonStyle(active: boolean): CSSProperties {
+  return {
+    width: 24,
+    height: 24,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    border: 0,
+    borderRadius: 4,
+    background: "transparent",
+    color: active ? "var(--tx)" : "var(--mu)",
+    cursor: "default",
+  };
+}
+
+function GridMenuItem({
+  icon,
+  label,
+  kbd,
+  onClick,
+}: {
+  icon: string;
+  label: string;
+  kbd?: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="df2-menu-item"
+      onClick={onClick}
+      style={{
+        width: "100%",
+        height: 26,
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "0 8px",
+        border: 0,
+        borderRadius: 4,
+        color: "var(--tx)",
+        textAlign: "left",
+        cursor: "default",
+      }}
+    >
+      <i
+        className={icon}
+        style={{ width: 14, flex: "none", fontSize: 13, color: "var(--mu)" }}
+      />
+      <span style={{ flex: 1, whiteSpace: "nowrap" }}>{label}</span>
+      {kbd && (
+        <span
+          style={{
+            fontFamily: "var(--mono)",
+            fontSize: 11,
+            color: "var(--fa)",
+          }}
+        >
+          {kbd}
+        </span>
+      )}
+    </button>
+  );
+}
+

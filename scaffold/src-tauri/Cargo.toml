@@ -1,0 +1,56 @@
+[package]
+name = "dataforge"
+version = "0.1.0"
+description = "AI-native database manager"
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "dataforge_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.0", features = [] }
+
+[dependencies]
+tauri = { version = "2.1", features = [] }
+tauri-plugin-shell = "2.0"
+
+tokio = { version = "1.41", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# DB sürücüləri (MVP: mysql + postgres + sqlite)
+sqlx = { version = "0.8", default-features = false, features = [
+  "runtime-tokio-rustls", "mysql", "postgres", "sqlite", "chrono", "json"
+] }
+
+# AI (Claude API)
+reqwest = { version = "0.12", default-features = false, features = [
+  "json", "rustls-tls", "stream"
+] }
+
+# Sirr + şifrələmə
+keyring = "3.6"
+aes-gcm = "0.10"
+rand = "0.8"
+uuid = { version = "1.11", features = ["v4"] }
+
+# Xəta
+anyhow = "1.0"
+thiserror = "2.0"
+
+# İxrac
+rust_xlsxwriter = "0.79"
+
+# --- v1/v2 (lazım olanda aç) ---
+# tiberius = "0.12"
+# mongodb = "3.1"
+# russh = "0.45"
+
+[features]
+# default olaraq hər şey; istehsalda LTO aç
+[profile.release]
+lto = true
+opt-level = "z"
+strip = true

@@ -1,0 +1,52 @@
+/* Extracted from DataForge.dc.html <style> — global chrome only. */
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--tx);font-family:var(--ui);-webkit-font-smoothing:antialiased;overflow:hidden}
+#root{height:100%}
+a{color:var(--ac);text-decoration:none}
+a:hover{color:var(--tx);text-decoration:underline}
+button,input,textarea{font:inherit;color:inherit}
+button{background:none;border:0;padding:0}
+:focus-visible{outline:2px solid var(--ac);outline-offset:1px}
+input:focus,textarea:focus{outline:none}
+::placeholder{color:var(--fa)}
+::selection{background:var(--acs)}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:var(--bd2);border:3px solid transparent;background-clip:padding-box;border-radius:6px}
+::-webkit-scrollbar-corner,::-webkit-scrollbar-track{background:transparent}
+@keyframes df-load{from{width:0}to{width:88%}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* Hover primitives for the prototype's style-hover attributes. */
+.df2-hover:hover{background:var(--hv)}
+.df2-hover-tx:hover{background:var(--hv);color:var(--tx)}
+.df2-quiet{background:transparent}
+.df2-quiet:hover{background:var(--hv)}
+.df2-icon-btn{background:transparent}
+.df2-icon-btn:hover{background:var(--hv);color:var(--tx)}
+.df2-run{background:var(--acd)}
+.df2-run:hover{background:var(--ac)}
+.df2-row{background:var(--row-bg,transparent)}
+.df2-row:hover{background:var(--hv)}
+.df2-menu-item:hover{background:var(--hv)}
+.df2-resize-col:hover,.df2-resize-row:hover{background:var(--acs)}
+
+.v2-input:focus{border-color:var(--ac)!important;box-shadow:0 0 0 2px var(--acs);outline:none}
+.v2-btn{height:26px;padding:0 12px;border:1px solid var(--bd2);border-radius:4px;background:transparent;color:var(--tx);font:inherit;cursor:default}
+.v2-btn:hover:not(:disabled){background:var(--hv)}
+.v2-btn:disabled{opacity:.5;cursor:default}
+.v2-btn-primary{border:0;background:var(--acd);color:#fff;font-weight:500}
+.v2-btn-primary:hover:not(:disabled){background:var(--ac)}
+.v2-icon-btn{background:transparent}
+.v2-icon-btn:hover:not(:disabled){background:var(--hv);color:var(--tx)}
+
+/* Desktop chrome does not behave like a web page. */
+.df-app{user-select:none}
+img{-webkit-user-drag:none;user-select:none}
+.df-app input,
+.df-app textarea,
+.df-app [contenteditable="true"],
+.df-app .monaco-editor,
+.df-app .monaco-editor *,
+.df-app [data-cell],
+.df-app [data-cell] *,
+.df-app .allow-select{user-select:text}

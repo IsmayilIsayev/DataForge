@@ -1,0 +1,41 @@
+/* DataForge tokens
+   Spacing: 4 / 8 / 12 / 16 only.  Rows: tree 24, grid 22, toolbar controls 24–28, top bar 32, status 22–26.
+   Radius: 4 controls · 6 menus/modals. Borders: always 1px. Focus: 2px --ac ring, 1px offset.
+   Motion: 120ms ease-out, no bounce, off under prefers-reduced-motion. One elevation (--sh), overlays only. */
+:root, [data-theme="dark"] {
+  color-scheme: dark;
+  --bg:#0f1115; --sf:#15181d; --sf2:#1a1e24; --bd:#24282f; --bd2:#2f343c;
+  --tx:#dfe3e8; --mu:#8b929c; --fa:#5c636d;
+  --ac:#5b8def; --acd:#3f6fd1; --acs:rgba(91,141,239,.14);
+  --ok:#43b581; --er:#e5534b; --wn:#caa23a; --ers:rgba(229,83,75,.09);
+  --zb:rgba(255,255,255,.015); --hv:rgba(255,255,255,.04); --sel:rgba(255,255,255,.06);
+  --kw:#a8a4c4; --str:#7fb3ab; --num:#88a6d4; --fn:#c3c8cf;
+  --scrim:rgba(5,6,8,.5); --sh:0 10px 28px rgba(0,0,0,.45);
+  --ui:Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono:"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --s1:4px; --s2:8px; --s3:12px; --s4:16px;
+  --r-ctl:4px; --r-ovl:6px; --dur:120ms; --ease:cubic-bezier(.2,.8,.2,1);
+}
+[data-theme="light"] {
+  color-scheme: light;
+  --bg:#ffffff; --sf:#fbfbfc; --sf2:#f4f5f7; --bd:#e6e8ec; --bd2:#d7dade;
+  --tx:#1a1d21; --mu:#616770; --fa:#8a9099;
+  --ac:#2f6fd1; --acd:#2a62b8; --acs:rgba(47,111,209,.11);
+  --ok:#2f9a68; --er:#cf4038; --wn:#a9831c; --ers:rgba(207,64,56,.07);
+  --zb:rgba(0,0,0,.018); --hv:rgba(0,0,0,.035); --sel:rgba(0,0,0,.05);
+  --kw:#62589e; --str:#2c7a70; --num:#3767ad; --fn:#3a3f46;
+  --scrim:rgba(20,24,30,.18); --sh:0 10px 28px rgba(20,24,30,.12);
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    color-scheme: light;
+    --bg:#ffffff; --sf:#fbfbfc; --sf2:#f4f5f7; --bd:#e6e8ec; --bd2:#d7dade;
+    --tx:#1a1d21; --mu:#616770; --fa:#8a9099;
+    --ac:#2f6fd1; --acd:#2a62b8; --acs:rgba(47,111,209,.11);
+    --ok:#2f9a68; --er:#cf4038; --wn:#a9831c; --ers:rgba(207,64,56,.07);
+    --zb:rgba(0,0,0,.018); --hv:rgba(0,0,0,.035); --sel:rgba(0,0,0,.05);
+    --kw:#62589e; --str:#2c7a70; --num:#3767ad; --fn:#3a3f46;
+    --scrim:rgba(20,24,30,.18); --sh:0 10px 28px rgba(20,24,30,.12);
+  }
+}
+@media (prefers-reduced-motion: reduce) { * { animation:none !important; transition:none !important; } }
