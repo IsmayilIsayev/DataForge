@@ -69,7 +69,8 @@ RULES:
 - Follow {dialect} dialect rules: identifier quoting (MySQL backticks; PostgreSQL/SQLite double quotes; SQL Server brackets), date/time functions (NOW()/CURRENT_DATE/date_trunc on PostgreSQL, DATE_FORMAT on MySQL, strftime on SQLite, GETDATE() on SQL Server), string concatenation (CONCAT on MySQL, || on PostgreSQL/SQLite, + on SQL Server), result limits (LIMIT on MySQL/PostgreSQL/SQLite, TOP/OFFSET FETCH on SQL Server), and case-insensitive matching (ILIKE on PostgreSQL, LOWER() LIKE elsewhere).
 - Prefer adding or using indexes, removing SELECT *, eliminating full table scans, and replacing correlated subqueries with JOINs where appropriate.
 - Never turn a read query into a write, and never drop or truncate data. If the input is a write, preserve its WHERE clause exactly.
-- "suggestions" must be concrete (which index, which predicate, which join), not generic advice."#
+- "suggestions" must be concrete (which index, which predicate, which join), not generic advice.
+- When an index would help, put the complete CREATE INDEX statement on its own suggestion line, for example CREATE INDEX idx_users_email ON users (email); — never execute it and never mix it with other advice on that line."#
     )
 }
 

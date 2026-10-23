@@ -30,6 +30,7 @@ import {
   aiOptimize,
   connectConnection,
   errorMessage,
+  explainPlan,
   exportResultXlsx,
   listConnectionStates,
   listConnections,
@@ -45,6 +46,7 @@ import type { AiActionState, AiTextTarget, ConnectionMeta } from "./types";
 
 const AiActionPanel = lazy(() => import("./components/AiActionPanel"));
 const AiPanel = lazy(() => import("./components/AiPanel"));
+const PlanView = lazy(() => import("./components/PlanView"));
 const ConnectionDialog = lazy(() => import("./components/ConnectionDialog"));
 const FindDialog = lazy(() => import("./components/FindDialog"));
 const HistoryDialog = lazy(() => import("./components/HistoryDialog"));
@@ -127,6 +129,14 @@ export default function App() {
   const running = useAppStore((state) => state.running);
   const activeView = useAppStore((state) => state.tabStates[state.activeTabId]);
   const setActiveDb = useAppStore((state) => state.setActiveDb);
+  const activePlan =
+    activeView?.plan &&
+    (!activeView.connId || activeView.connId === activeConnId) &&
+    (!activeView.database || activeView.database === activeDb)
+      ? activeView.plan
+      : null;
+  const showPlan =
+    !!activePlan && (activeView?.resultTab ?? "results") === "plan";
 
   const [theme, setTheme] = useState<Theme>(() =>
     localStorage.getItem("dataforge-theme") === "light" ? "light" : "dark",
@@ -140,6 +150,7 @@ export default function App() {
   const [aiBusy, setAiBusy] = useState<
     "fix" | "explain" | "optimize" | null
   >(null);
+  const [planBusy, setPlanBusy] = useState(false);
   const editorApiRef = useRef<SqlEditorHandle | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
@@ -547,6 +558,8 @@ export default function App() {
       store.setRunning(true, target);
       store.setError(null, target);
       store.setExecutedSql(query, target);
+      store.setPlan(null, target);
+      store.setResultTab("results", target);
 
       try {
         const result = await runQuery(
@@ -868,6 +881,105 @@ export default function App() {
     }
   }, [ensureAiKey]);
 
+  const openSqlInEditor = useCallback((sql: string) => {
+    useAppStore.getState().addQueryTab(sql, "Index suggestion");
+  }, []);
+
+  const handleExplainPlan = useCallback(
+    async (analyze: boolean, sqlOverride?: string) => {
+      const store = useAppStore.getState();
+      const target = sqlOverride
+        ? { sql: sqlOverride, start: 0, end: 0 }
+        : editorApiRef.current?.getAiTarget();
+      if (!target || !target.sql.trim()) {
+        store.setError("Select a statement or place the cursor in one.");
+        return;
+      }
+      if (!store.activeConnId) {
+        store.setError("Select a connection first.");
+        return;
+      }
+
+      const tabId = store.activeTabId;
+      const connId = store.activeConnId;
+      const database = store.activeDb ?? undefined;
+      if (analyze) {
+        const connection = store.connections.find(
+          (item) => item.id === connId,
+        );
+        const guard = await guardSqlExecution(connId, target.sql, database, {
+          title: "Run EXPLAIN ANALYZE on production",
+          previewSql: target.sql,
+          note: `EXPLAIN ANALYZE executes this query on “${
+            connection?.name ?? "production"
+          }”. The result is discarded, but the query still runs.`,
+          forceProductionConfirm: true,
+        });
+        if (!guard.allow) {
+          if (guard.error) store.setError(guard.error);
+          return;
+        }
+      }
+
+      setPlanBusy(true);
+      store.setError(null);
+      try {
+        const plan = await explainPlan(connId, database, target.sql, analyze);
+        useAppStore
+          .getState()
+          .setPlan(plan, tabId, connId, database ?? null);
+      } catch (planError) {
+        useAppStore.getState().setError(errorMessage(planError), tabId);
+      } finally {
+        setPlanBusy(false);
+      }
+    },
+    [],
+  );
+
+  const handleAskAiIndexes = useCallback(async () => {
+    const store = useAppStore.getState();
+    const view = store.tabStates[store.activeTabId];
+    const plan = view?.plan;
+    if (!plan) return;
+    if (!(await ensureAiKey())) return;
+
+    const connId = view.connId ?? store.activeConnId;
+    const database = view.database ?? store.activeDb ?? undefined;
+    if (!connId) {
+      store.setError("Select a connection first.");
+      return;
+    }
+
+    setAiAction(null);
+    setAiBusy("optimize");
+    try {
+      const result = await aiOptimize(
+        connId,
+        database,
+        plan.sql,
+        plan.raw,
+      );
+      setAiAction({
+        kind: "optimize",
+        originalSql: plan.sql,
+        target: null,
+        result,
+        error: null,
+      });
+    } catch (actionError) {
+      setAiAction({
+        kind: "optimize",
+        originalSql: plan.sql,
+        target: null,
+        result: null,
+        error: errorMessage(actionError),
+      });
+    } finally {
+      setAiBusy(null);
+    }
+  }, [ensureAiKey]);
+
   const applyAiReplacement = useCallback(
     (replacement: string) => {
       if (!aiAction) return;
@@ -901,15 +1013,19 @@ export default function App() {
       if (!mod || !event.shiftKey) return;
 
       const key = event.key.toLowerCase();
-      if (key !== "e" && key !== "o") return;
+      if (key !== "e" && key !== "o" && key !== "p") return;
       event.preventDefault();
       event.stopPropagation();
-      handleEditorAiAction(key === "e" ? "explain" : "optimize");
+      if (key === "p") {
+        void handleExplainPlan(false);
+      } else {
+        handleEditorAiAction(key === "e" ? "explain" : "optimize");
+      }
     };
 
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [handleEditorAiAction]);
+  }, [handleEditorAiAction, handleExplainPlan]);
 
   useEffect(() => {
     setAiAction(null);
@@ -1583,6 +1699,28 @@ export default function App() {
                     {aiBusy === "optimize" ? "Optimizing…" : "Optimize"}
                   </span>
                 </button>
+                <button
+                  type="button"
+                  className="df2-quiet df2-hover-tx"
+                  onClick={() => void handleExplainPlan(false)}
+                  disabled={planBusy || aiBusy !== null}
+                  title="Execution plan (Ctrl+Shift+P)"
+                  style={{
+                    height: 24,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "0 8px",
+                    border: 0,
+                    borderRadius: 4,
+                    color: "var(--mu)",
+                    cursor: planBusy ? "not-allowed" : "default",
+                    opacity: planBusy ? 0.6 : 1,
+                  }}
+                >
+                  <i className="icon-list-tree" style={{ fontSize: 13 }} />
+                  <span>{planBusy ? "Planning…" : "Plan"}</span>
+                </button>
                 <div style={{ flex: 1 }} />
                 <span
                   style={{
@@ -1705,15 +1843,89 @@ export default function App() {
                   </button>
                 </div>
               )}
-              <DataGrid
-                key={activeTab.id}
-                tabId={activeTab.id}
-                viewKey={`${activeTab.id}:${activeView?.resultVersion ?? 0}`}
-                dialect={activeConnection?.dialect ?? "mysql"}
-                database={activeDb}
-                sql={activeView?.executedSql ?? undefined}
-                theme={theme}
-              />
+              {activePlan && (
+                <div
+                  style={{
+                    height: 30,
+                    flex: "none",
+                    display: "flex",
+                    alignItems: "stretch",
+                    gap: 2,
+                    padding: "0 6px",
+                    borderBottom: "1px solid var(--bd)",
+                    background: "var(--bg)",
+                  }}
+                >
+                  {(
+                    [
+                      ["results", "Results"],
+                      ["plan", "Plan"],
+                    ] as const
+                  ).map(([id, label]) => {
+                    const active =
+                      (activeView?.resultTab ?? "results") === id;
+                    return (
+                      <button
+                        key={id}
+                        type="button"
+                        className="df2-quiet df2-hover-tx"
+                        onClick={() =>
+                          useAppStore
+                            .getState()
+                            .setResultTab(id, activeTab.id)
+                        }
+                        style={{
+                          height: 30,
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 5,
+                          padding: "0 9px",
+                          border: 0,
+                          borderBottom: `2px solid ${
+                            active ? "var(--ac)" : "transparent"
+                          }`,
+                          borderRadius: 0,
+                          background: "transparent",
+                          color: active ? "var(--tx)" : "var(--mu)",
+                          cursor: "default",
+                          fontSize: 11.5,
+                        }}
+                      >
+                        <i
+                          className={
+                            id === "plan" ? "icon-list-tree" : "icon-table"
+                          }
+                          style={{ fontSize: 12 }}
+                        />
+                        <span>{label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              {showPlan && activePlan ? (
+                <Suspense fallback={<div style={{ flex: 1 }} />}>
+                  <PlanView
+                    plan={activePlan}
+                    busy={planBusy}
+                    aiBusy={aiBusy === "optimize"}
+                    onAnalyzeChange={(analyze) =>
+                      void handleExplainPlan(analyze, activePlan.sql)
+                    }
+                    onAskAi={() => void handleAskAiIndexes()}
+                  />
+                </Suspense>
+              ) : (
+                <DataGrid
+                  key={activeTab.id}
+                  tabId={activeTab.id}
+                  viewKey={`${activeTab.id}:${activeView?.resultVersion ?? 0}`}
+                  dialect={activeConnection?.dialect ?? "mysql"}
+                  database={activeDb}
+                  sql={activeView?.executedSql ?? undefined}
+                  theme={theme}
+                />
+              )}
             </>
           ) : null}
 
@@ -1723,6 +1935,7 @@ export default function App() {
                 state={aiAction}
                 onClose={() => setAiAction(null)}
                 onApply={applyAiReplacement}
+                onOpenInEditor={openSqlInEditor}
               />
             </Suspense>
           )}

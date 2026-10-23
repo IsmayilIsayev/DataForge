@@ -12,6 +12,7 @@ import type {
   ConnectionMeta,
   ConnectionState,
   Dialect,
+  ExplainPlan,
   Nl2SqlResult,
   QueryResult,
   SchemaSnapshot,
@@ -65,6 +66,19 @@ export const runQuery = (
     max_rows: maxRows,
     database: database ?? null,
     order_by: orderBy.trim() ? orderBy : null,
+  });
+
+export const explainPlan = (
+  connId: string,
+  database: string | undefined,
+  sql: string,
+  analyze: boolean,
+) =>
+  invoke<ExplainPlan>("explain_plan", {
+    conn_id: connId,
+    database: database ?? null,
+    sql,
+    analyze,
   });
 
 export const listDatabases = (connId: string) =>
@@ -388,11 +402,13 @@ export const aiOptimize = (
   connId: string,
   database: string | undefined,
   sql: string,
+  plan?: string,
 ) =>
   invoke<AiOptimizeResult>("ai_optimize", {
     conn_id: connId,
     database: database ?? null,
     sql,
+    plan: plan ?? null,
   });
 
 export const aiGetConfig = () => invoke<AiConfig>("ai_get_config");

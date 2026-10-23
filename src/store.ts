@@ -6,6 +6,7 @@ import type {
   CellValue,
   ConnectionMeta,
   ConnectionState,
+  ExplainPlan,
   QueryResult,
 } from "./types";
 
@@ -67,6 +68,7 @@ export interface ProdConfirmRequest {
   statements: ClassifiedStatement[];
   title?: string;
   previewSql?: string;
+  note?: string;
 }
 
 export type ViewerDock = "right" | "bottom";
@@ -221,6 +223,8 @@ function sameFavorite(a: FavoriteTable, b: FavoriteTable): boolean {
   );
 }
 
+export type ResultTab = "results" | "plan";
+
 export interface TabViewState {
   result: QueryResult | null;
   error: string | null;
@@ -229,6 +233,8 @@ export interface TabViewState {
   database: string | null;
   executedSql: string | null;
   resultVersion: number;
+  plan: ExplainPlan | null;
+  resultTab: ResultTab;
 }
 
 export interface QueryTab {
@@ -325,6 +331,13 @@ interface AppStore {
   setError: (error: string | null, tabId?: string) => void;
   setRunning: (running: boolean, tabId?: string) => void;
   setExecutedSql: (sql: string | null, tabId?: string) => void;
+  setPlan: (
+    plan: ExplainPlan | null,
+    tabId?: string,
+    connId?: string,
+    database?: string | null,
+  ) => void;
+  setResultTab: (tab: ResultTab, tabId?: string) => void;
 }
 
 function emptyView(): TabViewState {
@@ -336,6 +349,8 @@ function emptyView(): TabViewState {
     database: null,
     executedSql: null,
     resultVersion: 0,
+    plan: null,
+    resultTab: "results",
   };
 }
 
@@ -859,6 +874,39 @@ export const useAppStore = create<AppStore>((set, get) => ({
         tabStates: {
           ...state.tabStates,
           [target]: { ...view, executedSql: sql },
+        },
+      };
+    }),
+  setPlan: (plan, tabId, connId, database) =>
+    set((state) => {
+      const target = tabId ?? state.activeTabId;
+      const view = state.tabStates[target] ?? emptyView();
+      return {
+        tabStates: {
+          ...state.tabStates,
+          [target]: {
+            ...view,
+            plan,
+            ...(plan
+              ? {
+                  resultTab: "plan" as const,
+                  connId: connId ?? view.connId,
+                  database:
+                    database === undefined ? view.database : database,
+                }
+              : {}),
+          },
+        },
+      };
+    }),
+  setResultTab: (resultTab, tabId) =>
+    set((state) => {
+      const target = tabId ?? state.activeTabId;
+      const view = state.tabStates[target] ?? emptyView();
+      return {
+        tabStates: {
+          ...state.tabStates,
+          [target]: { ...view, resultTab },
         },
       };
     }),

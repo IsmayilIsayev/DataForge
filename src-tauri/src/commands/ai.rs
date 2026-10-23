@@ -3,9 +3,9 @@ use tauri::State;
 
 use crate::ai::nl2sql::{self, Nl2SqlResult};
 use crate::ai::{client, prompts, AiKeyScope, AiProvider, AiSettings};
-use crate::core::drivers::QueryResult;
 use crate::core::secrets;
 use crate::error::{AppError, AppResult};
+use crate::sql_util::{explainable_statement, result_text};
 use crate::state::AppState;
 
 /// Plain HTTP is only acceptable for a local model server; any other base URL
@@ -73,42 +73,6 @@ fn optimize_user_message(sql: &str, plan: Option<&str>) -> String {
     }
 }
 
-fn strip_leading_trivia(mut sql: &str) -> &str {
-    loop {
-        sql = sql.trim_start();
-        if let Some(rest) = sql.strip_prefix("--") {
-            sql = rest.split_once('\n').map(|(_, tail)| tail).unwrap_or("");
-        } else if let Some(rest) = sql.strip_prefix("/*") {
-            sql = rest.split_once("*/").map(|(_, tail)| tail).unwrap_or("");
-        } else {
-            return sql;
-        }
-    }
-}
-
-fn first_keyword(statement: &str) -> &str {
-    let end = statement
-        .find(|character: char| !character.is_ascii_alphabetic())
-        .unwrap_or(statement.len());
-    &statement[..end]
-}
-
-fn explainable_statement(sql: &str) -> Option<&str> {
-    let trimmed = sql.trim();
-    let trimmed = trimmed.strip_suffix(';').unwrap_or(trimmed).trim();
-    if trimmed.is_empty() || trimmed.contains(';') {
-        return None;
-    }
-
-    let statement = strip_leading_trivia(trimmed).trim();
-    let keyword = first_keyword(statement);
-    if keyword.eq_ignore_ascii_case("select") || keyword.eq_ignore_ascii_case("with") {
-        Some(statement)
-    } else {
-        None
-    }
-}
-
 fn explain_sql_for(dialect: &str, sql: &str) -> Option<String> {
     let statement = explainable_statement(sql)?;
     match dialect {
@@ -117,27 +81,6 @@ fn explain_sql_for(dialect: &str, sql: &str) -> Option<String> {
         "sqlite" => Some(format!("EXPLAIN QUERY PLAN {statement}")),
         _ => None,
     }
-}
-
-fn plan_text(result: &QueryResult) -> String {
-    let mut text = String::new();
-    if result.columns.len() > 1 {
-        text.push_str(&result.columns.join(" | "));
-        text.push('\n');
-    }
-    for row in &result.rows {
-        let cells: Vec<String> = row
-            .iter()
-            .map(|value| match value {
-                serde_json::Value::Null => "NULL".to_string(),
-                serde_json::Value::String(value) => value.clone(),
-                other => other.to_string(),
-            })
-            .collect();
-        text.push_str(&cells.join(" | "));
-        text.push('\n');
-    }
-    text.trim_end().to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -328,6 +271,7 @@ pub async fn ai_optimize(
     conn_id: String,
     database: Option<String>,
     sql: String,
+    plan: Option<String>,
 ) -> AppResult<AiOptimizeResult> {
     let sql = sql.trim();
     if sql.is_empty() {
@@ -338,9 +282,16 @@ pub async fn ai_optimize(
     let dialect = driver.dialect_name();
     let settings = state.ai_settings().await;
 
-    let plan = if let Some(explain_sql) = explain_sql_for(dialect, sql) {
+    let supplied_plan = plan
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let plan = if supplied_plan.is_some() {
+        supplied_plan
+    } else if let Some(explain_sql) = explain_sql_for(dialect, sql) {
         match driver.run_statements(&[explain_sql], 100, database).await {
-            Ok(result) => Some(plan_text(&result)),
+            Ok(result) => Some(result_text(&result)),
             Err(explain_error) => {
                 eprintln!("[ai_optimize] EXPLAIN failed, continuing without a plan: {explain_error}");
                 None

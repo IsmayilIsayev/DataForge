@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Visual query plan (Plan button, Ctrl/Cmd+Shift+P): EXPLAIN as a tree with cost bars, the costliest step highlighted, warnings (full scans, filesort, bad estimates), optional ANALYZE (asks first on prod), and "Ask AI for indexes" that only suggests CREATE INDEX statements.
 - SSL/TLS settings for MySQL and PostgreSQL: disable, prefer, require, verify CA or verify full, with an optional CA certificate. `sslmode` / `ssl-mode` from a connection URL is applied to the dialog.
 
 ### Fixed

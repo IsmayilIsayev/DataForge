@@ -11,6 +11,9 @@ export interface SqlGuardResult {
 interface GuardOptions {
   title?: string;
   previewSql?: string;
+  /** Ask on production even for a read (used by EXPLAIN ANALYZE, which runs the query). */
+  forceProductionConfirm?: boolean;
+  note?: string;
 }
 
 function resolveConnection(
@@ -40,9 +43,11 @@ export async function guardSqlExecution(
   if (!connection || !sql.trim()) return { allow: true };
 
   const classification = classifySql(sql);
-  if (!classification.hasWrite) return { allow: true };
+  const needsConfirmation =
+    classification.hasWrite || options.forceProductionConfirm === true;
+  if (!needsConfirmation) return { allow: true };
 
-  if (isReadOnly(connection)) {
+  if (classification.hasWrite && isReadOnly(connection)) {
     return {
       allow: false,
       error: `“${connection.name}” is read-only — writes and DDL are blocked.`,
@@ -56,10 +61,6 @@ export async function guardSqlExecution(
     connection.database?.trim() ||
     connection.name.trim()
   );
-  const writeStatements = classification.statements.filter(
-    (statement) => statement.kind !== "read",
-  );
-  if (writeStatements.length === 0) return { allow: true };
 
   const confirmed = await useAppStore.getState().requestProdConfirm({
     connectionName: connection.name,
@@ -67,6 +68,7 @@ export async function guardSqlExecution(
     statements: classification.statements,
     title: options.title,
     previewSql: options.previewSql,
+    note: options.note,
   });
   return { allow: confirmed };
 }

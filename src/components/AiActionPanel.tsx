@@ -1,4 +1,6 @@
+import { useState } from "react";
 import type { CSSProperties } from "react";
+import { copyText } from "../clipboard";
 import type {
   AiActionState,
   AiExplainResult,
@@ -10,6 +12,7 @@ interface Props {
   state: AiActionState;
   onClose: () => void;
   onApply: (sql: string) => void;
+  onOpenInEditor?: (sql: string) => void;
 }
 
 const panelStyle: CSSProperties = {
@@ -179,18 +182,44 @@ function FixBody({
   );
 }
 
+function createIndexStatements(result: AiOptimizeResult): string[] {
+  const text = [
+    ...result.suggestions,
+    result.rewritten_sql ?? "",
+  ].join("\n");
+  const matches = text.match(/CREATE\s+(?:UNIQUE\s+)?INDEX\s+[^;\n]+/gi) ?? [];
+  const indexes = new Map<string, string>();
+  for (const match of matches) {
+    const cleaned = match.trim().replace(/^`+|`+$/g, "").trim();
+    if (!cleaned) continue;
+    const statement = cleaned.endsWith(";") ? cleaned : `${cleaned};`;
+    indexes.set(statement.toLowerCase(), statement);
+  }
+  return [...indexes.values()];
+}
+
 function OptimizeBody({
   result,
   onApply,
   onClose,
+  onOpenInEditor,
 }: {
   result: AiOptimizeResult;
   onApply: (sql: string) => void;
   onClose: () => void;
+  onOpenInEditor?: (sql: string) => void;
 }) {
+  const [copiedIndex, setCopiedIndex] = useState<string | null>(null);
   const rewritten = result.rewritten_sql?.trim()
     ? result.rewritten_sql
     : null;
+  const indexes = createIndexStatements(result);
+
+  const copyIndex = async (sql: string) => {
+    const ok = await copyText(sql);
+    setCopiedIndex(ok ? sql : null);
+    window.setTimeout(() => setCopiedIndex(null), 1500);
+  };
 
   return (
     <>
@@ -215,6 +244,57 @@ function OptimizeBody({
         </ul>
       ) : (
         <p style={{ margin: 0, color: "var(--mu)" }}>No suggestions.</p>
+      )}
+
+      {indexes.length > 0 && (
+        <div style={blockStyle}>
+          <div style={labelStyle}>Suggested indexes</div>
+          <div
+            style={{
+              padding: "6px 8px",
+              fontSize: 11,
+              color: "var(--fa)",
+              borderBottom: "1px solid var(--bd)",
+            }}
+          >
+            Review before running — nothing is executed automatically.
+          </div>
+          {indexes.map((indexSql) => (
+            <div
+              key={indexSql}
+              style={{ borderTop: "1px solid var(--bd)" }}
+            >
+              <pre className="allow-select" style={preStyle}>
+                {indexSql}
+              </pre>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "flex-end",
+                  gap: 8,
+                  padding: "0 8px 8px",
+                }}
+              >
+                <button
+                  type="button"
+                  className="v2-btn"
+                  onClick={() => void copyIndex(indexSql)}
+                >
+                  {copiedIndex === indexSql ? "Copied" : "Copy"}
+                </button>
+                {onOpenInEditor && (
+                  <button
+                    type="button"
+                    className="v2-btn"
+                    onClick={() => onOpenInEditor(indexSql)}
+                  >
+                    Open in editor
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
       )}
 
       {rewritten && (
@@ -265,7 +345,12 @@ const TITLES = {
   optimize: "Optimize SQL",
 } as const;
 
-export default function AiActionPanel({ state, onClose, onApply }: Props) {
+export default function AiActionPanel({
+  state,
+  onClose,
+  onApply,
+  onOpenInEditor,
+}: Props) {
   return (
     <section style={panelStyle} aria-label={TITLES[state.kind]}>
       <header style={headerStyle}>
@@ -334,6 +419,7 @@ export default function AiActionPanel({ state, onClose, onApply }: Props) {
             result={state.result}
             onApply={onApply}
             onClose={onClose}
+            onOpenInEditor={onOpenInEditor}
           />
         )}
       </div>

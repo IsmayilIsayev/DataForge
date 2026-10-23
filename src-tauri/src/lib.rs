@@ -2,6 +2,7 @@ pub mod ai;
 pub mod commands;
 pub mod core;
 pub mod error;
+pub mod sql_util;
 pub mod state;
 
 pub use error::AppError;
@@ -278,6 +279,7 @@ pub fn run() {
             commands::query::list_tables,
             commands::query::list_columns,
             commands::query::get_schema,
+            commands::plan::explain_plan,
             commands::edit::update_cell,
             commands::edit::insert_row,
             commands::edit::delete_rows,

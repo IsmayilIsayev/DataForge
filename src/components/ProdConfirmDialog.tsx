@@ -100,14 +100,20 @@ export default function ProdConfirmDialog() {
           }}
         >
           <p style={{ margin: 0, fontSize: 12.5, lineHeight: 1.55 }}>
-            You are about to change{" "}
-            <strong style={{ color: "var(--env-prod)" }}>
-              {request.connectionName}
-            </strong>
-            .
-            {needsTyped
-              ? " Type the database name to confirm."
-              : " This cannot be undone."}
+            {request.note ? (
+              request.note
+            ) : (
+              <>
+                You are about to change{" "}
+                <strong style={{ color: "var(--env-prod)" }}>
+                  {request.connectionName}
+                </strong>
+                .
+                {needsTyped
+                  ? " Type the database name to confirm."
+                  : " This cannot be undone."}
+              </>
+            )}
           </p>
 
           <div

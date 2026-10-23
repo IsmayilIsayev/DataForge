@@ -121,6 +121,26 @@ export interface AiOptimizeResult {
   rewritten_sql?: string | null;
 }
 
+export interface PlanNode {
+  label: string;
+  relation?: string;
+  index?: string;
+  rows_estimated?: number;
+  rows_actual?: number;
+  cost?: number;
+  time_ms?: number;
+  warnings: string[];
+  children: PlanNode[];
+}
+
+export interface ExplainPlan {
+  dialect: string;
+  analyzed: boolean;
+  sql: string;
+  root: PlanNode;
+  raw: string;
+}
+
 export interface AiTextTarget {
   sql: string;
   start: number;
