@@ -50,7 +50,7 @@ struct PlannedChange {
 
 pub(crate) fn quote_ident(dialect: Dialect, name: &str) -> String {
     match dialect {
-        Dialect::Mysql => format!("`{}`", name.replace('`', "``")),
+        Dialect::Mysql | Dialect::Clickhouse => format!("`{}`", name.replace('`', "``")),
         Dialect::Mssql => format!("[{}]", name.replace(']', "]]")),
         _ => format!("\"{}\"", name.replace('"', "\"\"")),
     }
@@ -68,7 +68,7 @@ pub(crate) fn quote_lit(dialect: Dialect, value: Option<&str>) -> String {
             // PostgreSQL uses E'...' so backslashes stay escaped even when the
             // server runs with standard_conforming_strings=off.
             let escaped = match dialect {
-                Dialect::Mysql | Dialect::Postgres => {
+                Dialect::Mysql | Dialect::Postgres | Dialect::Clickhouse => {
                     v.replace('\\', "\\\\").replace('\'', "''")
                 }
                 _ => v.replace('\'', "''"),
@@ -85,7 +85,7 @@ pub(crate) fn quote_lit(dialect: Dialect, value: Option<&str>) -> String {
 pub(crate) fn table_ref(dialect: Dialect, database: &str, table: &str) -> String {
     let quoted = quote_ident(dialect, table);
     match dialect {
-        Dialect::Mysql if !database.trim().is_empty() => {
+        Dialect::Mysql | Dialect::Clickhouse if !database.trim().is_empty() => {
             format!("{}.{}", quote_ident(dialect, database), quoted)
         }
         Dialect::Mssql if !database.trim().is_empty() => format!(
@@ -420,6 +420,10 @@ mod tests {
         );
         assert_eq!(
             quote_lit(Dialect::Mysql, Some(r"\'; DROP TABLE users; --")),
+            r"'\\''; DROP TABLE users; --'"
+        );
+        assert_eq!(
+            quote_lit(Dialect::Clickhouse, Some(r"\'; DROP TABLE users; --")),
             r"'\\''; DROP TABLE users; --'"
         );
         assert_eq!(

@@ -75,7 +75,7 @@ struct SearchJob {
 
 fn quote_ident(dialect: Dialect, name: &str) -> String {
     match dialect {
-        Dialect::Mysql => format!("`{}`", name.replace('`', "``")),
+        Dialect::Mysql | Dialect::Clickhouse => format!("`{}`", name.replace('`', "``")),
         Dialect::Mssql => format!("[{}]", name.replace(']', "]]")),
         _ => format!("\"{}\"", name.replace('"', "\"\"")),
     }
@@ -92,6 +92,11 @@ fn table_ref(dialect: Dialect, database: &str, table: &str) -> String {
             "{}.{}.{}",
             quote_ident(dialect, database),
             quote_ident(dialect, "dbo"),
+            quote_ident(dialect, table)
+        ),
+        Dialect::Clickhouse if !database.trim().is_empty() => format!(
+            "{}.{}",
+            quote_ident(dialect, database),
             quote_ident(dialect, table)
         ),
         _ => quote_ident(dialect, table),
@@ -122,6 +127,7 @@ fn is_json_type(data_type: &str) -> bool {
 fn is_uuid_type(dialect: Dialect, data_type: &str) -> bool {
     match dialect {
         Dialect::Postgres => data_type == "uuid",
+        Dialect::Clickhouse => data_type.contains("uuid"),
         Dialect::Mssql => data_type == "uniqueidentifier",
         Dialect::Mysql | Dialect::Sqlite | Dialect::Mongodb => data_type.contains("uuid"),
     }
@@ -157,6 +163,12 @@ fn is_text_type(dialect: Dialect, data_type: &str) -> bool {
                 || data_type.contains("clob")
                 || data_type.contains("string")
         }
+        Dialect::Clickhouse => {
+            data_type.contains("string")
+                || data_type.contains("char")
+                || data_type.contains("enum")
+                || data_type.contains("fixedstring")
+        }
     }
 }
 
@@ -181,6 +193,18 @@ fn is_numeric_type(data_type: &str) -> bool {
             "serial",
             "bigserial",
             "smallserial",
+            "int8",
+            "int16",
+            "int32",
+            "int64",
+            "int128",
+            "int256",
+            "uint8",
+            "uint16",
+            "uint32",
+            "uint64",
+            "uint128",
+            "uint256",
         ],
     )
 }
@@ -260,6 +284,9 @@ fn column_expression(dialect: Dialect, column: &ColumnInfo) -> String {
         Dialect::Mssql if is_uuid_type(Dialect::Mssql, &data_type) => {
             format!("CAST({quoted} AS nvarchar(36))")
         }
+        Dialect::Clickhouse if is_uuid_type(Dialect::Clickhouse, &data_type) => {
+            format!("toString({quoted})")
+        }
         _ => quoted,
     }
 }
@@ -276,7 +303,7 @@ fn select_expression(dialect: Dialect, column: &ColumnInfo) -> String {
 
 fn string_literal(dialect: Dialect, term: &str) -> String {
     let escaped = match dialect {
-        Dialect::Mysql | Dialect::Postgres => {
+        Dialect::Mysql | Dialect::Postgres | Dialect::Clickhouse => {
             term.replace('\\', "\\\\").replace('\'', "''")
         }
         _ => term.replace('\'', "''"),
@@ -300,6 +327,10 @@ fn like_literal(dialect: Dialect, term: &str, mode: SearchMode) -> String {
     };
     if dialect == Dialect::Mssql {
         format!("N'{body}'")
+    } else if dialect == Dialect::Clickhouse {
+        // ClickHouse parses backslash escapes inside string literals, so the
+        // LIKE escape characters must be doubled in the SQL text.
+        format!("'{}'", body.replace('\\', "\\\\"))
     } else {
         format!("'{body}'")
     }
@@ -417,6 +448,11 @@ fn estimate_sql(dialect: Dialect, database: &str) -> Option<String> {
              GROUP BY t.name"
                 .to_string(),
         ),
+        Dialect::Clickhouse => Some(format!(
+            "SELECT table, sum(rows) FROM system.parts \
+             WHERE active AND database = {} GROUP BY table",
+            string_literal(dialect, database)
+        )),
         Dialect::Sqlite | Dialect::Mongodb => None,
     }
 }
@@ -468,6 +504,7 @@ fn is_timeout_error(error: &AppError) -> bool {
     };
     let message = message.to_ascii_lowercase();
     message.contains("statement timeout")
+        || message.contains("timeout exceeded")
         || message.contains("max_execution_time")
         || message.contains("maximum statement execution time")
         || message.contains("query execution was interrupted")
@@ -633,7 +670,7 @@ pub async fn find_in_database(
         let driver = driver.clone();
         let database = database.clone();
         async move {
-            let outcome = if dialect == Dialect::Postgres {
+            let outcome = if matches!(dialect, Dialect::Postgres | Dialect::Clickhouse) {
                 driver
                     .query_with_timeout(
                         &job.sql,
@@ -1004,6 +1041,10 @@ mod tests {
         assert_eq!(
             like_literal(Dialect::Postgres, "100%", SearchMode::StartsWith),
             "'100\\%%'"
+        );
+        assert_eq!(
+            like_literal(Dialect::Clickhouse, "100%", SearchMode::Contains),
+            r"'%100\\%%'"
         );
     }
 

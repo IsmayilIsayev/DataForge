@@ -185,7 +185,7 @@ fn split_statements(sql: &str, dialect: Dialect) -> Vec<String> {
                     _ => '`',
                 };
 
-                if dialect == Dialect::Mysql && current == '\\' && index + 1 < len {
+                if matches!(dialect, Dialect::Mysql | Dialect::Clickhouse) && current == '\\' && index + 1 < len {
                     buffer.push(chars[index + 1]);
                     index += 2;
                 } else if current == quote {
@@ -400,6 +400,10 @@ mod tests {
         );
         assert_eq!(
             split_with(sql, Dialect::Mysql),
+            expected(&["SELECT 'C:\\'; SELECT 2"])
+        );
+        assert_eq!(
+            split_with(sql, Dialect::Clickhouse),
             expected(&["SELECT 'C:\\'; SELECT 2"])
         );
     }

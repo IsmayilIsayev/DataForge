@@ -26,7 +26,7 @@ interface Props {
   onSaved: (meta: ConnectionMeta) => void;
 }
 
-type DialectOption = "mysql" | "postgres" | "sqlite" | "mssql";
+type DialectOption = "mysql" | "postgres" | "sqlite" | "mssql" | "clickhouse";
 type ActiveTab =
   | "general"
   | "advanced"
@@ -110,6 +110,7 @@ const ENGINE_LABELS: Array<{ id: DialectOption; label: string }> = [
   { id: "postgres", label: "PostgreSQL" },
   { id: "mysql", label: "MySQL" },
   { id: "mssql", label: "SQL Server" },
+  { id: "clickhouse", label: "ClickHouse" },
   { id: "sqlite", label: "SQLite" },
 ];
 
@@ -135,6 +136,7 @@ const PRESETS: Preset[] = [
   { id: "rds", label: "Amazon RDS", dialect: "postgres", flavor: "rds", port: "5432", hint: "SSL usually required" },
   { id: "azure_postgres", label: "Azure Postgres", dialect: "postgres", flavor: "azure_postgres", port: "5432", hint: "SSL usually required" },
   { id: "mssql", label: "SQL Server", dialect: "mssql", port: "1433" },
+  { id: "clickhouse", label: "ClickHouse", dialect: "clickhouse", port: "8123" },
   { id: "sqlite", label: "SQLite", dialect: "sqlite", port: "" },
 ];
 
@@ -197,7 +199,8 @@ function isSupportedDialect(dialect: Dialect): dialect is DialectOption {
     dialect === "mysql" ||
     dialect === "postgres" ||
     dialect === "sqlite" ||
-    dialect === "mssql"
+    dialect === "mssql" ||
+    dialect === "clickhouse"
   );
 }
 
@@ -205,6 +208,7 @@ function defaultPort(dialect: DialectOption) {
   if (dialect === "mysql") return "3306";
   if (dialect === "postgres") return "5432";
   if (dialect === "mssql") return "1433";
+  if (dialect === "clickhouse") return "8123";
   return "";
 }
 
@@ -242,6 +246,7 @@ function parseConnectionUrl(raw: string): {
     dialect = "mysql";
     flavor = "mariadb";
   } else if (scheme === "sqlserver" || scheme === "mssql") dialect = "mssql";
+  else if (scheme === "clickhouse") dialect = "clickhouse";
   else if (scheme === "sqlite" || scheme === "sqlite3") dialect = "sqlite";
   if (!dialect) return null;
 
@@ -312,9 +317,12 @@ function buildInput(
       ? requestedDatabase || "postgres"
       : dialect === "mssql"
         ? requestedDatabase || "master"
-        : requestedDatabase;
+        : dialect === "clickhouse"
+          ? requestedDatabase || "default"
+          : requestedDatabase;
 
-  const supportsSsl = dialect === "mysql" || dialect === "postgres";
+  const supportsSsl =
+    dialect === "mysql" || dialect === "postgres" || dialect === "clickhouse";
   const ssh = extra.sshUse
     ? {
         host: extra.sshHost.trim(),
@@ -592,12 +600,16 @@ export default function ConnectionDialog({
           ? "postgres"
           : parsed.dialect === "mssql"
             ? "master"
-            : current.database),
+            : parsed.dialect === "clickhouse"
+              ? "default"
+              : current.database),
       name: current.name.trim() || parsed.database || parsed.host,
     }));
     const sslMode = parsed.sslMode;
     if (sslMode) {
       setExtra((current) => ({ ...current, sslMode }));
+    } else if (parsed.dialect === "clickhouse") {
+      setExtra((current) => ({ ...current, sslMode: "disable" }));
     }
   };
   const [status, setStatus] = useState<Status>(null);
@@ -618,7 +630,11 @@ export default function ConnectionDialog({
       readOnly: connection?.read_only ?? false,
       sqliteReadOnly: connection?.read_only ?? false,
       trustCert: connection?.trust_cert ?? false,
-      sslMode: connection?.ssl_mode ?? initialExtra.sslMode,
+      sslMode:
+        connection?.ssl_mode ??
+        (connection?.dialect === "clickhouse"
+          ? "disable"
+          : initialExtra.sslMode),
       sslCa: connection?.ssl_ca_path ?? "",
       sshUse: Boolean(connection?.ssh),
       sshHost: connection?.ssh?.host ?? "",
@@ -652,7 +668,9 @@ export default function ConnectionDialog({
             ? connection.database || "postgres"
             : nextDialect === "mssql"
               ? connection.database || "master"
-              : connection.database ?? "",
+              : nextDialect === "clickhouse"
+                ? connection.database || "default"
+                : connection.database ?? "",
         savePassword: true,
       });
     } else {
@@ -709,6 +727,15 @@ export default function ConnectionDialog({
     setActiveTab("general");
     setStatus(null);
     setShowPassword(false);
+    setExtra((current) => ({
+      ...current,
+      sslMode:
+        preset.dialect === "clickhouse"
+          ? "disable"
+          : current.sslMode === "disable"
+            ? "prefer"
+            : current.sslMode,
+    }));
 
     setForm((current) => {
       if (preset.dialect === "sqlite") {
@@ -734,9 +761,15 @@ export default function ConnectionDialog({
               current.username !== "postgres"
               ? current.username
               : "sa"
-            : current.username && current.username !== "postgres"
-              ? current.username
-              : "root";
+            : preset.dialect === "clickhouse"
+              ? current.username &&
+                current.username !== "postgres" &&
+                current.username !== "root"
+                ? current.username
+                : "default"
+              : current.username && current.username !== "postgres"
+                ? current.username
+                : "root";
 
       const database =
         preset.database ??
@@ -744,7 +777,9 @@ export default function ConnectionDialog({
           ? "postgres"
           : preset.dialect === "mssql"
             ? "master"
-            : "");
+            : preset.dialect === "clickhouse"
+              ? "default"
+              : "");
 
       return {
         ...current,
@@ -764,6 +799,15 @@ export default function ConnectionDialog({
     setActiveTab("general");
     setStatus(null);
     setShowPassword(false);
+    setExtra((current) => ({
+      ...current,
+      sslMode:
+        next === "clickhouse"
+          ? "disable"
+          : current.sslMode === "disable"
+            ? "prefer"
+            : current.sslMode,
+    }));
 
     setForm((current) => {
       if (next === "sqlite") {
@@ -804,6 +848,22 @@ export default function ConnectionDialog({
               ? "sa"
               : current.username,
           database: current.database || "master",
+          savePassword: true,
+        };
+      }
+
+      if (next === "clickhouse") {
+        return {
+          ...current,
+          host: current.host || "127.0.0.1",
+          port: "8123",
+          username:
+            !current.username ||
+            current.username === "root" ||
+            current.username === "postgres"
+              ? "default"
+              : current.username,
+          database: current.database || "default",
           savePassword: true,
         };
       }
@@ -965,6 +1025,21 @@ export default function ConnectionDialog({
     const modes: SshAuth[] = ["key", "password"];
     const index = modes.indexOf(extra.sshAuth);
     setExtraField("sshAuth", modes[(index + 1) % modes.length]);
+  };
+
+  const toggleClickHouseHttps = () => {
+    const secure = extra.sslMode === "disable";
+    setExtraField("sslMode", secure ? "require" : "disable");
+    setForm((current) => ({
+      ...current,
+      port: secure
+        ? current.port === "8123"
+          ? "8443"
+          : current.port
+        : current.port === "8443"
+          ? "8123"
+          : current.port,
+    }));
   };
 
   return (
@@ -1206,6 +1281,17 @@ export default function ConnectionDialog({
                     style={{ ...mono, height: 26, width: 96, padding: "0 8px", background: "var(--bg)", border: "1px solid var(--bd2)", borderRadius: 4, color: "var(--tx)", fontSize: 12.5 }}
                   />
                 </Row>
+                {dialect === "clickhouse" && (
+                  <Row label="Database">
+                    <input
+                      value={form.database}
+                      onChange={update("database")}
+                      placeholder="default"
+                      className={inputClass}
+                      style={{ ...mono, height: 26, flex: 1, minWidth: 0, padding: "0 8px", background: "var(--bg)", border: "1px solid var(--bd2)", borderRadius: 4, color: "var(--tx)", fontSize: 12.5 }}
+                    />
+                  </Row>
+                )}
                 <Row label="User">
                   <input
                     value={form.username}
@@ -1215,7 +1301,9 @@ export default function ConnectionDialog({
                         ? "postgres"
                         : dialect === "mssql"
                           ? "sa"
-                          : "root"
+                          : dialect === "clickhouse"
+                            ? "default"
+                            : "root"
                     }
                     className={inputClass}
                     style={{ ...mono, height: 26, flex: 1, minWidth: 0, padding: "0 8px", background: "var(--bg)", border: "1px solid var(--bd2)", borderRadius: 4, color: "var(--tx)", fontSize: 12.5 }}
@@ -1274,6 +1362,15 @@ export default function ConnectionDialog({
                     }
                   />
                 </Row>
+                {dialect === "clickhouse" && (
+                  <Row label="">
+                    <Check
+                      checked={extra.sslMode !== "disable"}
+                      label="HTTPS (TLS)"
+                      onChange={toggleClickHouseHttps}
+                    />
+                  </Row>
+                )}
                 {dialect === "mssql" && extra.readOnly && (
                   <p
                     style={{

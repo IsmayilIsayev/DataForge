@@ -64,6 +64,10 @@ export default function TableDataView({ tab, onRefresh, theme }: Props) {
   );
   const dialect = connection?.dialect ?? "mysql";
   const isProd = connection?.environment === "prod";
+  const isClickHouse = dialect === "clickhouse";
+  const readOnlyReason = isClickHouse
+    ? "ClickHouse has no transactional UPDATE/DELETE, so table data is read-only here. Use the SQL editor to run mutations."
+    : null;
   const autoCommitActive = autoCommitEdits && !isProd;
 
   const refresh = () => {
@@ -114,10 +118,15 @@ export default function TableDataView({ tab, onRefresh, theme }: Props) {
         <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>
           {tab.database}.{tab.table}
         </span>
-        <span style={{ fontSize: 11, color: "var(--fa)" }}>
-          {pkColumns.length > 0
-            ? "· double-click to edit"
-            : "· read-only (no primary key)"}
+        <span
+          title={readOnlyReason ?? undefined}
+          style={{ fontSize: 11, color: "var(--fa)" }}
+        >
+          {isClickHouse
+            ? "· read-only (no transactional UPDATE/DELETE)"
+            : pkColumns.length > 0
+              ? "· double-click to edit"
+              : "· read-only (no primary key)"}
         </span>
         <div
           style={{ width: 1, height: 14, background: "var(--bd)" }}
@@ -153,9 +162,10 @@ export default function TableDataView({ tab, onRefresh, theme }: Props) {
         />
         <label
           title={
-            isProd
+            readOnlyReason ??
+            (isProd
               ? "Auto-commit is disabled for production connections. Save batches changes through the production confirmation."
-              : "ON writes every edit immediately; OFF batches changes until Save"
+              : "ON writes every edit immediately; OFF batches changes until Save")
           }
           style={{
             display: "flex",
@@ -170,8 +180,8 @@ export default function TableDataView({ tab, onRefresh, theme }: Props) {
         >
           <input
             type="checkbox"
-            checked={autoCommitActive}
-            disabled={isProd}
+            checked={autoCommitActive && !isClickHouse}
+            disabled={isProd || isClickHouse}
             onChange={(event) => setAutoCommitEdits(event.target.checked)}
             style={{ margin: 0, accentColor: "var(--ac)" }}
           />
@@ -181,8 +191,8 @@ export default function TableDataView({ tab, onRefresh, theme }: Props) {
           type="button"
           className="v2-icon-btn"
           onClick={() => setInsertOpen(true)}
-          disabled={columns.length === 0}
-          title="Add row"
+          disabled={columns.length === 0 || isClickHouse}
+          title={readOnlyReason ?? "Add row"}
           style={{
             height: 24,
             display: "flex",
@@ -191,7 +201,8 @@ export default function TableDataView({ tab, onRefresh, theme }: Props) {
             border: 0,
             borderRadius: 4,
             background: "transparent",
-            color: columns.length === 0 ? "var(--fa)" : "var(--mu)",
+            color:
+              columns.length === 0 || isClickHouse ? "var(--fa)" : "var(--mu)",
             cursor: "default",
             padding: "0 6px",
             fontSize: 12,
@@ -284,7 +295,7 @@ export default function TableDataView({ tab, onRefresh, theme }: Props) {
         database={tab.database}
         table={tab.table}
         connId={tab.connectionId}
-        editable={pkColumns.length > 0}
+        editable={!isClickHouse && pkColumns.length > 0}
         pkColumns={pkColumns}
         emptyText="No table data loaded"
         theme={theme}

@@ -1,3 +1,4 @@
+pub mod clickhouse;
 pub mod er;
 pub mod mssql;
 pub mod mysql;
@@ -87,6 +88,7 @@ pub enum Dialect {
     Sqlite,
     Mssql,
     Mongodb,
+    Clickhouse,
 }
 
 impl Dialect {
@@ -97,6 +99,7 @@ impl Dialect {
             Dialect::Sqlite => "sqlite",
             Dialect::Mssql => "mssql",
             Dialect::Mongodb => "mongodb",
+            Dialect::Clickhouse => "clickhouse",
         }
     }
 }
@@ -386,6 +389,7 @@ fn default_port(dialect: Dialect) -> u16 {
         Dialect::Mysql => 3306,
         Dialect::Postgres => 5432,
         Dialect::Mssql => 1433,
+        Dialect::Clickhouse => 8123,
         Dialect::Sqlite | Dialect::Mongodb => 0,
     }
 }
@@ -423,6 +427,9 @@ pub async fn connect(
         }
         Dialect::Sqlite => Arc::new(sqlite::SqliteDriver::connect(&endpoint, password).await?),
         Dialect::Mssql => Arc::new(mssql::MssqlDriver::connect(&endpoint, password).await?),
+        Dialect::Clickhouse => {
+            Arc::new(clickhouse::ClickHouseDriver::connect(&endpoint, password).await?)
+        }
         other => {
             return Err(AppError::Config(format!(
                 "{} dialekti MVP-də dəstəklənmir",

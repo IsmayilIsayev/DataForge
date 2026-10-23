@@ -151,8 +151,8 @@ pub async fn explain_plan(
         Dialect::Mssql => Err(AppError::Config(
             "Execution plans are not supported for SQL Server.".to_string(),
         )),
-        Dialect::Mongodb => Err(AppError::Config(
-            "Execution plans are not supported for MongoDB.".to_string(),
+        Dialect::Mongodb | Dialect::Clickhouse => Err(AppError::Config(
+            "Execution plans are not supported for this dialect.".to_string(),
         )),
     }
 }

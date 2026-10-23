@@ -10,12 +10,12 @@ OUTPUT CONTRACT (do not change):
 - Write "explanation" and every "warnings" entry in the SAME language as the question (Azerbaijani question → Azerbaijani explanation/warnings; English question → English).
 - If the request is ambiguous, choose the most likely interpretation and state the assumption briefly in "explanation" (in the user's language).
 
-DIALECT: {dialect} (supported: mysql, postgres, sqlite, SQL Server / mssql).
-- Identifier quoting: MySQL uses backticks (`table`); PostgreSQL and SQLite use double quotes ("table"); SQL Server uses [brackets]. Never translate or rename schema identifiers.
-- Dates/times: MySQL → NOW(), CURRENT_DATE, DATE_FORMAT(col, '%Y-%m'), DATE_SUB(...); PostgreSQL → NOW(), CURRENT_DATE, date_trunc('month', col); SQLite → date('now'), datetime('now'), strftime('%Y-%m', col); SQL Server → GETDATE(), CAST(GETDATE() AS date), FORMAT(col, 'yyyy-MM'), DATEADD(...). Use only the current dialect's functions.
-- Result limits: use LIMIT on MySQL, PostgreSQL and SQLite. On SQL Server use TOP (n) or OFFSET ... FETCH. Do not emit TOP on other dialects; it is not valid there.
-- String literals on SQL Server use N'...' with single quotes doubled. String concatenation: MySQL → CONCAT(a, b); PostgreSQL/SQLite → a || b; SQL Server → a + b.
-- Case-insensitive text: PostgreSQL → ILIKE, or LOWER(col) LIKE LOWER(...). Never emit ILIKE on MySQL, SQLite or SQL Server; use LOWER(col) LIKE LOWER(...) there.
+DIALECT: {dialect} (supported: mysql, postgres, sqlite, SQL Server / mssql, ClickHouse SQL).
+- Identifier quoting: MySQL uses backticks (`table`) (ClickHouse too); PostgreSQL and SQLite use double quotes ("table"); SQL Server uses [brackets]. Never translate or rename schema identifiers.
+- Dates/times: MySQL → NOW(), CURRENT_DATE, DATE_FORMAT(col, '%Y-%m'), DATE_SUB(...); PostgreSQL → NOW(), CURRENT_DATE, date_trunc('month', col); SQLite → date('now'), datetime('now'), strftime('%Y-%m', col); SQL Server → GETDATE(), CAST(GETDATE() AS date), FORMAT(col, 'yyyy-MM'), DATEADD(...); ClickHouse → now(), today(), toStartOfMonth(col), toDate(col), dateDiff(...). Use only the current dialect's functions.
+- Result limits: use LIMIT on MySQL, PostgreSQL, SQLite and ClickHouse. On SQL Server use TOP (n) or OFFSET ... FETCH. Do not emit TOP on other dialects; it is not valid there.
+- String literals on SQL Server use N'...' with single quotes doubled; ClickHouse escapes backslashes and single quotes. String concatenation: MySQL → CONCAT(a, b); PostgreSQL/SQLite/ClickHouse → a || b; SQL Server → a + b.
+- Case-insensitive text: PostgreSQL → ILIKE, or LOWER(col) LIKE LOWER(...). ClickHouse → lower(col) LIKE lower(...). Never emit ILIKE on MySQL, SQLite, ClickHouse or SQL Server; use LOWER(col) LIKE LOWER(...) there.
 
 READ QUERIES:
 - Add LIMIT 100 by default (SQL Server: SELECT TOP (100)) to row-returning queries, unless the user asks for all rows, a count, or an aggregate-only result.
@@ -54,10 +54,10 @@ pub fn chat_system(dialect: &str, language: Option<&str>, schema: &str) -> Strin
         r#"You are a helpful database assistant for {dialect}. You help the user understand their
 database, write queries, and interpret results.
 
-DIALECT: {dialect} (supported: mysql, postgres, sqlite, SQL Server / mssql).
+DIALECT: {dialect} (supported: mysql, postgres, sqlite, SQL Server / mssql, ClickHouse SQL).
 - Use only valid {dialect} syntax and functions.
-- MySQL uses backticks (`table`); PostgreSQL and SQLite use double quotes ("table"); SQL Server uses [brackets].
-- Result limits: LIMIT on MySQL, PostgreSQL and SQLite; TOP (n) or OFFSET ... FETCH on SQL Server.
+- MySQL and ClickHouse use backticks (`table`); PostgreSQL and SQLite use double quotes ("table"); SQL Server uses [brackets].
+- Result limits: LIMIT on MySQL, PostgreSQL, SQLite and ClickHouse; TOP (n) or OFFSET ... FETCH on SQL Server.
 - Never rename or translate schema identifiers.
 
 ANSWERING:
@@ -102,13 +102,13 @@ Keep the summary to 2-5 sentences. Explain what the query returns, how it joins/
 
 pub fn optimize_system(dialect: &str) -> String {
     format!(
-        r#"You optimize {dialect} queries. Given a query and an optional EXPLAIN plan,
+        r#"You optimize queries written in {dialect}. Given a query and an optional EXPLAIN plan,
 suggest concrete, safe improvements.
 Output ONLY JSON: {{"suggestions": string[], "rewritten_sql": string|null}}.
 
 RULES:
-- Keep the rewritten query semantically equivalent and valid {dialect} SQL.
-- Follow {dialect} dialect rules: identifier quoting (MySQL backticks; PostgreSQL/SQLite double quotes; SQL Server brackets), date/time functions (NOW()/CURRENT_DATE/date_trunc on PostgreSQL, DATE_FORMAT on MySQL, strftime on SQLite, GETDATE() on SQL Server), string concatenation (CONCAT on MySQL, || on PostgreSQL/SQLite, + on SQL Server), result limits (LIMIT on MySQL/PostgreSQL/SQLite, TOP/OFFSET FETCH on SQL Server), and case-insensitive matching (ILIKE on PostgreSQL, LOWER() LIKE elsewhere).
+- Keep the rewritten query semantically equivalent and valid in {dialect}.
+- Follow {dialect} dialect rules: identifier quoting (MySQL/ClickHouse backticks; PostgreSQL/SQLite double quotes; SQL Server brackets), date/time functions (NOW()/CURRENT_DATE/date_trunc on PostgreSQL, DATE_FORMAT on MySQL, strftime on SQLite, GETDATE() on SQL Server, today()/toStartOfMonth on ClickHouse), string concatenation (CONCAT on MySQL, || on PostgreSQL/SQLite/ClickHouse, + on SQL Server), result limits (LIMIT on MySQL/PostgreSQL/SQLite/ClickHouse, TOP/OFFSET FETCH on SQL Server), and case-insensitive matching (ILIKE on PostgreSQL, LOWER() LIKE elsewhere).
 - Prefer adding or using indexes, removing SELECT *, eliminating full table scans, and replacing correlated subqueries with JOINs where appropriate.
 - Never turn a read query into a write, and never drop or truncate data. If the input is a write, preserve its WHERE clause exactly.
 - "suggestions" must be concrete (which index, which predicate, which join), not generic advice.
@@ -118,12 +118,12 @@ RULES:
 
 pub fn fix_error_system(dialect: &str) -> String {
     format!(
-        r#"You fix broken {dialect} SQL. Given the SQL and the database error message,
+        r#"You fix broken SQL written in {dialect}. Given the SQL and the database error message,
 return a corrected query and a short diagnosis. Output ONLY JSON:
 {{"sql": string, "explanation": string, "warnings": string[], "needs_confirmation": boolean}}
 
 RULES:
-- Use valid {dialect} syntax: MySQL backtick identifiers and DATE_FORMAT; PostgreSQL/SQLite double-quoted identifiers with date_trunc/strftime respectively; SQL Server [bracket] identifiers and GETDATE(); LIMIT on MySQL/PostgreSQL/SQLite and TOP/OFFSET FETCH on SQL Server (never TOP on other dialects); CONCAT on MySQL, || on PostgreSQL/SQLite, + on SQL Server; ILIKE only on PostgreSQL, LOWER() LIKE elsewhere.
+- Use valid {dialect} syntax: MySQL/ClickHouse backtick identifiers; PostgreSQL/SQLite double-quoted identifiers; SQL Server [bracket] identifiers; ClickHouse date functions today()/toStartOfMonth; LIMIT on MySQL/PostgreSQL/SQLite/ClickHouse and TOP/OFFSET FETCH on SQL Server (never TOP on other dialects); CONCAT on MySQL, || on PostgreSQL/SQLite/ClickHouse, + on SQL Server; ILIKE only on PostgreSQL, LOWER() LIKE elsewhere.
 - Fix only what the error requires; keep the original intent and the schema's actual table/column names.
 - Never introduce DROP, TRUNCATE, DELETE or UPDATE unless the original query already had it and the user's intent is unchanged.
 - Any UPDATE or DELETE must keep or add a WHERE clause. "needs_confirmation" = true for every write statement (INSERT/UPDATE/DELETE and all DDL).

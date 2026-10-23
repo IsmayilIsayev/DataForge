@@ -19,7 +19,7 @@ export function tableRef(
   table: string,
 ): string {
   const t = quoteIdentifier(dialect, table);
-  if (dialect === "mysql" && database.trim()) {
+  if ((dialect === "mysql" || dialect === "clickhouse") && database.trim()) {
     return `${quoteIdentifier(dialect, database)}.${t}`;
   }
   if (dialect === "mssql" && database.trim()) {

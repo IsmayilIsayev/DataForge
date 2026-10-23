@@ -7,6 +7,7 @@ function formatterLanguage(dialect: Dialect | string): SqlLanguage {
   if (dialect === "mysql") return "mysql";
   if (dialect === "sqlite") return "sqlite";
   if (dialect === "mssql") return "transactsql";
+  if (dialect === "clickhouse") return "sql";
   return "sql";
 }
 
@@ -35,7 +36,7 @@ export function formatSql(sql: string, dialect: Dialect | string = "mysql"): str
 }
 
 export function quoteIdentifier(dialect: Dialect, value: string): string {
-  if (dialect === "mysql") {
+  if (dialect === "mysql" || dialect === "clickhouse") {
     return `\`${value.replace(/`/g, "``")}\``;
   }
   if (dialect === "mssql") {
@@ -53,7 +54,7 @@ export function escapeLikePattern(value: string): string {
 
 export function stringLiteral(dialect: Dialect, value: string): string {
   const escaped =
-    dialect === "mysql" || dialect === "postgres"
+    dialect === "mysql" || dialect === "postgres" || dialect === "clickhouse"
       ? value.replace(/\\/g, "\\\\").replace(/'/g, "''")
       : value.replace(/'/g, "''");
   if (dialect === "postgres") return `E'${escaped}'`;
@@ -75,6 +76,11 @@ export function qualifiedTable(
 ): string {
   if (dialect === "postgres") {
     return quoteIdentifier(dialect, table);
+  }
+  if (dialect === "clickhouse") {
+    return database.trim()
+      ? `${quoteIdentifier(dialect, database)}.${quoteIdentifier(dialect, table)}`
+      : quoteIdentifier(dialect, table);
   }
   if (dialect === "mssql") {
     return `${quoteIdentifier(dialect, database)}.${quoteIdentifier(

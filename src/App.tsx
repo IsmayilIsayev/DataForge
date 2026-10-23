@@ -122,6 +122,7 @@ function engineShort(dialect: string, flavor?: string) {
   if (flavor && FLAVOR_SHORT[flavor]) return FLAVOR_SHORT[flavor];
   if (dialect === "postgres") return "pg";
   if (dialect === "mongodb") return "mongo";
+  if (dialect === "clickhouse") return "ch";
   return dialect;
 }
 
@@ -131,6 +132,7 @@ function engineLabel(dialect: string | undefined, flavor?: string) {
   if (dialect === "sqlite") return "SQLite";
   if (dialect === "mssql") return "SQL Server";
   if (dialect === "mongodb") return "MongoDB";
+  if (dialect === "clickhouse") return "ClickHouse";
   if (dialect === "mysql") return "MySQL";
   return "—";
 }

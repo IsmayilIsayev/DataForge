@@ -31,7 +31,7 @@ import {
   rowMatchesFilters,
 } from "../gridFilter";
 import type { ColumnFilter, FilterOperator } from "../gridFilter";
-import { quoteIdentifier, sqliteBooleanLiteral } from "../sql";
+import { quoteIdentifier, sqliteBooleanLiteral, stringLiteral } from "../sql";
 import { isProduction } from "../environment";
 import { guardSqlExecution, readOnlyWriteError } from "../prodGuard";
 import { useAppStore } from "../store";
@@ -202,11 +202,11 @@ function jsonCell(value: CellValue): string | number | boolean | null {
   return value;
 }
 
-function insertCell(value: CellValue): string {
+function insertCell(value: CellValue, dialect: Dialect): string {
   if (value === null) return "NULL";
   if (typeof value === "number") return String(value);
   if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
-  return `'${value.replace(/'/g, "''")}'`;
+  return stringLiteral(dialect, value);
 }
 
 function tableRef(
@@ -963,7 +963,7 @@ export default function DataGrid({
       .map((name) => quoteIdentifier(dialect, name))
       .join(", ");
     const values = matrix.rows.map((row) => {
-      return `(${row.map(insertCell).join(", ")})`;
+      return `(${row.map((cell) => insertCell(cell, dialect)).join(", ")})`;
     });
     return `INSERT INTO ${target} (${names}) VALUES\n  ${values.join(",\n  ")};`;
   }

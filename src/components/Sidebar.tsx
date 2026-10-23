@@ -91,6 +91,7 @@ const ENGINE_SHORT: Record<string, string> = {
   sqlite: "sqlite",
   mssql: "mssql",
   mongodb: "mongo",
+  clickhouse: "ch",
 };
 
 const FLAVOR_SHORT: Record<string, string> = {
@@ -130,6 +131,7 @@ function engineName(connection: ConnectionMeta) {
   if (connection.flavor) {
     return FLAVOR_LABELS[connection.flavor] ?? connection.flavor;
   }
+  if (connection.dialect === "clickhouse") return "ClickHouse";
   return connection.dialect;
 }
 
@@ -1979,20 +1981,22 @@ export default function Sidebar({
                       .catch((error) => storeError(error));
                   }}
                 />
-                <MenuItem
-                  icon="icon-flask-conical"
-                  label="Generate test data…"
-                  onClick={() => {
-                    const menu = contextMenu;
-                    const connection = contextConnection;
-                    setContextMenu(null);
-                    setGenerateFor({
-                      connection,
-                      database: menu.database,
-                      table: menu.table,
-                    });
-                  }}
-                />
+                {contextConnection.dialect !== "clickhouse" && (
+                  <MenuItem
+                    icon="icon-flask-conical"
+                    label="Generate test data…"
+                    onClick={() => {
+                      const menu = contextMenu;
+                      const connection = contextConnection;
+                      setContextMenu(null);
+                      setGenerateFor({
+                        connection,
+                        database: menu.database,
+                        table: menu.table,
+                      });
+                    }}
+                  />
+                )}
                 <MenuItem
                   icon="icon-copy"
                   label="Copy name"
