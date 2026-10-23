@@ -881,7 +881,7 @@ async fn stream_next(
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_row_limit, cell_to_json, hex, quote_ident, quote_lit};
+    use super::{apply_row_limit, cell_to_json, hex, quote_lit};
     use serde_json::Value;
     use std::borrow::Cow;
     use tiberius::numeric::Numeric;
