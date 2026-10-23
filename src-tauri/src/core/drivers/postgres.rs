@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::core::drivers::{
     int_json, BoxFuture, ColumnInfo, ConnectionInput, Dialect, Driver, QueryResult, SchemaSnapshot,
-    SchemaTable, TableInfo, TableKind,
+    SchemaTable, TableInfo, TableKind, TxError,
 };
 use crate::error::{AppError, AppResult};
 
@@ -240,6 +240,31 @@ impl Driver for PostgresDriver {
         })
     }
 
+    fn apply_transaction<'a>(
+        &'a self,
+        statements: &'a [String],
+        database: Option<String>,
+    ) -> BoxFuture<'a, Result<u64, TxError>> {
+        Box::pin(async move {
+            let requested = database.filter(|value| !value.trim().is_empty());
+
+            if requested.is_none() || requested.as_deref() == Some(self.database.as_str()) {
+                let mut conn = self
+                    .pool
+                    .acquire()
+                    .await
+                    .map_err(|error| TxError::new(None, db_error(error)))?;
+                run_transaction(&mut conn, statements).await
+            } else {
+                let mut conn = self
+                    .connect_to(requested.as_deref().unwrap_or_default())
+                    .await
+                    .map_err(|error| TxError::new(None, error))?;
+                run_transaction(&mut conn, statements).await
+            }
+        })
+    }
+
     fn get_schema<'a>(
         &'a self,
         database: Option<&'a str>,
@@ -318,6 +343,36 @@ impl Driver for PostgresDriver {
             Self::columns_on(&mut conn, table).await
         })
     }
+}
+
+async fn run_transaction(
+    conn: &mut PgConnection,
+    statements: &[String],
+) -> Result<u64, TxError> {
+    let mut tx = conn
+        .begin()
+        .await
+        .map_err(|error| TxError::new(None, db_error(error)))?;
+
+    let mut affected = 0u64;
+    for (index, statement) in statements.iter().enumerate() {
+        let statement = trim_statement(statement);
+        if statement.is_empty() {
+            continue;
+        }
+        match sqlx::query(statement).execute(&mut *tx).await {
+            Ok(result) => affected += result.rows_affected(),
+            Err(error) => {
+                let _ = tx.rollback().await;
+                return Err(TxError::new(Some(index), db_error(error)));
+            }
+        }
+    }
+
+    tx.commit()
+        .await
+        .map_err(|error| TxError::new(None, db_error(error)))?;
+    Ok(affected)
 }
 
 async fn execute_batch(

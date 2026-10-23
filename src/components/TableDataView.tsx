@@ -22,6 +22,14 @@ export default function TableDataView({ tab, onRefresh, theme }: Props) {
   const error = useAppStore((state) => state.error);
   const connections = useAppStore((state) => state.connections);
   const setTableWhere = useAppStore((state) => state.setTableWhere);
+  const autoCommitEdits = useAppStore((state) => state.autoCommitEdits);
+  const setAutoCommitEdits = useAppStore(
+    (state) => state.setAutoCommitEdits,
+  );
+  const addPendingChange = useAppStore((state) => state.addPendingChange);
+  const clearPendingChanges = useAppStore(
+    (state) => state.clearPendingChanges,
+  );
   const [where, setWhere] = useState(tab.where);
   const [orderBy, setOrderBy] = useState(tab.orderBy);
   const [columns, setColumns] = useState<ColumnInfo[]>([]);
@@ -61,6 +69,15 @@ export default function TableDataView({ tab, onRefresh, theme }: Props) {
   };
 
   const applyServerQuery = (nextWhere: string, nextOrderBy: string) => {
+    const pending =
+      useAppStore.getState().pendingChanges[tab.id]?.length ?? 0;
+    if (
+      pending > 0 &&
+      !window.confirm(`Discard ${pending} unsaved changes?`)
+    ) {
+      return;
+    }
+    if (pending > 0) clearPendingChanges(tab.id);
     setWhere(nextWhere);
     setOrderBy(nextOrderBy);
     setTableWhere(tab.id, nextWhere);
@@ -131,6 +148,26 @@ export default function TableDataView({ tab, onRefresh, theme }: Props) {
             color: "var(--tx)",
           }}
         />
+        <label
+          title="ON writes every edit immediately; OFF batches changes until Save"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 5,
+            fontSize: 11,
+            color: "var(--mu)",
+            whiteSpace: "nowrap",
+            userSelect: "none",
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={autoCommitEdits}
+            onChange={(event) => setAutoCommitEdits(event.target.checked)}
+            style={{ margin: 0, accentColor: "var(--ac)" }}
+          />
+          <span>Auto-commit edits</span>
+        </label>
         <button
           type="button"
           className="v2-icon-btn"
@@ -185,8 +222,12 @@ export default function TableDataView({ tab, onRefresh, theme }: Props) {
             table={tab.table}
             dialect={dialect}
             columns={columns}
+            batch={!autoCommitEdits}
             onClose={() => setInsertOpen(false)}
             onInserted={refresh}
+            onQueued={(values) =>
+              addPendingChange(tab.id, { kind: "insert", values })
+            }
           />
         </Suspense>
       )}
@@ -241,6 +282,7 @@ export default function TableDataView({ tab, onRefresh, theme }: Props) {
         serverSide
         where={where}
         onServerQuery={applyServerQuery}
+        onReload={refresh}
       />
     </>
   );

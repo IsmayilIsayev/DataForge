@@ -5,11 +5,11 @@ use serde_json::{Number, Value};
 use sqlx::sqlite::{
     SqliteConnectOptions, SqliteConnection, SqlitePool, SqlitePoolOptions, SqliteRow,
 };
-use sqlx::{Column, Executor, Row, Statement, TypeInfo, ValueRef};
+use sqlx::{Column, Connection, Executor, Row, Statement, TypeInfo, ValueRef};
 
 use crate::core::drivers::{
     int_json, BoxFuture, ColumnInfo, ConnectionInput, Dialect, Driver, QueryResult,
-    SchemaSnapshot, SchemaTable, TableInfo, TableKind,
+    SchemaSnapshot, SchemaTable, TableInfo, TableKind, TxError,
 };
 use crate::error::{AppError, AppResult};
 
@@ -213,6 +213,21 @@ impl Driver for SqliteDriver {
         })
     }
 
+    fn apply_transaction<'a>(
+        &'a self,
+        statements: &'a [String],
+        _database: Option<String>,
+    ) -> BoxFuture<'a, Result<u64, TxError>> {
+        Box::pin(async move {
+            let mut conn = self
+                .pool
+                .acquire()
+                .await
+                .map_err(|error| TxError::new(None, db_error(error)))?;
+            run_transaction(&mut conn, statements).await
+        })
+    }
+
     fn get_schema<'a>(
         &'a self,
         database: Option<&'a str>,
@@ -276,6 +291,36 @@ impl Driver for SqliteDriver {
     ) -> BoxFuture<'a, AppResult<Vec<ColumnInfo>>> {
         Box::pin(async move { self.columns(database, table).await })
     }
+}
+
+async fn run_transaction(
+    conn: &mut SqliteConnection,
+    statements: &[String],
+) -> Result<u64, TxError> {
+    let mut tx = conn
+        .begin()
+        .await
+        .map_err(|error| TxError::new(None, db_error(error)))?;
+
+    let mut affected = 0u64;
+    for (index, statement) in statements.iter().enumerate() {
+        let statement = trim_statement(statement);
+        if statement.is_empty() {
+            continue;
+        }
+        match sqlx::query(statement).execute(&mut *tx).await {
+            Ok(result) => affected += result.rows_affected(),
+            Err(error) => {
+                let _ = tx.rollback().await;
+                return Err(TxError::new(Some(index), db_error(error)));
+            }
+        }
+    }
+
+    tx.commit()
+        .await
+        .map_err(|error| TxError::new(None, db_error(error)))?;
+    Ok(affected)
 }
 
 async fn execute_batch(

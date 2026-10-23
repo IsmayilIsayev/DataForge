@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Batch editing: cell edits, deleted and new rows are queued (highlighted) and saved together in one transaction with Save (Ctrl/Cmd+S) or dropped with Discard; Preview SQL, undo (Ctrl/Cmd+Z), and an "Auto-commit edits" switch for the old behaviour.
+
+### Added
+
 - Long values open in a side or bottom panel on double-click (resizable, with Edit, Copy and pretty JSON).
 - "Update available" and one-time "What's new" windows that show the release notes.
 

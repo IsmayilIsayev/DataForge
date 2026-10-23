@@ -8,7 +8,7 @@ use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
 use crate::core::drivers::{
     int_json, BoxFuture, ColumnInfo, ConnectionInput, Dialect, Driver, QueryResult,
-    SchemaSnapshot, SchemaTable, TableInfo, TableKind,
+    SchemaSnapshot, SchemaTable, TableInfo, TableKind, TxError,
 };
 use crate::error::{AppError, AppResult};
 
@@ -429,6 +429,23 @@ impl Driver for MssqlDriver {
         })
     }
 
+    fn apply_transaction<'a>(
+        &'a self,
+        statements: &'a [String],
+        database: Option<String>,
+    ) -> BoxFuture<'a, Result<u64, TxError>> {
+        Box::pin(async move {
+            let requested = database
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| self.database.clone());
+            let mut client = self
+                .client_for(&requested)
+                .await
+                .map_err(|error| TxError::new(None, error))?;
+            run_transaction(&mut client, statements).await
+        })
+    }
+
     fn get_schema<'a>(
         &'a self,
         database: Option<&'a str>,
@@ -512,6 +529,37 @@ impl Driver for MssqlDriver {
             Self::columns_on(&mut client, database, table).await
         })
     }
+}
+
+async fn run_transaction(
+    client: &mut MssqlClient,
+    statements: &[String],
+) -> Result<u64, TxError> {
+    client
+        .execute("BEGIN TRANSACTION", &[])
+        .await
+        .map_err(|error| TxError::new(None, db_error(error)))?;
+
+    let mut affected = 0u64;
+    for (index, statement) in statements.iter().enumerate() {
+        let statement = trim_statement(statement);
+        if statement.is_empty() {
+            continue;
+        }
+        match client.execute(statement, &[]).await {
+            Ok(result) => affected += result.total(),
+            Err(error) => {
+                let _ = client.execute("ROLLBACK TRANSACTION", &[]).await;
+                return Err(TxError::new(Some(index), db_error(error)));
+            }
+        }
+    }
+
+    client
+        .execute("COMMIT TRANSACTION", &[])
+        .await
+        .map_err(|error| TxError::new(None, db_error(error)))?;
+    Ok(affected)
 }
 
 async fn execute_batch(

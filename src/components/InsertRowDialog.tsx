@@ -10,8 +10,10 @@ interface Props {
   table: string;
   dialect: Dialect;
   columns: ColumnInfo[];
+  batch?: boolean;
   onClose: () => void;
   onInserted: () => void;
+  onQueued?: (values: CellRef[]) => void;
 }
 
 type Mode = "value" | "null" | "default";
@@ -27,8 +29,10 @@ export default function InsertRowDialog({
   table,
   dialect,
   columns,
+  batch,
   onClose,
   onInserted,
+  onQueued,
 }: Props) {
   const [fields, setFields] = useState<Record<string, FieldState>>(() => {
     const initial: Record<string, FieldState> = {};
@@ -76,6 +80,11 @@ export default function InsertRowDialog({
         value = sqliteBooleanLiteral(value) ?? value;
       }
       values.push({ column: column.name, value });
+    }
+    if (batch) {
+      onQueued?.(values);
+      onClose();
+      return;
     }
     setSaving(true);
     setError(null);
@@ -275,7 +284,7 @@ export default function InsertRowDialog({
             onClick={() => void save()}
             disabled={saving}
           >
-            {saving ? "Inserting…" : "Insert row"}
+            {batch ? "Queue row" : saving ? "Inserting…" : "Insert row"}
           </button>
         </div>
       </div>

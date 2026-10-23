@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::core::drivers::Dialect;
@@ -7,11 +7,45 @@ use crate::state::AppState;
 
 /// One column reference with its value, used for primary-key WHERE clauses and
 /// for INSERT payloads. `value: None` means SQL NULL.
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct CellRef {
     pub column: String,
     #[serde(default)]
     pub value: Option<String>,
+}
+
+/// One queued grid change. The frontend collects these per tab and sends them
+/// together on Save; preview and execution share this representation.
+#[derive(Deserialize, Clone)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum Change {
+    Update {
+        pk: Vec<CellRef>,
+        column: String,
+        value: Option<String>,
+    },
+    Delete {
+        pk: Vec<CellRef>,
+    },
+    Insert {
+        values: Vec<CellRef>,
+    },
+}
+
+#[derive(Serialize)]
+pub struct ApplyChangesOutcome {
+    pub ok: bool,
+    pub rows_affected: u64,
+    pub statements: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failed_change: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+struct PlannedChange {
+    change_index: usize,
+    sql: String,
 }
 
 fn quote_ident(dialect: Dialect, name: &str) -> String {
@@ -162,6 +196,63 @@ fn delete_sql(
     ))
 }
 
+fn update_sql(
+    dialect: Dialect,
+    database: &str,
+    table: &str,
+    pk: &[CellRef],
+    column: &str,
+    value: Option<&str>,
+) -> AppResult<String> {
+    Ok(format!(
+        "UPDATE {} SET {} = {} WHERE {}",
+        table_ref(dialect, database, table),
+        quote_ident(dialect, column),
+        quote_lit(dialect, value),
+        where_clause(dialect, pk)?,
+    ))
+}
+
+/// Build statements in execution order (updates, deletes, inserts) while
+/// remembering which queued change each statement came from.
+fn plan_changes(
+    dialect: Dialect,
+    database: &str,
+    table: &str,
+    changes: &[Change],
+) -> AppResult<Vec<PlannedChange>> {
+    let mut plan = Vec::with_capacity(changes.len());
+
+    for (change_index, change) in changes.iter().enumerate() {
+        if let Change::Update { pk, column, value } = change {
+            plan.push(PlannedChange {
+                change_index,
+                sql: update_sql(dialect, database, table, pk, column, value.as_deref())?,
+            });
+        }
+    }
+
+    for (change_index, change) in changes.iter().enumerate() {
+        if let Change::Delete { pk } = change {
+            plan.push(PlannedChange {
+                change_index,
+                sql: delete_sql(dialect, database, table, std::slice::from_ref(pk))?,
+            });
+        }
+    }
+
+    for (change_index, change) in changes.iter().enumerate() {
+        if let Change::Insert { values } = change {
+            plan.push(PlannedChange {
+                change_index,
+                sql: insert_sql(dialect, database, table, values)?,
+            });
+        }
+    }
+
+    Ok(plan)
+}
+
 #[tauri::command(rename_all = "snake_case")]
 pub async fn update_cell(
     state: State<'_, AppState>,
@@ -173,13 +264,7 @@ pub async fn update_cell(
     value: Option<String>,
 ) -> AppResult<u64> {
     let dialect = state.pool.get(&conn_id).await?.dialect();
-    let sql = format!(
-        "UPDATE {} SET {} = {} WHERE {}",
-        table_ref(dialect, &database, &table),
-        quote_ident(dialect, &column),
-        quote_lit(dialect, value.as_deref()),
-        where_clause(dialect, &pk)?,
-    );
+    let sql = update_sql(dialect, &database, &table, &pk, &column, value.as_deref())?;
     run_write(&state, &conn_id, &database, &sql).await
 }
 
@@ -215,13 +300,79 @@ pub async fn insert_row(
     run_write(&state, &conn_id, &database, &sql).await
 }
 
+#[tauri::command(rename_all = "snake_case")]
+pub async fn preview_changes(
+    state: State<'_, AppState>,
+    conn_id: String,
+    database: String,
+    table: String,
+    changes: Vec<Change>,
+) -> AppResult<Vec<String>> {
+    let dialect = state.pool.get(&conn_id).await?.dialect();
+    Ok(plan_changes(dialect, &database, &table, &changes)?
+        .into_iter()
+        .map(|change| change.sql)
+        .collect())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn apply_changes(
+    state: State<'_, AppState>,
+    conn_id: String,
+    database: String,
+    table: String,
+    changes: Vec<Change>,
+) -> AppResult<ApplyChangesOutcome> {
+    let driver = state.pool.get(&conn_id).await?;
+    let dialect = driver.dialect();
+    let plan = plan_changes(dialect, &database, &table, &changes)?;
+    let statements: Vec<String> = plan.iter().map(|change| change.sql.clone()).collect();
+
+    let db = if database.trim().is_empty() {
+        None
+    } else {
+        Some(database)
+    };
+
+    match driver.apply_transaction(&statements, db).await {
+        Ok(rows_affected) => Ok(ApplyChangesOutcome {
+            ok: true,
+            rows_affected,
+            statements,
+            failed_change: None,
+            error: None,
+        }),
+        Err(failure) => {
+            let failed_change = failure
+                .statement
+                .and_then(|index| plan.get(index))
+                .map(|change| change.change_index);
+            Ok(ApplyChangesOutcome {
+                ok: false,
+                rows_affected: 0,
+                statements,
+                failed_change,
+                error: Some(failure.error.to_string()),
+            })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{delete_sql, insert_sql, quote_lit, CellRef};
+    use super::{delete_sql, insert_sql, plan_changes, quote_lit, Change, CellRef};
     use crate::core::drivers::Dialect;
 
     fn cell(column: &str, value: &str) -> CellRef {
         CellRef {
+            column: column.to_string(),
+            value: Some(value.to_string()),
+        }
+    }
+
+    fn update_change(column: &str, value: &str) -> Change {
+        Change::Update {
+            pk: vec![cell("id", "1")],
             column: column.to_string(),
             value: Some(value.to_string()),
         }
@@ -298,5 +449,68 @@ mod tests {
         let single =
             delete_sql(Dialect::Sqlite, "", "users", &[vec![cell("id", "1")]]).unwrap();
         assert_eq!(single, "DELETE FROM \"users\" WHERE \"id\" = '1'");
+    }
+
+    #[test]
+    fn plans_updates_before_deletes_before_inserts() {
+        let changes = vec![
+            Change::Insert {
+                values: vec![cell("name", "Ada")],
+            },
+            Change::Delete {
+                pk: vec![cell("id", "2")],
+            },
+            update_change("name", "Grace"),
+        ];
+
+        let plan = plan_changes(Dialect::Postgres, "", "users", &changes).unwrap();
+
+        assert_eq!(
+            plan.iter().map(|item| item.sql.as_str()).collect::<Vec<_>>(),
+            vec![
+                "UPDATE \"users\" SET \"name\" = E'Grace' WHERE \"id\" = E'1'",
+                "DELETE FROM \"users\" WHERE \"id\" = E'2'",
+                "INSERT INTO \"users\" (\"name\") VALUES (E'Ada')",
+            ]
+        );
+        assert_eq!(
+            plan.iter()
+                .map(|item| item.change_index)
+                .collect::<Vec<_>>(),
+            vec![2, 1, 0]
+        );
+    }
+
+    #[test]
+    fn mixed_change_set_keeps_each_change_mapped_to_its_statement() {
+        let changes = vec![
+            update_change("name", "Grace"),
+            Change::Delete {
+                pk: vec![cell("id", "7")],
+            },
+            update_change("email", "grace@example.com"),
+            Change::Insert {
+                values: vec![cell("id", "9"), cell("name", "Linus")],
+            },
+        ];
+
+        let plan = plan_changes(Dialect::Mysql, "shop", "users", &changes).unwrap();
+        let statements: Vec<&str> = plan.iter().map(|item| item.sql.as_str()).collect();
+
+        assert_eq!(
+            statements,
+            vec![
+                "UPDATE `shop`.`users` SET `name` = 'Grace' WHERE `id` = '1'",
+                "UPDATE `shop`.`users` SET `email` = 'grace@example.com' WHERE `id` = '1'",
+                "DELETE FROM `shop`.`users` WHERE `id` = '7'",
+                "INSERT INTO `shop`.`users` (`id`, `name`) VALUES ('9', 'Linus')",
+            ]
+        );
+        assert_eq!(
+            plan.iter()
+                .map(|item| item.change_index)
+                .collect::<Vec<_>>(),
+            vec![0, 2, 1, 3]
+        );
     }
 }

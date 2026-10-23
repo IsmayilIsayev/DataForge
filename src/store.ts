@@ -1,6 +1,12 @@
 import { create } from "zustand";
 import type { ColumnFilter } from "./gridFilter";
-import type { ConnectionMeta, ConnectionState, QueryResult } from "./types";
+import type {
+  CellRef,
+  CellValue,
+  ConnectionMeta,
+  ConnectionState,
+  QueryResult,
+} from "./types";
 
 export interface ConnPref {
   color?: string;
@@ -91,6 +97,64 @@ function loadViewerPrefs(): ViewerPrefs {
   } catch {
     return { ...DEFAULT_VIEWER_PREFS };
   }
+}
+
+const AUTO_COMMIT_KEY = "df-auto-commit-edits";
+
+function loadAutoCommitEdits(): boolean {
+  try {
+    return localStorage.getItem(AUTO_COMMIT_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+export type PendingChange =
+  | {
+      id: string;
+      kind: "update";
+      sourceIndex: number;
+      pk: CellRef[];
+      column: string;
+      columnIndex: number;
+      value: string | null;
+      previous: CellValue;
+      next: CellValue;
+    }
+  | {
+      id: string;
+      kind: "delete";
+      sourceIndex: number;
+      pk: CellRef[];
+    }
+  | {
+      id: string;
+      kind: "insert";
+      values: CellRef[];
+    };
+
+export type NewPendingChange =
+  | Omit<Extract<PendingChange, { kind: "update" }>, "id">
+  | Omit<Extract<PendingChange, { kind: "delete" }>, "id">
+  | Omit<Extract<PendingChange, { kind: "insert" }>, "id">;
+
+let pendingSeq = 0;
+
+function pendingId(): string {
+  pendingSeq += 1;
+  return `pending-${Date.now()}-${pendingSeq}`;
+}
+
+function pendingCount(changes: Record<string, PendingChange[]>): number {
+  return Object.values(changes).reduce(
+    (total, list) => total + list.length,
+    0,
+  );
+}
+
+function confirmDiscard(count: number): boolean {
+  if (count === 0) return true;
+  return window.confirm(`Discard ${count} unsaved changes?`);
 }
 
 const QUERY_HISTORY_KEY = "df-query-history";
@@ -204,6 +268,12 @@ interface AppStore {
   setConnPref: (id: string, patch: Partial<ConnPref>) => void;
   viewerPrefs: ViewerPrefs;
   setViewerPref: (patch: Partial<ViewerPrefs>) => void;
+  autoCommitEdits: boolean;
+  setAutoCommitEdits: (value: boolean) => void;
+  pendingChanges: Record<string, PendingChange[]>;
+  addPendingChange: (tabId: string, change: NewPendingChange) => void;
+  undoPendingChange: (tabId: string) => void;
+  clearPendingChanges: (tabId: string) => void;
   favorites: FavoriteTable[];
   toggleFavorite: (fav: FavoriteTable) => void;
   connGroups: Record<string, string>;
@@ -213,7 +283,7 @@ interface AppStore {
   queryHistory: QueryHistoryEntry[];
   pushQueryHistory: (sql: string, connId?: string, database?: string) => void;
   clearQueryHistory: () => void;
-  setActiveConn: (id: string | null) => void;
+  setActiveConn: (id: string | null) => boolean;
   setDatabases: (databases: string[]) => void;
   setActiveDb: (database: string | null) => void;
   addQueryTab: (sql?: string, name?: string) => string;
@@ -277,6 +347,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   connected: {},
   connPrefs: loadConnPrefs(),
   viewerPrefs: loadViewerPrefs(),
+  autoCommitEdits: loadAutoCommitEdits(),
+  pendingChanges: {},
   favorites: loadFavorites(),
   connGroups: loadConnGroups(),
   groupStars: loadGroupStars(),
@@ -333,6 +405,56 @@ export const useAppStore = create<AppStore>((set, get) => ({
         // storage may be unavailable; prefs stay in memory for this session
       }
       return { viewerPrefs: next };
+    }),
+  setAutoCommitEdits: (value) => {
+    try {
+      localStorage.setItem(AUTO_COMMIT_KEY, String(value));
+    } catch {
+      // storage may be unavailable; the pref stays in memory for this session
+    }
+    set({ autoCommitEdits: value });
+  },
+  addPendingChange: (tabId, change) =>
+    set((state) => {
+      const existing = state.pendingChanges[tabId] ?? [];
+      const withId = { ...change, id: pendingId() } as PendingChange;
+
+      if (change.kind === "delete") {
+        if (
+          existing.some(
+            (item) =>
+              item.kind === "delete" &&
+              item.sourceIndex === change.sourceIndex,
+          )
+        ) {
+          return {};
+        }
+      }
+
+      return {
+        pendingChanges: {
+          ...state.pendingChanges,
+          [tabId]: [...existing, withId],
+        },
+      };
+    }),
+  undoPendingChange: (tabId) =>
+    set((state) => {
+      const existing = state.pendingChanges[tabId] ?? [];
+      if (existing.length === 0) return {};
+      return {
+        pendingChanges: {
+          ...state.pendingChanges,
+          [tabId]: existing.slice(0, -1),
+        },
+      };
+    }),
+  clearPendingChanges: (tabId) =>
+    set((state) => {
+      if (!state.pendingChanges[tabId]?.length) return {};
+      const pendingChanges = { ...state.pendingChanges };
+      delete pendingChanges[tabId];
+      return { pendingChanges };
     }),
   toggleFavorite: (fav) =>
     set((state) => {
@@ -406,7 +528,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
     set({ queryHistory: [] });
   },
-  setActiveConn: (activeConnId) =>
+  setActiveConn: (activeConnId) => {
+    const state = get();
+    const switching = activeConnId !== state.activeConnId;
+    const count = pendingCount(state.pendingChanges);
+    if (switching && !confirmDiscard(count)) return false;
+
     set({
       activeConnId,
       databases: [],
@@ -414,7 +541,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
       result: null,
       error: null,
       running: false,
-    }),
+      ...(switching && count > 0 ? { pendingChanges: {} } : {}),
+    });
+    return true;
+  },
   setDatabases: (databases) => set({ databases }),
   setActiveDb: (activeDb) => set({ activeDb }),
   addQueryTab: (sql = "", name) => {
@@ -475,12 +605,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const state = get();
     const index = state.tabs.findIndex((tab) => tab.id === id);
     if (index === -1) return;
+    if (!confirmDiscard(state.pendingChanges[id]?.length ?? 0)) return;
 
     let tabs = state.tabs.filter((tab) => tab.id !== id);
     const tabStates = { ...state.tabStates };
     delete tabStates[id];
     const clientFilters = { ...state.clientFilters };
     delete clientFilters[id];
+    const pendingChanges = { ...state.pendingChanges };
+    delete pendingChanges[id];
     let nextTab = state.nextTab;
 
     if (tabs.length === 0) {
@@ -498,7 +631,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
 
     if (state.activeTabId !== id) {
-      set({ tabs, tabStates, clientFilters, nextTab });
+      set({ tabs, tabStates, clientFilters, pendingChanges, nextTab });
       return;
     }
 
@@ -509,6 +642,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       tabs,
       tabStates,
       clientFilters,
+      pendingChanges,
       nextTab,
       activeTabId: activeTab.id,
       sql: activeTab.type === "query" ? activeTab.sql : "",
@@ -518,7 +652,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
       running: matches ? view.running : false,
     });
   },
-  closeAllTabs: () =>
+  closeAllTabs: () => {
+    const current = get();
+    if (!confirmDiscard(pendingCount(current.pendingChanges))) return;
     set((state) => {
       const id = `tab-${state.nextTab}`;
       const tab: QueryTab = {
@@ -532,6 +668,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         tabs: [tab],
         tabStates: { [id]: emptyView() },
         clientFilters: {},
+        pendingChanges: {},
         activeTabId: id,
         nextTab: state.nextTab + 1,
         sql: "",
@@ -540,7 +677,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
         error: null,
         running: false,
       };
-    }),
+    });
+  },
   reorderTabs: (fromId, toId) =>
     set((state) => {
       const tabs = [...state.tabs];

@@ -34,6 +34,13 @@ export interface AiConfig {
 
 export type CellValue = string | number | boolean | null;
 
+/** One column reference with its value, used for primary-key WHERE clauses and
+ * INSERT payloads. `value: null` means SQL NULL. */
+export interface CellRef {
+  column: string;
+  value: string | null;
+}
+
 export interface QueryResult {
   columns: string[];
   rows: CellValue[][];

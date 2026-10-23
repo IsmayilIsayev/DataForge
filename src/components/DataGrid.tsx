@@ -4,12 +4,14 @@ import lockupOnLight from "../assets/lockup.png";
 import lockupOnDark from "../assets/lockup-light.png";
 import { copyText } from "../clipboard";
 import {
+  applyChanges,
   deleteRows as deleteRowsIpc,
   errorMessage,
   exportResultXlsx,
+  previewChanges,
   updateCell,
 } from "../ipc";
-import type { CellRef } from "../ipc";
+import type { CellRef, ChangeInput } from "../ipc";
 import {
   buildOrderBy,
   buildWhere,
@@ -21,6 +23,7 @@ import {
 import type { ColumnFilter, FilterOperator } from "../gridFilter";
 import { quoteIdentifier, sqliteBooleanLiteral } from "../sql";
 import { useAppStore } from "../store";
+import type { PendingChange } from "../store";
 import type { CellValue, Dialect } from "../types";
 
 const INDEX_WIDTH = 44;
@@ -48,6 +51,7 @@ interface Props {
   serverSide?: boolean;
   where?: string;
   onServerQuery?: (where: string, orderBy: string) => void;
+  onReload?: () => void;
 }
 
 interface Position {
@@ -109,6 +113,22 @@ function cellType(value: CellValue): string {
 }
 
 const EMPTY_FILTERS: ColumnFilter[] = [];
+const EMPTY_PENDING: PendingChange[] = [];
+
+function toChangeInput(change: PendingChange): ChangeInput {
+  if (change.kind === "update") {
+    return {
+      kind: "update",
+      pk: change.pk,
+      column: change.column,
+      value: change.value,
+    };
+  }
+  if (change.kind === "delete") {
+    return { kind: "delete", pk: change.pk };
+  }
+  return { kind: "insert", values: change.values };
+}
 
 const MONO_FONT =
   '12px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace';
@@ -235,6 +255,7 @@ export default function DataGrid({
   serverSide,
   where,
   onServerQuery,
+  onReload,
 }: Props) {
   const result = useAppStore((state) => state.result);
   const running = useAppStore((state) => state.running);
@@ -243,8 +264,21 @@ export default function DataGrid({
   const setError = useAppStore((state) => state.setError);
   const viewerPrefs = useAppStore((state) => state.viewerPrefs);
   const setViewerPref = useAppStore((state) => state.setViewerPref);
+  const autoCommitEdits = useAppStore((state) => state.autoCommitEdits);
+  const storedPending = useAppStore((state) =>
+    tabId ? state.pendingChanges[tabId] : undefined,
+  );
+  const pendingChanges = storedPending ?? EMPTY_PENDING;
+  const addPendingChange = useAppStore((state) => state.addPendingChange);
+  const undoPendingChange = useAppStore((state) => state.undoPendingChange);
+  const clearPendingChanges = useAppStore(
+    (state) => state.clearPendingChanges,
+  );
   const [editing, setEditing] = useState<Position | null>(null);
   const [editText, setEditText] = useState("");
+  const [savingChanges, setSavingChanges] = useState(false);
+  const [failedChangeId, setFailedChangeId] = useState<string | null>(null);
+  const [previewSql, setPreviewSql] = useState<string[] | null>(null);
 
   const gridRef = useRef<HTMLDivElement>(null);
   const resizingRef = useRef(false);
@@ -300,6 +334,8 @@ export default function DataGrid({
     setCopied(null);
     setDragging(false);
     setConfirmDelete(null);
+    setFailedChangeId(null);
+    setPreviewSql(null);
   }, [viewKey, serverSide]);
 
   useEffect(() => {
@@ -314,6 +350,25 @@ export default function DataGrid({
     const timer = window.setTimeout(() => setCopied(null), 1500);
     return () => window.clearTimeout(timer);
   }, [copied]);
+
+  useEffect(() => {
+    if (!tabId || pendingChanges.length === 0) return;
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      const mod = event.metaKey || event.ctrlKey;
+      if (!mod) return;
+      const key = event.key.toLowerCase();
+      if (key === "s") {
+        event.preventDefault();
+        void savePendingChanges();
+      } else if (key === "z" && !editing) {
+        event.preventDefault();
+        undoPendingChange(tabId);
+        setFailedChangeId(null);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [tabId, pendingChanges.length, editing, savingChanges]);
 
   useEffect(() => {
     setViewerSize(
@@ -380,6 +435,50 @@ export default function DataGrid({
     });
   }, [columns, rows]);
 
+  const pendingUpdates = useMemo(() => {
+    const map = new Map<
+      string,
+      Extract<PendingChange, { kind: "update" }>
+    >();
+    for (const change of pendingChanges) {
+      if (change.kind === "update") {
+        map.set(`${change.sourceIndex}:${change.columnIndex}`, change);
+      }
+    }
+    return map;
+  }, [pendingChanges]);
+
+  const pendingDeleted = useMemo(
+    () =>
+      new Set(
+        pendingChanges
+          .filter(
+            (change): change is Extract<PendingChange, { kind: "delete" }> =>
+              change.kind === "delete",
+          )
+          .map((change) => change.sourceIndex),
+      ),
+    [pendingChanges],
+  );
+
+  const pendingInserts = useMemo(
+    () =>
+      pendingChanges.filter(
+        (change): change is Extract<PendingChange, { kind: "insert" }> =>
+          change.kind === "insert",
+      ),
+    [pendingChanges],
+  );
+
+  const pendingCount = pendingChanges.length;
+
+  function latestPendingUpdate(
+    sourceIndex: number,
+    columnIndex: number,
+  ): Extract<PendingChange, { kind: "update" }> | undefined {
+    return pendingUpdates.get(`${sourceIndex}:${columnIndex}`);
+  }
+
   const gridWidth =
     INDEX_WIDTH +
     order.reduce(
@@ -428,13 +527,17 @@ export default function DataGrid({
     !!editable &&
     !!connId &&
     !!table &&
+    !!tabId &&
     Array.isArray(pkColumns) &&
     pkColumns.length > 0;
 
   function startEdit(rowDisplay: number, columnActual: number) {
     const source = sortedRows[rowDisplay];
-    if (!source) return;
-    const raw = source.row[columnActual];
+    if (!source || pendingDeleted.has(source.index)) return;
+    const queued = latestPendingUpdate(source.index, columnActual);
+    const raw = queued
+      ? queued.next
+      : (source.row[columnActual] ?? null);
     setEditing({ row: rowDisplay, col: columnActual });
     setEditText(raw === null || raw === undefined ? "" : String(raw));
     setViewer(null);
@@ -444,21 +547,26 @@ export default function DataGrid({
   async function commitEdit() {
     const current = editing;
     setEditing(null);
-    if (!current || !canEdit || !connId || !table || !result) return;
+    if (!current || !canEdit || !connId || !table || !tabId || !result) return;
 
     const source = sortedRows[current.row];
     const columnName = columns[current.col];
     if (!source || !columnName) return;
 
     const original = source.row[current.col] ?? null;
+    const queued = latestPendingUpdate(source.index, current.col);
+    const currentValue = queued ? queued.next : original;
     const next = editText;
-    if ((original === null && next === "") || String(original ?? "") === next) {
+    if (
+      (currentValue === null && next === "") ||
+      String(currentValue ?? "") === next
+    ) {
       return; // no change
     }
 
     let payload = next;
     let displayNext: CellValue = next;
-    if (dialect === "sqlite" && typeof original === "boolean") {
+    if (dialect === "sqlite" && typeof currentValue === "boolean") {
       const bool = sqliteBooleanLiteral(next);
       if (bool !== null) {
         payload = bool;
@@ -471,6 +579,23 @@ export default function DataGrid({
       const value = index >= 0 ? source.row[index] : null;
       return { column: name, value: pkValue(value) };
     });
+
+    if (!autoCommitEdits) {
+      addPendingChange(tabId, {
+        kind: "update",
+        sourceIndex: source.index,
+        pk,
+        column: columnName,
+        columnIndex: current.col,
+        value: payload,
+        previous: currentValue,
+        next: displayNext,
+      });
+      setFailedChangeId(null);
+      setError(null);
+      setCopied("Edit queued");
+      return;
+    }
 
     try {
       await updateCell(connId, database ?? "", table, pk, columnName, payload);
@@ -499,7 +624,14 @@ export default function DataGrid({
 
   async function deleteSelectedRows() {
     const displayIndexes = selectedRowDisplayIndexes();
-    if (!canEdit || !connId || !table || !result || displayIndexes.length === 0) {
+    if (
+      !canEdit ||
+      !connId ||
+      !table ||
+      !tabId ||
+      !result ||
+      displayIndexes.length === 0
+    ) {
       setConfirmDelete(null);
       return;
     }
@@ -518,6 +650,23 @@ export default function DataGrid({
       sourceIndexes.push(source.index);
     }
 
+    if (!autoCommitEdits) {
+      pkList.forEach((pk, index) => {
+        addPendingChange(tabId, {
+          kind: "delete",
+          sourceIndex: sourceIndexes[index],
+          pk,
+        });
+      });
+      setFailedChangeId(null);
+      setError(null);
+      setAnchor(null);
+      setFocus(null);
+      setCopied(`Queued ${pkList.length} delete(s)`);
+      setConfirmDelete(null);
+      return;
+    }
+
     setDeleting(true);
     try {
       const affected = await deleteRowsIpc(connId, database ?? "", table, pkList);
@@ -534,6 +683,74 @@ export default function DataGrid({
     } finally {
       setDeleting(false);
       setConfirmDelete(null);
+    }
+  }
+
+  async function savePendingChanges() {
+    if (
+      !tabId ||
+      !connId ||
+      !table ||
+      pendingChanges.length === 0 ||
+      savingChanges
+    ) {
+      return;
+    }
+
+    const changes = pendingChanges.slice();
+    setSavingChanges(true);
+    setFailedChangeId(null);
+    setError(null);
+    try {
+      const outcome = await applyChanges(
+        connId,
+        database ?? "",
+        table,
+        changes.map(toChangeInput),
+      );
+      if (outcome.ok) {
+        clearPendingChanges(tabId);
+        setPreviewSql(null);
+        setCopied(`Saved ${changes.length} change(s)`);
+        onReload?.();
+      } else {
+        const failedIndex = outcome.failed_change;
+        setFailedChangeId(
+          failedIndex !== undefined ? (changes[failedIndex]?.id ?? null) : null,
+        );
+        setError(outcome.error ?? "Save failed");
+        setCopied("Save failed");
+      }
+    } catch (saveError) {
+      setError(errorMessage(saveError));
+      setCopied("Save failed");
+    } finally {
+      setSavingChanges(false);
+    }
+  }
+
+  function discardPendingChanges() {
+    if (!tabId) return;
+    clearPendingChanges(tabId);
+    setFailedChangeId(null);
+    setPreviewSql(null);
+    setError(null);
+    setCopied("Discarded");
+  }
+
+  async function openPreview() {
+    if (!connId || !table || pendingChanges.length === 0) return;
+    try {
+      const statements = await previewChanges(
+        connId,
+        database ?? "",
+        table,
+        pendingChanges.map(toChangeInput),
+      );
+      setPreviewSql(statements);
+      setError(null);
+    } catch (previewError) {
+      setError(errorMessage(previewError));
     }
   }
 
@@ -974,6 +1191,63 @@ export default function DataGrid({
         background: "var(--bg)",
       }}
     >
+      {pendingCount > 0 && (
+        <div
+          role="status"
+          style={{
+            height: 28,
+            flex: "none",
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            padding: "0 10px",
+            borderBottom: "1px solid var(--bd)",
+            background: "var(--edits)",
+            fontFamily: "var(--mono)",
+            fontSize: 11.5,
+          }}
+        >
+          <i
+            className="icon-pencil"
+            style={{ fontSize: 12, color: "var(--wn)" }}
+          />
+          <span style={{ color: "var(--tx)" }}>
+            {pendingCount} change{pendingCount === 1 ? "" : "s"} —
+          </span>
+          <button
+            type="button"
+            className="v2-btn v2-btn-primary"
+            onClick={() => void savePendingChanges()}
+            disabled={savingChanges}
+            style={{ height: 20, padding: "0 8px", fontSize: 11 }}
+          >
+            {savingChanges ? "Saving…" : "Save (Ctrl/Cmd+S)"}
+          </button>
+          <span style={{ color: "var(--fa)" }}>·</span>
+          <button
+            type="button"
+            className="v2-btn"
+            onClick={discardPendingChanges}
+            disabled={savingChanges}
+            style={{ height: 20, padding: "0 8px", fontSize: 11 }}
+          >
+            Discard
+          </button>
+          <span style={{ color: "var(--fa)" }}>·</span>
+          <button
+            type="button"
+            className="v2-btn"
+            onClick={() => void openPreview()}
+            disabled={savingChanges}
+            style={{ height: 20, padding: "0 8px", fontSize: 11 }}
+          >
+            Preview SQL
+          </button>
+          <div style={{ flex: 1 }} />
+          <span style={{ color: "var(--fa)" }}>Ctrl/Cmd+Z undo</span>
+        </div>
+      )}
+
       {filters.length > 0 && (
         <div
           style={{
@@ -1276,139 +1550,250 @@ export default function DataGrid({
                 })}
               </div>
 
-              {sortedRows.map((source, rowIndex) => (
-                <div
-                  key={source.index}
-                  data-row={rowIndex}
-                  style={{
-                    display: "flex",
-                    height: ROW_HEIGHT,
-                    background:
-                      rowIndex % 2 === 1 ? "var(--zb)" : "transparent",
-                  }}
-                >
+              {sortedRows.map((source, rowIndex) => {
+                const deletedRow = pendingDeleted.has(source.index);
+                const failedRow =
+                  failedChangeId !== null &&
+                  pendingChanges.some(
+                    (change) =>
+                      change.id === failedChangeId &&
+                      change.kind !== "insert" &&
+                      change.sourceIndex === source.index,
+                  );
+                return (
                   <div
-                    data-row-index={rowIndex}
-                    onMouseDown={(event) => selectRow(event, rowIndex)}
+                    key={source.index}
+                    data-row={rowIndex}
                     style={{
-                      width: INDEX_WIDTH,
-                      flex: "none",
-                      padding: "0 8px",
-                      textAlign: "right",
-                      lineHeight: `${ROW_HEIGHT}px`,
-                      color: "var(--fa)",
-                      borderRight: "1px solid var(--bd)",
-                      fontSize: 11,
-                      background:
-                        selection &&
-                        selection.left === 0 &&
-                        selection.right === order.length - 1 &&
-                        rowIndex >= selection.top &&
-                        rowIndex <= selection.bottom
-                          ? "var(--acs)"
-                          : "transparent",
-                      cursor: "default",
-                      userSelect: "none",
+                      display: "flex",
+                      height: ROW_HEIGHT,
+                      background: failedRow
+                        ? "var(--ers)"
+                        : deletedRow
+                          ? "var(--dels)"
+                          : rowIndex % 2 === 1
+                            ? "var(--zb)"
+                            : "transparent",
+                      opacity: deletedRow ? 0.68 : 1,
                     }}
                   >
-                    {rowIndex + 1}
-                  </div>
-                  {order.map((column, columnPosition) => {
-                    const value = source.row[column] ?? null;
-                    const selected =
-                      selection !== null &&
-                      rowIndex >= selection.top &&
-                      rowIndex <= selection.bottom &&
-                      columnPosition >= selection.left &&
-                      columnPosition <= selection.right;
-                    const numeric = numericColumns[column];
-                    return (
-                      <div
-                        key={column}
-                        data-cell={`${rowIndex}:${columnPosition}`}
-                        onMouseDown={(event) => selectCell(event, rowIndex, columnPosition)}
-                        onMouseEnter={() => enterCell(rowIndex, columnPosition)}
-                        onDoubleClick={() => {
-                          const columnWidth =
-                            widths[column] ?? DEFAULT_COL_WIDTH;
-                          if (isLongValue(value, columnWidth)) {
-                            setViewer({ row: rowIndex, col: column });
-                            setGridMenu(null);
-                          } else if (canEdit) {
-                            startEdit(rowIndex, column);
-                          } else {
-                            setViewer({ row: rowIndex, col: column });
-                            setGridMenu(null);
-                          }
-                        }}
-                        onContextMenu={(event) =>
-                          openContextMenu(event, rowIndex, columnPosition)
-                        }
-                        style={{
-                          width: widths[column] ?? DEFAULT_COL_WIDTH,
-                          flex: "none",
-                          padding: "0 8px",
-                          lineHeight: `${ROW_HEIGHT}px`,
-                          textAlign: numeric ? "right" : "left",
-                          whiteSpace: "nowrap",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          borderRight: "1px solid var(--bd)",
-                          color:
-                            value === null ? "var(--fa)" : "var(--tx)",
-                          fontStyle: value === null ? "italic" : "normal",
-                          background: selected
+                    <div
+                      data-row-index={rowIndex}
+                      onMouseDown={(event) => selectRow(event, rowIndex)}
+                      style={{
+                        width: INDEX_WIDTH,
+                        flex: "none",
+                        padding: "0 8px",
+                        textAlign: "right",
+                        lineHeight: `${ROW_HEIGHT}px`,
+                        color: deletedRow ? "var(--mu)" : "var(--fa)",
+                        textDecoration: deletedRow ? "line-through" : "none",
+                        borderRight: "1px solid var(--bd)",
+                        fontSize: 11,
+                        background:
+                          selection &&
+                          selection.left === 0 &&
+                          selection.right === order.length - 1 &&
+                          rowIndex >= selection.top &&
+                          rowIndex <= selection.bottom
                             ? "var(--acs)"
                             : "transparent",
-                          outline: selected
-                            ? "1px solid var(--ac)"
-                            : "none",
-                          outlineOffset: -1,
-                          cursor: "default",
-                          userSelect: "text",
-                        }}
-                        title={displayValue(value)}
-                      >
-                        {editing &&
-                        editing.row === rowIndex &&
-                        editing.col === column ? (
-                          <input
-                            autoFocus
-                            value={editText}
-                            onChange={(event) =>
-                              setEditText(event.target.value)
+                        cursor: "default",
+                        userSelect: "none",
+                      }}
+                    >
+                      {rowIndex + 1}
+                    </div>
+                    {order.map((column, columnPosition) => {
+                      const queued = latestPendingUpdate(
+                        source.index,
+                        column,
+                      );
+                      const value = queued
+                        ? queued.next
+                        : (source.row[column] ?? null);
+                      const selected =
+                        selection !== null &&
+                        rowIndex >= selection.top &&
+                        rowIndex <= selection.bottom &&
+                        columnPosition >= selection.left &&
+                        columnPosition <= selection.right;
+                      const numeric = numericColumns[column];
+                      return (
+                        <div
+                          key={column}
+                          data-cell={`${rowIndex}:${columnPosition}`}
+                          onMouseDown={(event) =>
+                            selectCell(event, rowIndex, columnPosition)
+                          }
+                          onMouseEnter={() =>
+                            enterCell(rowIndex, columnPosition)
+                          }
+                          onDoubleClick={() => {
+                            if (deletedRow) return;
+                            const columnWidth =
+                              widths[column] ?? DEFAULT_COL_WIDTH;
+                            if (isLongValue(value, columnWidth)) {
+                              setViewer({ row: rowIndex, col: column });
+                              setGridMenu(null);
+                            } else if (canEdit) {
+                              startEdit(rowIndex, column);
+                            } else {
+                              setViewer({ row: rowIndex, col: column });
+                              setGridMenu(null);
                             }
-                            onMouseDown={(event) => event.stopPropagation()}
-                            onKeyDown={(event) => {
-                              if (event.key === "Enter") {
-                                event.preventDefault();
-                                void commitEdit();
-                              } else if (event.key === "Escape") {
-                                event.preventDefault();
-                                setEditing(null);
+                          }}
+                          onContextMenu={(event) =>
+                            openContextMenu(
+                              event,
+                              rowIndex,
+                              columnPosition,
+                            )
+                          }
+                          style={{
+                            width: widths[column] ?? DEFAULT_COL_WIDTH,
+                            flex: "none",
+                            padding: "0 8px",
+                            lineHeight: `${ROW_HEIGHT}px`,
+                            textAlign: numeric ? "right" : "left",
+                            whiteSpace: "nowrap",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            borderRight: "1px solid var(--bd)",
+                            color: deletedRow
+                              ? "var(--mu)"
+                              : value === null
+                                ? "var(--fa)"
+                                : "var(--tx)",
+                            textDecoration: deletedRow
+                              ? "line-through"
+                              : "none",
+                            fontStyle:
+                              value === null ? "italic" : "normal",
+                            background: selected
+                              ? "var(--acs)"
+                              : queued
+                                ? "var(--edits)"
+                                : "transparent",
+                            outline: selected
+                              ? "1px solid var(--ac)"
+                              : "none",
+                            outlineOffset: -1,
+                            cursor: "default",
+                            userSelect: "text",
+                          }}
+                          title={
+                            queued
+                              ? `${displayValue(value)} (pending)`
+                              : displayValue(value)
+                          }
+                        >
+                          {editing &&
+                          editing.row === rowIndex &&
+                          editing.col === column ? (
+                            <input
+                              autoFocus
+                              value={editText}
+                              onChange={(event) =>
+                                setEditText(event.target.value)
                               }
-                            }}
-                            onBlur={() => void commitEdit()}
-                            style={{
-                              width: "100%",
-                              height: ROW_HEIGHT - 2,
-                              border: "1px solid var(--ac)",
-                              borderRadius: 2,
-                              background: "var(--bg)",
-                              color: "var(--tx)",
-                              font: "inherit",
-                              padding: "0 6px",
-                              outline: "none",
-                            }}
-                          />
-                        ) : (
-                          displayValue(value)
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              ))}
+                              onMouseDown={(event) =>
+                                event.stopPropagation()
+                              }
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter") {
+                                  event.preventDefault();
+                                  void commitEdit();
+                                } else if (event.key === "Escape") {
+                                  event.preventDefault();
+                                  setEditing(null);
+                                }
+                              }}
+                              onBlur={() => void commitEdit()}
+                              style={{
+                                width: "100%",
+                                height: ROW_HEIGHT - 2,
+                                border: "1px solid var(--ac)",
+                                borderRadius: 2,
+                                background: "var(--bg)",
+                                color: "var(--tx)",
+                                font: "inherit",
+                                padding: "0 6px",
+                                outline: "none",
+                              }}
+                            />
+                          ) : (
+                            displayValue(value)
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+              {pendingInserts.map((change) => {
+                const failedRow = change.id === failedChangeId;
+                return (
+                  <div
+                    key={change.id}
+                    style={{
+                      display: "flex",
+                      height: ROW_HEIGHT,
+                      background: failedRow
+                        ? "var(--ers)"
+                        : "var(--newrow)",
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: INDEX_WIDTH,
+                        flex: "none",
+                        padding: "0 8px",
+                        textAlign: "right",
+                        lineHeight: `${ROW_HEIGHT}px`,
+                        color: "var(--ok)",
+                        borderRight: "1px solid var(--bd)",
+                        fontSize: 11,
+                        userSelect: "none",
+                      }}
+                    >
+                      +
+                    </div>
+                    {order.map((column) => {
+                      const name = columns[column] ?? "";
+                      const cell = change.values.find(
+                        (item) => item.column === name,
+                      );
+                      const value = cell ? cell.value : null;
+                      return (
+                        <div
+                          key={column}
+                          style={{
+                            width: widths[column] ?? DEFAULT_COL_WIDTH,
+                            flex: "none",
+                            padding: "0 8px",
+                            lineHeight: `${ROW_HEIGHT}px`,
+                            textAlign: numericColumns[column]
+                              ? "right"
+                              : "left",
+                            whiteSpace: "nowrap",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            borderRight: "1px solid var(--bd)",
+                            color:
+                              value === null ? "var(--fa)" : "var(--tx)",
+                            fontStyle:
+                              value === null ? "italic" : "normal",
+                          }}
+                          title={value ?? "NULL"}
+                        >
+                          {value === null ? "NULL" : value}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })}
             </div>
           </div>
         ) : hasResult && !hasColumns ? (
@@ -2133,8 +2518,18 @@ export default function DataGrid({
               </span>
             </div>
             <p style={{ margin: "0 0 14px", fontSize: 12, color: "var(--mu)", lineHeight: 1.5 }}>
-              This runs <code style={{ fontFamily: "var(--mono)" }}>DELETE</code> against the live
-              database and cannot be undone.
+              {autoCommitEdits ? (
+                <>
+                  This runs{" "}
+                  <code style={{ fontFamily: "var(--mono)" }}>DELETE</code>{" "}
+                  against the live database and cannot be undone.
+                </>
+              ) : (
+                <>
+                  The rows are marked until you press Save; nothing is
+                  deleted before that.
+                </>
+              )}
             </p>
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
               <button
@@ -2159,6 +2554,94 @@ export default function DataGrid({
                 {deleting ? "Deleting…" : "Delete"}
               </button>
             </div>
+          </div>
+        </>
+      )}
+
+      {previewSql !== null && (
+        <>
+          <div
+            onMouseDown={() => setPreviewSql(null)}
+            style={{
+              position: "fixed",
+              inset: 0,
+              zIndex: 74,
+              background: "var(--ov)",
+            }}
+          />
+          <div
+            role="dialog"
+            aria-label="Pending changes SQL"
+            style={{
+              position: "fixed",
+              left: "50%",
+              top: "12%",
+              transform: "translateX(-50%)",
+              zIndex: 75,
+              width: 720,
+              maxWidth: "92vw",
+              maxHeight: "74vh",
+              display: "flex",
+              flexDirection: "column",
+              background: "var(--sf)",
+              border: "1px solid var(--bd2)",
+              borderRadius: 8,
+              boxShadow: "var(--sh)",
+            }}
+          >
+            <div
+              style={{
+                height: 32,
+                flex: "none",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                padding: "0 10px",
+                borderBottom: "1px solid var(--bd)",
+              }}
+            >
+              <i
+                className="icon-code"
+                style={{ fontSize: 13, color: "var(--fa)" }}
+              />
+              <span style={{ fontSize: 12.5, fontWeight: 500 }}>
+                Preview SQL
+              </span>
+              <span style={{ color: "var(--fa)", fontSize: 11 }}>
+                {previewSql.length} statement
+                {previewSql.length === 1 ? "" : "s"} · runs in one transaction
+              </span>
+              <div style={{ flex: 1 }} />
+              <button
+                type="button"
+                className="v2-icon-btn"
+                onClick={() => setPreviewSql(null)}
+                title="Close"
+                style={{ width: 24, height: 24 }}
+              >
+                <i className="icon-x" style={{ fontSize: 13 }} />
+              </button>
+            </div>
+            <pre
+              className="allow-select"
+              style={{
+                flex: 1,
+                minHeight: 0,
+                margin: 0,
+                padding: "10px 12px",
+                overflow: "auto",
+                fontFamily: "var(--mono)",
+                fontSize: 12,
+                lineHeight: 1.55,
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+                color: "var(--tx)",
+              }}
+            >
+              {previewSql.length === 0
+                ? "No statements."
+                : `${previewSql.join(";\n")};`}
+            </pre>
           </div>
         </>
       )}

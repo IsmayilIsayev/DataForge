@@ -654,8 +654,11 @@ export default function App() {
     async (connection: ConnectionMeta, database: string, table: string) => {
       const store = useAppStore.getState();
 
-      if (store.activeConnId !== connection.id) {
-        store.setActiveConn(connection.id);
+      if (
+        store.activeConnId !== connection.id &&
+        !store.setActiveConn(connection.id)
+      ) {
+        return;
       }
       store.setActiveDb(database);
 
@@ -686,6 +689,14 @@ export default function App() {
   const handleTableRefresh = useCallback(
     async (tab: TableTab, where: string, orderBy = "") => {
       const store = useAppStore.getState();
+      const pending = store.pendingChanges[tab.id]?.length ?? 0;
+      if (
+        pending > 0 &&
+        !window.confirm(`Discard ${pending} unsaved changes?`)
+      ) {
+        return;
+      }
+      if (pending > 0) store.clearPendingChanges(tab.id);
       store.setTableWhere(tab.id, where);
       store.setTableOrderBy(tab.id, orderBy);
       const latest = store.tabs.find((item) => item.id === tab.id);
@@ -916,9 +927,7 @@ export default function App() {
 
   const selectConnection = useCallback(async (id: string) => {
     const store = useAppStore.getState();
-    if (store.activeConnId !== id) {
-      store.setActiveConn(id);
-    }
+    if (store.activeConnId !== id && !store.setActiveConn(id)) return;
     setMenu(null);
 
     if (store.connected[id]) return;
@@ -2093,7 +2102,7 @@ export default function App() {
             }}
             onRunSql={(sql) => {
               const store = useAppStore.getState();
-              store.setActiveConn(findOpen.connId);
+              if (!store.setActiveConn(findOpen.connId)) return;
               if (findOpen.database) store.setActiveDb(findOpen.database);
               store.addQueryTab(sql, "AI search");
             }}
@@ -2123,7 +2132,7 @@ export default function App() {
                 ) {
                   return;
                 }
-                store.setActiveConn(entry.connId);
+                if (!store.setActiveConn(entry.connId)) return;
                 if (entry.database) store.setActiveDb(entry.database);
               } else if (entry.database && entry.database !== store.activeDb) {
                 if (

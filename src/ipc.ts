@@ -5,6 +5,7 @@ import type {
   AiFixResult,
   AiOptimizeResult,
   AiProvider,
+  CellRef,
   CellValue,
   ColumnInfo,
   ConnectionInput,
@@ -120,9 +121,19 @@ export const exportResultXlsx = (
     default_name: defaultName,
   });
 
-export interface CellRef {
-  column: string;
-  value: string | null;
+export type { CellRef } from "./types";
+
+export type ChangeInput =
+  | { kind: "update"; pk: CellRef[]; column: string; value: string | null }
+  | { kind: "delete"; pk: CellRef[] }
+  | { kind: "insert"; values: CellRef[] };
+
+export interface ApplyChangesOutcome {
+  ok: boolean;
+  rows_affected: number;
+  statements: string[];
+  failed_change?: number;
+  error?: string;
 }
 
 export const updateCell = (
@@ -166,6 +177,32 @@ export const deleteRows = (
     database,
     table,
     rows,
+  });
+
+export const previewChanges = (
+  connId: string,
+  database: string,
+  table: string,
+  changes: ChangeInput[],
+) =>
+  invoke<string[]>("preview_changes", {
+    conn_id: connId,
+    database,
+    table,
+    changes,
+  });
+
+export const applyChanges = (
+  connId: string,
+  database: string,
+  table: string,
+  changes: ChangeInput[],
+) =>
+  invoke<ApplyChangesOutcome>("apply_changes", {
+    conn_id: connId,
+    database,
+    table,
+    changes,
   });
 
 export const aiNl2Sql = (

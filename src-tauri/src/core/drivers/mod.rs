@@ -35,6 +35,20 @@ pub(crate) fn uint_json(value: u64) -> serde_json::Value {
     }
 }
 
+/// A failed batch transaction. `statement` is the zero-based index of the
+/// statement that failed, when the failure happened while executing one.
+#[derive(Debug)]
+pub struct TxError {
+    pub statement: Option<usize>,
+    pub error: AppError,
+}
+
+impl TxError {
+    pub fn new(statement: Option<usize>, error: AppError) -> Self {
+        Self { statement, error }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Dialect {
@@ -193,6 +207,13 @@ pub trait Driver: Send + Sync {
         max_rows: i64,
         database: Option<String>,
     ) -> BoxFuture<'a, AppResult<QueryResult>>;
+    /// Run every statement inside one transaction on a single connection.
+    /// Rolls back and returns the failing statement index on any error.
+    fn apply_transaction<'a>(
+        &'a self,
+        statements: &'a [String],
+        database: Option<String>,
+    ) -> BoxFuture<'a, Result<u64, TxError>>;
     fn get_schema<'a>(
         &'a self,
         database: Option<&'a str>,
