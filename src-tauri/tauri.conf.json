@@ -42,7 +42,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/IsmayilIsayev/DeltaForge/releases/latest/download/latest.json"
+        "https://github.com/IsmayilIsayev/DataForge/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdCQzRFODlEODdFNEU4MTkKUldRWjZPU0huZWpFZXc4U051bHlrYmNzQ1ZNS0REYkYrV0ZaZEh4YzR0TnJDT25yaEh5a09jbnkK"
     }
