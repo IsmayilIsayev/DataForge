@@ -256,6 +256,21 @@ pub trait Driver: Send + Sync {
         max_rows: i64,
         database: Option<String>,
     ) -> BoxFuture<'a, AppResult<QueryResult>>;
+    /// Run one read query with an optional per-statement time limit. Dialects
+    /// without a server-side timeout ignore the limit. Postgres applies it with
+    /// SET LOCAL inside a transaction so it only affects this query.
+    fn query_with_timeout<'a>(
+        &'a self,
+        sql: &'a str,
+        max_rows: i64,
+        database: Option<String>,
+        _timeout_ms: Option<u64>,
+    ) -> BoxFuture<'a, AppResult<QueryResult>> {
+        Box::pin(async move {
+            let statements = [sql.to_string()];
+            self.run_statements(&statements, max_rows, database).await
+        })
+    }
     /// Run every statement inside one transaction on a single connection.
     /// Rolls back and returns the failing statement index on any error.
     fn apply_transaction<'a>(

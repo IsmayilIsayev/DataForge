@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Export results or whole tables to CSV, JSON and SQL INSERT (large tables stream page by page, with progress and cancel), next to Excel.
+- Faster Find in database / Search in table: results stream in as each table finishes (with progress and Cancel), small tables first, a 5-second limit per table (slow ones can be searched on their own), index-friendly column handling, and Contains / Starts with / Exact modes.
 - SSH tunnel for MySQL and PostgreSQL: password or private key, secrets in the OS keychain, server key trusted on first use and checked afterwards.
 - Import CSV into a table: preview, delimiter detection, column mapping, empty-as-NULL, one transaction with progress, cancel and an error summary.
 

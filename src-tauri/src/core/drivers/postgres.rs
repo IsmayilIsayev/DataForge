@@ -186,7 +186,10 @@ impl PostgresDriver {
 
     async fn columns_on(conn: &mut PgConnection, table: &str) -> AppResult<Vec<ColumnInfo>> {
         let rows = sqlx::query(
-            "SELECT c.column_name, c.data_type, c.is_nullable, \
+            "SELECT c.column_name, \
+                    CASE WHEN UPPER(c.data_type) = 'USER-DEFINED' AND c.udt_name = 'citext' \
+                         THEN 'citext' ELSE c.data_type END AS data_type, \
+                    c.is_nullable, \
                     CASE WHEN pk.column_name IS NOT NULL THEN 'PRI' ELSE NULL END AS column_key \
              FROM information_schema.columns c \
              LEFT JOIN ( \
@@ -263,6 +266,50 @@ impl Driver for PostgresDriver {
                     .connect_to(requested.as_deref().unwrap_or_default())
                     .await?;
                 execute_batch(&mut conn, statements, max_rows).await
+            }
+        })
+    }
+
+    fn query_with_timeout<'a>(
+        &'a self,
+        sql: &'a str,
+        max_rows: i64,
+        database: Option<String>,
+        timeout_ms: Option<u64>,
+    ) -> BoxFuture<'a, AppResult<QueryResult>> {
+        Box::pin(async move {
+            let Some(timeout_ms) = timeout_ms else {
+                let statements = [sql.to_string()];
+                return self.run_statements(&statements, max_rows, database).await;
+            };
+
+            let requested = database.filter(|value| !value.trim().is_empty());
+            let mut conn = if requested.is_none()
+                || requested.as_deref() == Some(self.database.as_str())
+            {
+                self.pool.acquire().await.map_err(db_error)?
+            } else {
+                self.connect_to(requested.as_deref().unwrap_or_default())
+                    .await?
+            };
+
+            let mut tx = conn.begin().await.map_err(db_error)?;
+            sqlx::query(&format!(
+                "SET LOCAL statement_timeout = '{timeout_ms}ms'"
+            ))
+            .execute(&mut *tx)
+            .await
+            .map_err(db_error)?;
+
+            match execute_statement(&mut *tx, sql, max_rows).await {
+                Ok(result) => {
+                    tx.commit().await.map_err(db_error)?;
+                    Ok(result)
+                }
+                Err(error) => {
+                    let _ = tx.rollback().await;
+                    Err(error)
+                }
             }
         })
     }

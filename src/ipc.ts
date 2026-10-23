@@ -97,6 +97,25 @@ export interface SearchHit {
   value?: string;
 }
 
+export type FindMode = "contains" | "starts_with" | "exact";
+
+export interface FindProgress {
+  id: string;
+  done: number;
+  total: number;
+  table?: string;
+  hits: SearchHit[];
+  skipped: boolean;
+}
+
+export interface FindSummary {
+  hits: SearchHit[];
+  skipped: string[];
+  cancelled: boolean;
+  done: number;
+  total: number;
+}
+
 export const findInDatabase = (
   connId: string,
   database: string,
@@ -104,14 +123,31 @@ export const findInDatabase = (
   caseInsensitive: boolean,
   includeData: boolean,
   onlyTable?: string,
+  mode: FindMode = "contains",
+  findId?: string,
+  noTimeout = false,
 ) =>
-  invoke<SearchHit[]>("find_in_database", {
+  invoke<FindSummary>("find_in_database", {
     conn_id: connId,
     database,
     term,
     case_insensitive: caseInsensitive,
     include_data: includeData,
     only_table: onlyTable ?? null,
+    mode,
+    find_id: findId ?? null,
+    no_timeout: noTimeout,
+  });
+
+export const tableRowEstimate = (
+  connId: string,
+  database: string,
+  table: string,
+) =>
+  invoke<number | null>("table_row_estimate", {
+    conn_id: connId,
+    database,
+    table,
   });
 
 export const exportResultXlsx = (

@@ -283,6 +283,7 @@ pub fn run() {
             commands::edit::preview_changes,
             commands::edit::apply_changes,
             commands::search::find_in_database,
+            commands::search::table_row_estimate,
             commands::export::export_result_xlsx,
             commands::export::export_result,
             commands::export::export_table,
