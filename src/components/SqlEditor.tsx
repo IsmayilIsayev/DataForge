@@ -1,7 +1,21 @@
-﻿import { useEffect, useRef } from "react";
+﻿import { useEffect, useRef, useState } from "react";
 import Editor from "@monaco-editor/react";
 import type { Monaco, OnMount } from "@monaco-editor/react";
+import type * as MonacoTypes from "monaco-editor";
 import { useAppStore } from "../store";
+import {
+  analyzeCompletion,
+  baseTableName,
+  buildSuggestions,
+  isColumnContext,
+} from "../sqlComplete";
+import type { CompletionSchema } from "../sqlComplete";
+import {
+  cachedColumns,
+  cachedTables,
+  ensureColumns,
+  ensureTables,
+} from "../sqlSchemaCache";
 
 interface Props {
   onRun: (sqlOverride?: string) => void;
@@ -57,11 +71,35 @@ export default function SqlEditor({ onRun, theme }: Props) {
   const sql = useAppStore((state) => state.sql);
   const setSql = useAppStore((state) => state.setSql);
   const setSelection = useAppStore((state) => state.setSelection);
+  const activeConnId = useAppStore((state) => state.activeConnId);
+  const activeDb = useAppStore((state) => state.activeDb);
+  const connections = useAppStore((state) => state.connections);
+  const connected = useAppStore((state) => state.connected);
+
+  const activeConnection =
+    connections.find((connection) => connection.id === activeConnId) ?? null;
+  const dialect = activeConnection?.dialect ?? "mysql";
+  const schemaConnected = activeConnId ? !!connected[activeConnId] : false;
 
   const editorRef = useRef<MonacoEditorInstance | null>(null);
   const selectionSubRef = useRef<{ dispose: () => void } | null>(null);
   const onRunRef = useRef(onRun);
   onRunRef.current = onRun;
+
+  const completionContextRef = useRef({
+    connId: activeConnId,
+    database: activeDb,
+    dialect,
+    connected: schemaConnected,
+  });
+  completionContextRef.current = {
+    connId: activeConnId,
+    database: activeDb,
+    dialect,
+    connected: schemaConnected,
+  };
+
+  const [monacoApi, setMonacoApi] = useState<Monaco | null>(null);
 
   useEffect(
     () => () => {
@@ -69,6 +107,147 @@ export default function SqlEditor({ onRun, theme }: Props) {
     },
     [],
   );
+
+  useEffect(() => {
+    if (!activeConnId || !activeDb || !schemaConnected) return;
+    void ensureTables(activeConnId, activeDb);
+  }, [activeConnId, activeDb, schemaConnected]);
+
+  useEffect(() => {
+    if (!monacoApi) return;
+
+    const disposable = monacoApi.languages.registerCompletionItemProvider(
+      "sql",
+      {
+        triggerCharacters: [".", " "],
+        provideCompletionItems(
+          model: MonacoTypes.editor.ITextModel,
+          position: MonacoTypes.Position,
+        ) {
+          const context = completionContextRef.current;
+          const analysis = analyzeCompletion(
+            model.getValue(),
+            model.getOffsetAt(position),
+          );
+          const word = model.getWordUntilPosition(position);
+          const range = new monacoApi.Range(
+            position.lineNumber,
+            word.startColumn,
+            position.lineNumber,
+            word.endColumn,
+          );
+
+          const snapshot = (): CompletionSchema => {
+            const schema: CompletionSchema = { tables: [], columns: {} };
+            if (!context.connId || !context.database || !context.connected) {
+              return schema;
+            }
+            schema.tables =
+              cachedTables(context.connId, context.database) ?? [];
+            const tables =
+              analysis.context === "dot"
+                ? analysis.qualifierTable
+                  ? [analysis.qualifierTable]
+                  : []
+                : isColumnContext(analysis.context)
+                  ? analysis.referencedTables
+                  : [];
+            for (const table of tables) {
+              const columns = cachedColumns(
+                context.connId,
+                context.database,
+                table,
+              );
+              if (columns) {
+                schema.columns[baseTableName(table).toLowerCase()] = columns;
+              }
+            }
+            return schema;
+          };
+
+          const finish = () => {
+            const kind = {
+              keyword: monacoApi.languages.CompletionItemKind.Keyword,
+              template: monacoApi.languages.CompletionItemKind.Snippet,
+              table: monacoApi.languages.CompletionItemKind.Struct,
+              column: monacoApi.languages.CompletionItemKind.Field,
+              starFrom: monacoApi.languages.CompletionItemKind.Snippet,
+            } as const;
+
+            const suggestions = buildSuggestions({
+              analysis,
+              dialect: context.dialect,
+              schema: snapshot(),
+              prefix: word.word,
+            }).map((suggestion) => ({
+              label: suggestion.label,
+              kind: kind[suggestion.kind],
+              insertText: suggestion.insertText,
+              detail: suggestion.detail,
+              filterText: suggestion.label,
+              sortText: suggestion.sortText,
+              range,
+              ...(suggestion.snippet
+                ? {
+                    insertTextRules:
+                      monacoApi.languages.CompletionItemInsertTextRule
+                        .InsertAsSnippet,
+                  }
+                : {}),
+            }));
+
+            return { suggestions };
+          };
+
+          if (!context.connId || !context.database || !context.connected) {
+            return finish();
+          }
+
+          if (analysis.context === "table") {
+            if (cachedTables(context.connId, context.database) === null) {
+              return ensureTables(context.connId, context.database).then(
+                finish,
+              );
+            }
+            return finish();
+          }
+
+          if (analysis.context === "dot" && analysis.qualifierTable) {
+            if (
+              cachedColumns(
+                context.connId,
+                context.database,
+                analysis.qualifierTable,
+              ) === null
+            ) {
+              return ensureColumns(
+                context.connId,
+                context.database,
+                analysis.qualifierTable,
+              ).then(finish);
+            }
+            return finish();
+          }
+
+          // Column contexts never wait on IPC: cached columns appear now and a
+          // missing table is fetched once, then shown on the next keystroke.
+          if (isColumnContext(analysis.context)) {
+            for (const table of analysis.referencedTables) {
+              if (
+                cachedColumns(context.connId, context.database, table) === null
+              ) {
+                void ensureColumns(context.connId, context.database, table);
+              }
+            }
+          }
+
+          return finish();
+        },
+      },
+    );
+
+    return () => disposable.dispose();
+  }, [monacoApi]);
 
   const executeRun = () => {
     const editor = editorRef.current;
@@ -90,6 +269,7 @@ export default function SqlEditor({ onRun, theme }: Props) {
 
   const handleMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
+    setMonacoApi(monaco);
     editor.addCommand(
       monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter,
       () => executeRunRef.current(),

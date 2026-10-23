@@ -12,7 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Long values open in a side or bottom panel on double-click (resizable, with Edit, Copy and pretty JSON).
 - "Update available" and one-time "What's new" windows that show the release notes.
 
+- SQL autocomplete: keywords ("sel" → SELECT, "fr" → FROM), "SELECT " → "* FROM", table and column names (with aliases), and 30+ templates (sf, ins, upd, cte, upsert, ct, idx, tx, thismonth, dup...).
+- Connection presets for MariaDB, TiDB, CockroachDB, Supabase, Neon, Amazon RDS and PlanetScale, and a new SQL Server driver.
+
 ### Changed
+
+- Lighter app: SQL-only editor, dialogs load on demand, a much smaller icon font.
 
 - Simpler AI settings: provider presets, a model list, and a base URL only for custom providers.
 - Stronger AI prompts: per-database syntax, LIMIT 100 by default, no write statements unless asked.
