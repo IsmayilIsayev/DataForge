@@ -11,6 +11,7 @@ import type {
   ConnectionInput,
   ConnectionMeta,
   ConnectionState,
+  Dialect,
   Nl2SqlResult,
   QueryResult,
   SchemaSnapshot,
@@ -120,6 +121,113 @@ export const exportResultXlsx = (
     rows,
     default_name: defaultName,
   });
+
+export type ExportFormat = "xlsx" | "csv" | "json" | "sql";
+
+export interface ExportOptions {
+  bom?: boolean;
+  dialect?: Dialect;
+  database?: string;
+  table?: string;
+}
+
+export const exportResult = (
+  format: ExportFormat,
+  columns: string[],
+  rows: CellValue[][],
+  defaultName: string,
+  options: ExportOptions = {},
+) =>
+  invoke<string | null>("export_result", {
+    format,
+    columns,
+    rows,
+    default_name: defaultName,
+    bom: options.bom ?? null,
+    dialect: options.dialect ?? null,
+    database: options.database ?? null,
+    table: options.table ?? null,
+  });
+
+export const exportTable = (
+  connId: string,
+  database: string,
+  table: string,
+  format: ExportFormat,
+  exportId: string,
+  bom?: boolean,
+) =>
+  invoke<string | null>("export_table", {
+    conn_id: connId,
+    database,
+    table,
+    format,
+    export_id: exportId,
+    bom: bom ?? null,
+  });
+
+export const cancelOperation = (operationId: string) =>
+  invoke<void>("cancel_operation", { operation_id: operationId });
+
+export interface CsvPreview {
+  delimiter: string;
+  rows: string[][];
+}
+
+export const previewCsv = (path: string, delimiter?: string | null) =>
+  invoke<CsvPreview>("preview_csv", {
+    path,
+    delimiter: delimiter ?? null,
+  });
+
+export interface ColumnMapping {
+  csv_index: number;
+  column: string | null;
+}
+
+export interface ImportCsvParams {
+  connId: string;
+  database: string;
+  table: string;
+  path: string;
+  delimiter?: string | null;
+  hasHeader: boolean;
+  mapping: ColumnMapping[];
+  emptyAsNull: boolean;
+  skipBadRows: boolean;
+  importId: string;
+}
+
+export interface ImportSummary {
+  inserted: number;
+  skipped: number;
+  errors: string[];
+  cancelled: boolean;
+}
+
+export const importCsv = (params: ImportCsvParams) =>
+  invoke<ImportSummary>("import_csv", {
+    conn_id: params.connId,
+    database: params.database,
+    table: params.table,
+    path: params.path,
+    delimiter: params.delimiter ?? null,
+    has_header: params.hasHeader,
+    mapping: params.mapping,
+    empty_as_null: params.emptyAsNull,
+    skip_bad_rows: params.skipBadRows,
+    import_id: params.importId,
+  });
+
+export interface TransferProgress {
+  id: string;
+  rows?: number;
+  processed?: number;
+  inserted?: number;
+  skipped?: number;
+  done: boolean;
+  cancelled: boolean;
+}
 
 export type { CellRef } from "./types";
 

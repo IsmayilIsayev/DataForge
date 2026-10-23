@@ -9,7 +9,8 @@ use sqlx::{Column, Connection, Executor, Row, Statement, TypeInfo, ValueRef};
 
 use crate::core::drivers::{
     int_json, BoxFuture, ColumnInfo, ConnectionInput, Dialect, Driver, QueryResult,
-    SchemaSnapshot, SchemaTable, TableInfo, TableKind, TxError,
+    SchemaSnapshot, SchemaTable, TableInfo, TableKind, TxError, TxInput, TxRowError,
+    TxStreamOutcome,
 };
 use crate::error::{AppError, AppResult};
 
@@ -228,6 +229,21 @@ impl Driver for SqliteDriver {
         })
     }
 
+    fn stream_transaction<'a>(
+        &'a self,
+        input: tokio::sync::mpsc::Receiver<TxInput>,
+        _database: Option<String>,
+    ) -> BoxFuture<'a, Result<TxStreamOutcome, TxError>> {
+        Box::pin(async move {
+            let mut conn = self
+                .pool
+                .acquire()
+                .await
+                .map_err(|error| TxError::new(None, db_error(error)))?;
+            run_stream_transaction(&mut conn, input).await
+        })
+    }
+
     fn get_schema<'a>(
         &'a self,
         database: Option<&'a str>,
@@ -321,6 +337,73 @@ async fn run_transaction(
         .await
         .map_err(|error| TxError::new(None, db_error(error)))?;
     Ok(affected)
+}
+
+async fn run_stream_transaction(
+    conn: &mut SqliteConnection,
+    mut input: tokio::sync::mpsc::Receiver<TxInput>,
+) -> Result<TxStreamOutcome, TxError> {
+    let mut tx = conn
+        .begin()
+        .await
+        .map_err(|error| TxError::new(None, db_error(error)))?;
+    let mut outcome = TxStreamOutcome::default();
+    let mut savepoints: Vec<String> = Vec::new();
+
+    while let Some(item) = input.recv().await {
+        match item {
+            TxInput::Savepoint(name) => {
+                sqlx::query(&format!("SAVEPOINT {name}"))
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|error| TxError::new(None, db_error(error)))?;
+                savepoints.push(name);
+            }
+            TxInput::ReleaseSavepoint(name) => {
+                sqlx::query(&format!("RELEASE SAVEPOINT {name}"))
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|error| TxError::new(None, db_error(error)))?;
+                savepoints.pop();
+            }
+            TxInput::Sql { sql, row } => {
+                let statement = trim_statement(&sql);
+                if statement.is_empty() {
+                    continue;
+                }
+                match sqlx::query(statement).execute(&mut *tx).await {
+                    Ok(result) => outcome.rows_affected += result.rows_affected(),
+                    Err(error) => {
+                        let message = error.to_string();
+                        if let Some(name) = savepoints.last().cloned() {
+                            let _ = sqlx::query(&format!("ROLLBACK TO SAVEPOINT {name}"))
+                                .execute(&mut *tx)
+                                .await;
+                            if let Some(row) = row {
+                                outcome.errors.push(TxRowError {
+                                    row,
+                                    error: message,
+                                });
+                            }
+                        } else {
+                            let _ = tx.rollback().await;
+                            return Err(TxError::new(None, db_error(error)));
+                        }
+                    }
+                }
+            }
+            TxInput::Rollback => {
+                let _ = tx.rollback().await;
+                outcome.cancelled = true;
+                return Ok(outcome);
+            }
+        }
+    }
+
+    tx.commit()
+        .await
+        .map_err(|error| TxError::new(None, db_error(error)))?;
+    Ok(outcome)
 }
 
 async fn execute_batch(

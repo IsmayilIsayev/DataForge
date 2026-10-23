@@ -8,7 +8,8 @@ use sqlx::{Column, Connection, Executor, Row, Statement, TypeInfo, ValueRef};
 
 use crate::core::drivers::{
     int_json, uint_json, BoxFuture, ColumnInfo, ConnectionInput, Dialect, Driver, QueryResult,
-    SchemaSnapshot, SchemaTable, TableInfo, TableKind, TxError,
+    SchemaSnapshot, SchemaTable, TableInfo, TableKind, TxError, TxInput, TxRowError,
+    TxStreamOutcome,
 };
 use crate::error::{AppError, AppResult};
 
@@ -214,6 +215,73 @@ async fn run_transaction(
     Ok(affected)
 }
 
+async fn run_stream_transaction(
+    conn: &mut MySqlConnection,
+    mut input: tokio::sync::mpsc::Receiver<TxInput>,
+) -> Result<TxStreamOutcome, TxError> {
+    let mut tx = conn
+        .begin()
+        .await
+        .map_err(|error| TxError::new(None, db_error(error)))?;
+    let mut outcome = TxStreamOutcome::default();
+    let mut savepoints: Vec<String> = Vec::new();
+
+    while let Some(item) = input.recv().await {
+        match item {
+            TxInput::Savepoint(name) => {
+                sqlx::query(&format!("SAVEPOINT {name}"))
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|error| TxError::new(None, db_error(error)))?;
+                savepoints.push(name);
+            }
+            TxInput::ReleaseSavepoint(name) => {
+                sqlx::query(&format!("RELEASE SAVEPOINT {name}"))
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|error| TxError::new(None, db_error(error)))?;
+                savepoints.pop();
+            }
+            TxInput::Sql { sql, row } => {
+                let statement = trim_statement(&sql);
+                if statement.is_empty() {
+                    continue;
+                }
+                match sqlx::query(statement).execute(&mut *tx).await {
+                    Ok(result) => outcome.rows_affected += result.rows_affected(),
+                    Err(error) => {
+                        let message = error.to_string();
+                        if let Some(name) = savepoints.last().cloned() {
+                            let _ = sqlx::query(&format!("ROLLBACK TO SAVEPOINT {name}"))
+                                .execute(&mut *tx)
+                                .await;
+                            if let Some(row) = row {
+                                outcome.errors.push(TxRowError {
+                                    row,
+                                    error: message,
+                                });
+                            }
+                        } else {
+                            let _ = tx.rollback().await;
+                            return Err(TxError::new(None, db_error(error)));
+                        }
+                    }
+                }
+            }
+            TxInput::Rollback => {
+                let _ = tx.rollback().await;
+                outcome.cancelled = true;
+                return Ok(outcome);
+            }
+        }
+    }
+
+    tx.commit()
+        .await
+        .map_err(|error| TxError::new(None, db_error(error)))?;
+    Ok(outcome)
+}
+
 async fn execute_batch(
     conn: &mut MySqlConnection,
     statements: &[String],
@@ -379,6 +447,40 @@ impl Driver for MySqlDriver {
                         .map_err(|error| TxError::new(None, db_error(error)))?;
                 }
                 run_transaction(&mut conn, statements).await
+            }
+        })
+    }
+
+    fn stream_transaction<'a>(
+        &'a self,
+        input: tokio::sync::mpsc::Receiver<TxInput>,
+        database: Option<String>,
+    ) -> BoxFuture<'a, Result<TxStreamOutcome, TxError>> {
+        Box::pin(async move {
+            let requested = database.filter(|value| !value.trim().is_empty());
+
+            if requested.is_none() || requested.as_deref() == Some(self.database.as_str()) {
+                let mut conn = self
+                    .pool
+                    .acquire()
+                    .await
+                    .map_err(|error| TxError::new(None, db_error(error)))?;
+                run_stream_transaction(&mut conn, input).await
+            } else {
+                let options = self
+                    .options
+                    .clone()
+                    .database(requested.as_deref().unwrap_or_default());
+                let mut conn = MySqlConnection::connect_with(&options)
+                    .await
+                    .map_err(|error| TxError::new(None, db_error(error)))?;
+                if self.read_only {
+                    sqlx::query("SET SESSION TRANSACTION READ ONLY")
+                        .execute(&mut conn)
+                        .await
+                        .map_err(|error| TxError::new(None, db_error(error)))?;
+                }
+                run_stream_transaction(&mut conn, input).await
             }
         })
     }

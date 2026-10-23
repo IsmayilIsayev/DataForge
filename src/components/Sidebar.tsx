@@ -5,6 +5,7 @@ import type {
   MouseEvent,
   ReactNode,
 } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   connectConnection,
   deleteConnection,
@@ -26,6 +27,7 @@ import type { FavoriteTable } from "../store";
 import type { ColumnInfo, ConnectionMeta, Dialect, TableInfo } from "../types";
 
 const StructureDialog = lazy(() => import("./StructureDialog"));
+const ImportCsvDialog = lazy(() => import("./ImportCsvDialog"));
 
 const dialogFallback = (
   <div style={{ position: "fixed", inset: 0 }} aria-hidden="true" />
@@ -417,6 +419,12 @@ export default function Sidebar({
     connection: ConnectionMeta;
     database: string;
     table: string;
+  } | null>(null);
+  const [importFor, setImportFor] = useState<{
+    connection: ConnectionMeta;
+    database: string;
+    table: string;
+    path: string;
   } | null>(null);
   const [dropBusy, setDropBusy] = useState(false);
   const [loading, setLoading] = useState<Record<string, boolean>>({});
@@ -1667,6 +1675,31 @@ export default function Sidebar({
                   }}
                 />
                 <MenuItem
+                  icon="icon-upload"
+                  label="Import CSV…"
+                  onClick={() => {
+                    const menu = contextMenu;
+                    const connection = contextConnection;
+                    setContextMenu(null);
+                    void open({
+                      multiple: false,
+                      filters: [
+                        { name: "CSV", extensions: ["csv", "tsv", "txt"] },
+                      ],
+                    })
+                      .then((selected) => {
+                        if (typeof selected !== "string") return;
+                        setImportFor({
+                          connection,
+                          database: menu.database,
+                          table: menu.table,
+                          path: selected,
+                        });
+                      })
+                      .catch((error) => storeError(error));
+                  }}
+                />
+                <MenuItem
                   icon="icon-copy"
                   label="Copy name"
                   onClick={() => {
@@ -1757,6 +1790,25 @@ export default function Sidebar({
                 structureFor.connection,
                 structureFor.database,
                 structureFor.table,
+              )
+            }
+          />
+        </Suspense>
+      )}
+
+      {importFor && (
+        <Suspense fallback={dialogFallback}>
+          <ImportCsvDialog
+            connId={importFor.connection.id}
+            database={importFor.database}
+            table={importFor.table}
+            path={importFor.path}
+            onClose={() => setImportFor(null)}
+            onImported={() =>
+              refreshTable(
+                importFor.connection,
+                importFor.database,
+                importFor.table,
               )
             }
           />

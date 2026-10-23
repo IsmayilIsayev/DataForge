@@ -8,7 +8,8 @@ use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
 use crate::core::drivers::{
     int_json, BoxFuture, ColumnInfo, ConnectionInput, Dialect, Driver, QueryResult,
-    SchemaSnapshot, SchemaTable, TableInfo, TableKind, TxError,
+    SchemaSnapshot, SchemaTable, TableInfo, TableKind, TxError, TxInput, TxRowError,
+    TxStreamOutcome,
 };
 use crate::error::{AppError, AppResult};
 
@@ -446,6 +447,23 @@ impl Driver for MssqlDriver {
         })
     }
 
+    fn stream_transaction<'a>(
+        &'a self,
+        input: tokio::sync::mpsc::Receiver<TxInput>,
+        database: Option<String>,
+    ) -> BoxFuture<'a, Result<TxStreamOutcome, TxError>> {
+        Box::pin(async move {
+            let requested = database
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| self.database.clone());
+            let mut client = self
+                .client_for(&requested)
+                .await
+                .map_err(|error| TxError::new(None, error))?;
+            run_stream_transaction(&mut client, input).await
+        })
+    }
+
     fn get_schema<'a>(
         &'a self,
         database: Option<&'a str>,
@@ -529,6 +547,70 @@ impl Driver for MssqlDriver {
             Self::columns_on(&mut client, database, table).await
         })
     }
+}
+
+async fn run_stream_transaction(
+    client: &mut MssqlClient,
+    mut input: tokio::sync::mpsc::Receiver<TxInput>,
+) -> Result<TxStreamOutcome, TxError> {
+    client
+        .execute("BEGIN TRANSACTION", &[])
+        .await
+        .map_err(|error| TxError::new(None, db_error(error)))?;
+    let mut outcome = TxStreamOutcome::default();
+    let mut savepoints: Vec<String> = Vec::new();
+
+    while let Some(item) = input.recv().await {
+        match item {
+            TxInput::Savepoint(name) => {
+                let sql = format!("SAVE TRANSACTION {name}");
+                client
+                    .execute(sql.as_str(), &[])
+                    .await
+                    .map_err(|error| TxError::new(None, db_error(error)))?;
+                savepoints.push(name);
+            }
+            TxInput::ReleaseSavepoint(_name) => {
+                savepoints.pop();
+            }
+            TxInput::Sql { sql, row } => {
+                let statement = trim_statement(&sql);
+                if statement.is_empty() {
+                    continue;
+                }
+                match client.execute(statement, &[]).await {
+                    Ok(result) => outcome.rows_affected += result.total(),
+                    Err(error) => {
+                        let message = error.to_string();
+                        if let Some(name) = savepoints.last().cloned() {
+                            let rollback = format!("ROLLBACK TRANSACTION {name}");
+                            let _ = client.execute(rollback.as_str(), &[]).await;
+                            if let Some(row) = row {
+                                outcome.errors.push(TxRowError {
+                                    row,
+                                    error: message,
+                                });
+                            }
+                        } else {
+                            let _ = client.execute("ROLLBACK TRANSACTION", &[]).await;
+                            return Err(TxError::new(None, db_error(error)));
+                        }
+                    }
+                }
+            }
+            TxInput::Rollback => {
+                let _ = client.execute("ROLLBACK TRANSACTION", &[]).await;
+                outcome.cancelled = true;
+                return Ok(outcome);
+            }
+        }
+    }
+
+    client
+        .execute("COMMIT TRANSACTION", &[])
+        .await
+        .map_err(|error| TxError::new(None, db_error(error)))?;
+    Ok(outcome)
 }
 
 async fn run_transaction(

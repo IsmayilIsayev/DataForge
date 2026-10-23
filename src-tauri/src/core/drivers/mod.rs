@@ -49,6 +49,29 @@ impl TxError {
     }
 }
 
+/// Input for a long-running transaction. The caller streams batches over a
+/// bounded channel so neither side has to hold the whole import in memory.
+#[derive(Debug)]
+pub enum TxInput {
+    Sql { sql: String, row: Option<u64> },
+    Savepoint(String),
+    ReleaseSavepoint(String),
+    Rollback,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TxRowError {
+    pub row: u64,
+    pub error: String,
+}
+
+#[derive(Debug, Default)]
+pub struct TxStreamOutcome {
+    pub rows_affected: u64,
+    pub errors: Vec<TxRowError>,
+    pub cancelled: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Dialect {
@@ -228,6 +251,13 @@ pub trait Driver: Send + Sync {
         statements: &'a [String],
         database: Option<String>,
     ) -> BoxFuture<'a, Result<u64, TxError>>;
+    /// Run a transaction while consuming statements from a channel. Savepoint
+    /// messages let the caller opt into per-row error recovery (skip bad rows).
+    fn stream_transaction<'a>(
+        &'a self,
+        input: tokio::sync::mpsc::Receiver<TxInput>,
+        database: Option<String>,
+    ) -> BoxFuture<'a, Result<TxStreamOutcome, TxError>>;
     fn get_schema<'a>(
         &'a self,
         database: Option<&'a str>,

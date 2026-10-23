@@ -1,17 +1,25 @@
 ﻿import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent, MouseEvent } from "react";
+import { listen } from "@tauri-apps/api/event";
 import lockupOnLight from "../assets/lockup.png";
 import lockupOnDark from "../assets/lockup-light.png";
 import { copyText } from "../clipboard";
 import {
   applyChanges,
+  cancelOperation,
   deleteRows as deleteRowsIpc,
   errorMessage,
-  exportResultXlsx,
+  exportResult,
+  exportTable,
   previewChanges,
   updateCell,
 } from "../ipc";
-import type { CellRef, ChangeInput } from "../ipc";
+import type {
+  CellRef,
+  ChangeInput,
+  ExportFormat,
+  TransferProgress,
+} from "../ipc";
 import {
   buildOrderBy,
   buildWhere,
@@ -242,6 +250,10 @@ function normalizeRange(a: Position, b: Position) {
   };
 }
 
+function operationId(prefix: string): string {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 export default function DataGrid({
   viewKey,
   tabId,
@@ -321,6 +333,13 @@ export default function DataGrid({
   const [wrap, setWrap] = useState(true);
   const [pretty, setPretty] = useState(true);
   const [gridMenu, setGridMenu] = useState<GridMenu | null>(null);
+  const [exportMenu, setExportMenu] = useState<GridMenu | null>(null);
+  const [exporting, setExporting] = useState<{
+    id: string;
+    rows: number;
+    cancelRequested: boolean;
+  } | null>(null);
+  const exportIdRef = useRef<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -336,6 +355,7 @@ export default function DataGrid({
     setFocus(null);
     setViewer(null);
     setGridMenu(null);
+    setExportMenu(null);
     setHeaderMenu(null);
     setFilterMenu(null);
     setCopied(null);
@@ -357,6 +377,42 @@ export default function DataGrid({
     const timer = window.setTimeout(() => setCopied(null), 1500);
     return () => window.clearTimeout(timer);
   }, [copied]);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    listen<TransferProgress>("export:progress", (event) => {
+      const progress = event.payload;
+      if (progress.id !== exportIdRef.current) return;
+      if (progress.done) {
+        exportIdRef.current = null;
+        setExporting(null);
+        setCopied(
+          progress.cancelled
+            ? "Export cancelled"
+            : `Exported ${(progress.rows ?? 0).toLocaleString("en-US")} rows`,
+        );
+      } else {
+        setExporting((current) =>
+          current && current.id === progress.id
+            ? { ...current, rows: progress.rows ?? current.rows }
+            : current,
+        );
+      }
+    })
+      .then((dispose) => {
+        if (disposed) dispose();
+        else unlisten = dispose;
+      })
+      .catch(() => {
+        // Only available inside Tauri.
+      });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     if (!tabId || pendingChanges.length === 0) return;
@@ -386,18 +442,19 @@ export default function DataGrid({
   }, [viewerPrefs.dock, viewerPrefs.rightWidth, viewerPrefs.bottomHeight]);
 
   useEffect(() => {
-    if (!viewer && !gridMenu && !headerMenu && !filterMenu) return;
+    if (!viewer && !gridMenu && !exportMenu && !headerMenu && !filterMenu) return;
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key === "Escape") {
         setViewer(null);
         setGridMenu(null);
+        setExportMenu(null);
         setHeaderMenu(null);
         setFilterMenu(null);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [viewer, gridMenu, headerMenu, filterMenu]);
+  }, [viewer, gridMenu, exportMenu, headerMenu, filterMenu]);
 
   const columns = result?.columns ?? [];
   const rows = result?.rows ?? [];
@@ -949,22 +1006,75 @@ export default function DataGrid({
     setCopied(ok ? "Copied cell" : "Copy failed");
   }
 
-  async function exportExcel() {
+  async function exportLoaded(format: ExportFormat) {
     if (!result || result.columns.length === 0) return;
-    const base =
-      table ?? tableFromSql(sql).table ?? "query-result";
+    const inferred = tableFromSql(sql);
+    const targetTable = table ?? inferred.table;
+    const targetDatabase = database ?? inferred.database;
+    const base = targetTable ?? "query-result";
     setGridMenu(null);
+    setExportMenu(null);
     setCopied("Exporting…");
     try {
-      const saved = await exportResultXlsx(
+      const saved = await exportResult(
+        format,
         result.columns,
         result.rows,
-        `${base}.xlsx`,
+        `${base}.${format}`,
+        {
+          dialect,
+          database: targetDatabase,
+          table: targetTable,
+        },
       );
-      setCopied(saved ? "Exported to Excel" : "Export cancelled");
+      setCopied(
+        saved ? `Exported ${format.toUpperCase()}` : "Export cancelled",
+      );
     } catch (exportError) {
       setError(errorMessage(exportError));
       setCopied("Export failed");
+    }
+  }
+
+  async function exportWholeTable(format: ExportFormat) {
+    if (!connId || !table) return;
+    const id = operationId("export");
+    setGridMenu(null);
+    setExportMenu(null);
+    exportIdRef.current = id;
+    setExporting({ id, rows: 0, cancelRequested: false });
+    setCopied("Exporting whole table…");
+    try {
+      const saved = await exportTable(
+        connId,
+        database ?? "",
+        table,
+        format,
+        id,
+      );
+      if (!saved && exportIdRef.current === id) {
+        setCopied("Export cancelled");
+      }
+    } catch (exportError) {
+      if (exportIdRef.current === id) {
+        setError(errorMessage(exportError));
+        setCopied("Export failed");
+      }
+    } finally {
+      if (exportIdRef.current === id) {
+        exportIdRef.current = null;
+        setExporting(null);
+      }
+    }
+  }
+
+  async function cancelExport() {
+    if (!exporting) return;
+    setExporting({ ...exporting, cancelRequested: true });
+    try {
+      await cancelOperation(exporting.id);
+    } catch {
+      // The export may already have finished.
     }
   }
 
@@ -1239,6 +1349,7 @@ export default function DataGrid({
 
   const hasResult = !!result;
   const hasColumns = columns.length > 0;
+  const canExportWholeTable = !!(table && connId);
 
   return (
     <section
@@ -2190,8 +2301,15 @@ export default function DataGrid({
           <button
             type="button"
             className="v2-icon-btn"
-            onClick={() => void exportExcel()}
-            title="Export the loaded rows to an Excel file"
+            onClick={(event) => {
+              const rect = event.currentTarget.getBoundingClientRect();
+              setGridMenu(null);
+              setExportMenu({
+                x: Math.max(8, Math.min(rect.left, window.innerWidth - 280)),
+                y: Math.max(8, Math.min(rect.bottom + 4, window.innerHeight - 360)),
+              });
+            }}
+            title="Export the loaded rows"
             disabled={!hasColumns}
             style={{
               height: 24,
@@ -2209,8 +2327,46 @@ export default function DataGrid({
               cursor: "default",
             }}
           >
-            <i className="icon-sheet" style={{ fontSize: 13 }} />
-            <span>Excel</span>
+            <i className="icon-download" style={{ fontSize: 13 }} />
+            <span>Export</span>
+            <i className="icon-chevron-down" style={{ fontSize: 11 }} />
+          </button>
+        </div>
+      )}
+
+      {exporting && (
+        <div
+          role="status"
+          style={{
+            height: 26,
+            flex: "none",
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "0 10px",
+            borderTop: "1px solid var(--bd)",
+            background: "var(--sf)",
+            fontFamily: "var(--mono)",
+            fontSize: 11,
+          }}
+        >
+          <i
+            className="icon-download"
+            style={{ fontSize: 12, color: "var(--ac)" }}
+          />
+          <span>
+            Exporting whole table ·{" "}
+            {exporting.rows.toLocaleString("en-US")} rows
+          </span>
+          <div style={{ flex: 1 }} />
+          <button
+            type="button"
+            className="v2-btn"
+            onClick={() => void cancelExport()}
+            disabled={exporting.cancelRequested}
+            style={{ height: 20, padding: "0 8px", fontSize: 11 }}
+          >
+            {exporting.cancelRequested ? "Cancelling…" : "Cancel"}
           </button>
         </div>
       )}
@@ -2508,9 +2664,13 @@ export default function DataGrid({
               }}
             />
             <GridMenuItem
-              icon="icon-sheet"
-              label="Export to Excel…"
-              onClick={() => void exportExcel()}
+              icon="icon-download"
+              label="Export…"
+              onClick={() => {
+                const menu = gridMenu;
+                setGridMenu(null);
+                if (menu) setExportMenu(menu);
+              }}
             />
             <GridMenuItem
               icon="icon-type"
@@ -2541,6 +2701,97 @@ export default function DataGrid({
                     setGridMenu(null);
                     if (count > 0) setConfirmDelete(count);
                   }}
+                />
+              </>
+            )}
+          </div>
+        </>
+      )}
+
+      {exportMenu && (
+        <>
+          <div
+            onMouseDown={() => setExportMenu(null)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setExportMenu(null);
+            }}
+            style={{ position: "fixed", inset: 0, zIndex: 62 }}
+          />
+          <div
+            style={{
+              position: "fixed",
+              left: exportMenu.x,
+              top: exportMenu.y,
+              zIndex: 63,
+              width: 240,
+              padding: 4,
+              background: "var(--sf)",
+              border: "1px solid var(--bd2)",
+              borderRadius: 6,
+              boxShadow: "var(--sh)",
+            }}
+          >
+            <GridMenuItem
+              icon="icon-sheet"
+              label="Excel (.xlsx)"
+              onClick={() => void exportLoaded("xlsx")}
+            />
+            <GridMenuItem
+              icon="icon-table"
+              label="CSV (.csv)"
+              onClick={() => void exportLoaded("csv")}
+            />
+            <GridMenuItem
+              icon="icon-braces"
+              label="JSON (.json)"
+              onClick={() => void exportLoaded("json")}
+            />
+            <GridMenuItem
+              icon="icon-code"
+              label="SQL INSERT (.sql)"
+              onClick={() => void exportLoaded("sql")}
+            />
+            {canExportWholeTable && (
+              <>
+                <div
+                  style={{
+                    height: 1,
+                    background: "var(--bd)",
+                    margin: "4px -4px",
+                  }}
+                />
+                <div
+                  style={{
+                    padding: "4px 8px 2px",
+                    fontFamily: "var(--mono)",
+                    fontSize: 10,
+                    color: "var(--fa)",
+                    textTransform: "uppercase",
+                    letterSpacing: ".05em",
+                  }}
+                >
+                  Whole table
+                </div>
+                <GridMenuItem
+                  icon="icon-sheet"
+                  label="Excel (.xlsx)"
+                  onClick={() => void exportWholeTable("xlsx")}
+                />
+                <GridMenuItem
+                  icon="icon-table"
+                  label="CSV (.csv)"
+                  onClick={() => void exportWholeTable("csv")}
+                />
+                <GridMenuItem
+                  icon="icon-braces"
+                  label="JSON (.json)"
+                  onClick={() => void exportWholeTable("json")}
+                />
+                <GridMenuItem
+                  icon="icon-code"
+                  label="SQL INSERT (.sql)"
+                  onClick={() => void exportWholeTable("sql")}
                 />
               </>
             )}

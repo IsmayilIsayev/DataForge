@@ -48,7 +48,7 @@ struct PlannedChange {
     sql: String,
 }
 
-fn quote_ident(dialect: Dialect, name: &str) -> String {
+pub(crate) fn quote_ident(dialect: Dialect, name: &str) -> String {
     match dialect {
         Dialect::Mysql => format!("`{}`", name.replace('`', "``")),
         Dialect::Mssql => format!("[{}]", name.replace(']', "]]")),
@@ -59,7 +59,7 @@ fn quote_ident(dialect: Dialect, name: &str) -> String {
 /// Escape a value into a safe SQL literal. Strings are single-quoted with quotes
 /// doubled (injection-safe); None becomes NULL. Unknown-type string literals are
 /// coerced to the column type by MySQL / PostgreSQL / SQLite alike.
-fn quote_lit(dialect: Dialect, value: Option<&str>) -> String {
+pub(crate) fn quote_lit(dialect: Dialect, value: Option<&str>) -> String {
     match value {
         None => "NULL".to_string(),
         Some(v) => {
@@ -82,7 +82,7 @@ fn quote_lit(dialect: Dialect, value: Option<&str>) -> String {
     }
 }
 
-fn table_ref(dialect: Dialect, database: &str, table: &str) -> String {
+pub(crate) fn table_ref(dialect: Dialect, database: &str, table: &str) -> String {
     let quoted = quote_ident(dialect, table);
     match dialect {
         Dialect::Mysql if !database.trim().is_empty() => {

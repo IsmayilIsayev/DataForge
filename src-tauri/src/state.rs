@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -113,6 +114,8 @@ pub struct AppState {
     ai_path: PathBuf,
     pub pool: PoolRegistry,
     pub connections: RwLock<ConnectionStore>,
+    /// Operation ids (export/import) the user asked to cancel.
+    pub cancelled: RwLock<HashSet<String>>,
 }
 
 impl AppState {
@@ -131,6 +134,7 @@ impl AppState {
             ai_path,
             pool: PoolRegistry::default(),
             connections: RwLock::new(ConnectionStore::load(config_dir.join("connections.json"))),
+            cancelled: RwLock::new(HashSet::new()),
         })
     }
 
