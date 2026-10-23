@@ -42,6 +42,7 @@ import type {
 
 const StructureDialog = lazy(() => import("./StructureDialog"));
 const ImportCsvDialog = lazy(() => import("./ImportCsvDialog"));
+const GenerateTestDataDialog = lazy(() => import("./GenerateTestDataDialog"));
 
 const dialogFallback = (
   <div style={{ position: "fixed", inset: 0 }} aria-hidden="true" />
@@ -455,6 +456,11 @@ export default function Sidebar({
     database: string;
     table: string;
     path: string;
+  } | null>(null);
+  const [generateFor, setGenerateFor] = useState<{
+    connection: ConnectionMeta;
+    database: string;
+    table: string;
   } | null>(null);
   const [dropBusy, setDropBusy] = useState(false);
   const [loading, setLoading] = useState<Record<string, boolean>>({});
@@ -1974,6 +1980,20 @@ export default function Sidebar({
                   }}
                 />
                 <MenuItem
+                  icon="icon-flask-conical"
+                  label="Generate test data…"
+                  onClick={() => {
+                    const menu = contextMenu;
+                    const connection = contextConnection;
+                    setContextMenu(null);
+                    setGenerateFor({
+                      connection,
+                      database: menu.database,
+                      table: menu.table,
+                    });
+                  }}
+                />
+                <MenuItem
                   icon="icon-copy"
                   label="Copy name"
                   onClick={() => {
@@ -2195,6 +2215,24 @@ export default function Sidebar({
                 importFor.connection,
                 importFor.database,
                 importFor.table,
+              )
+            }
+          />
+        </Suspense>
+      )}
+
+      {generateFor && (
+        <Suspense fallback={dialogFallback}>
+          <GenerateTestDataDialog
+            connection={generateFor.connection}
+            database={generateFor.database}
+            table={generateFor.table}
+            onClose={() => setGenerateFor(null)}
+            onGenerated={() =>
+              refreshTable(
+                generateFor.connection,
+                generateFor.database,
+                generateFor.table,
               )
             }
           />

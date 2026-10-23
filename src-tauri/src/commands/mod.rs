@@ -9,3 +9,4 @@ pub mod query;
 pub mod saved;
 pub mod schema;
 pub mod search;
+pub mod test_data;

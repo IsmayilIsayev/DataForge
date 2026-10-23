@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Test data generator (table right-click → Generate test data…): realistic EN/AZ names, emails, phones, cities and more, valid foreign keys, preview with a seed, inserted in one transaction; disabled on production and read-only connections.
+
 - Saved queries in folders (sidebar "Saved", Ctrl/Cmd+Shift+S), stored in a file in the app config folder.
 - Export and import connections between computers (.dataforge.json, never includes passwords or SSH secrets; import shows conflicts and validates the file).
 

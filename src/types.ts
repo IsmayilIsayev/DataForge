@@ -390,3 +390,95 @@ export interface ConnectionImportResult {
   skipped: number;
   saved_queries: number;
 }
+
+export type TestDataLocale = "en" | "az";
+
+export type TestDataGeneratorKind =
+  | "skip"
+  | "null"
+  | "constant"
+  | "sequence"
+  | "int"
+  | "decimal"
+  | "boolean"
+  | "date"
+  | "time"
+  | "uuid"
+  | "list"
+  | "regex"
+  | "lorem_words"
+  | "lorem_sentence"
+  | "first_name"
+  | "last_name"
+  | "full_name"
+  | "email"
+  | "phone"
+  | "city"
+  | "street_address"
+  | "company"
+  | "product_name"
+  | "price"
+  | "status"
+  | "color"
+  | "url"
+  | "ip"
+  | "foreign_key";
+
+export interface TestDataGenerator {
+  kind: TestDataGeneratorKind;
+  constant?: string | null;
+  start?: number | null;
+  step?: number | null;
+  min?: number | null;
+  max?: number | null;
+  precision?: number | null;
+  date_from?: string | null;
+  date_to?: string | null;
+  items?: string[] | null;
+  pattern?: string | null;
+  words?: number | null;
+  locale?: TestDataLocale | null;
+  table?: string | null;
+  column?: string | null;
+}
+
+export interface TestDataForeignKey {
+  table: string;
+  column: string;
+}
+
+export interface TestDataColumn {
+  name: string;
+  data_type: string;
+  nullable: boolean;
+  primary_key: boolean;
+  auto_increment: boolean;
+  unique: boolean;
+  default?: string | null;
+  foreign_key?: TestDataForeignKey | null;
+  suggested: TestDataGenerator;
+}
+
+export interface TestDataColumnConfig {
+  name: string;
+  generator: TestDataGenerator;
+  null_percent: number;
+}
+
+export interface TestDataPreview {
+  columns: string[];
+  rows: CellValue[][];
+}
+
+export interface GenerateSummary {
+  inserted: number;
+  cancelled: boolean;
+}
+
+export interface GenerateProgress {
+  id: string;
+  done: boolean;
+  cancelled: boolean;
+  generated: number;
+  total: number;
+}

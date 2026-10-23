@@ -20,6 +20,7 @@ import type {
   Dialect,
   ErSchema,
   ExplainPlan,
+  GenerateSummary,
   Nl2SqlResult,
   QueryResult,
   SavedQueriesFile,
@@ -27,6 +28,10 @@ import type {
   SchemaSnapshot,
   TableInfo,
   TestConnectionResult,
+  TestDataColumn,
+  TestDataColumnConfig,
+  TestDataLocale,
+  TestDataPreview,
 } from "./types";
 
 export const listConnections = () =>
@@ -347,6 +352,50 @@ export const importCsv = (params: ImportCsvParams) =>
     empty_as_null: params.emptyAsNull,
     skip_bad_rows: params.skipBadRows,
     import_id: params.importId,
+  });
+
+export const testDataColumns = (
+  connId: string,
+  database: string,
+  table: string,
+) =>
+  invoke<TestDataColumn[]>("test_data_columns", {
+    conn_id: connId,
+    database,
+    table,
+  });
+
+export interface TestDataParams {
+  connId: string;
+  database: string;
+  table: string;
+  rows: number;
+  seed: number;
+  locale: TestDataLocale;
+  columns: TestDataColumnConfig[];
+}
+
+export const previewTestData = (params: TestDataParams) =>
+  invoke<TestDataPreview>("preview_test_data", {
+    conn_id: params.connId,
+    database: params.database,
+    table: params.table,
+    rows: params.rows,
+    seed: params.seed,
+    locale: params.locale,
+    columns: params.columns,
+  });
+
+export const generateRows = (params: TestDataParams, generateId: string) =>
+  invoke<GenerateSummary>("generate_rows", {
+    conn_id: params.connId,
+    database: params.database,
+    table: params.table,
+    rows: params.rows,
+    seed: params.seed,
+    locale: params.locale,
+    columns: params.columns,
+    generate_id: generateId,
   });
 
 export interface TransferProgress {
