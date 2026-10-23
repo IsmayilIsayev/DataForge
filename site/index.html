@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DataForge — a fast, AI-native database client</title>
+  <meta name="description" content="DataForge is a fast, AI-native database client for MySQL, PostgreSQL, SQLite and SQL Server. A ~6 MB native desktop app with AI-to-SQL, smart autocomplete, batch editing and SSH tunnels. Free and open source.">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#080c11" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f7f9fc" media="(prefers-color-scheme: light)">
+  <link rel="canonical" href="https://ismayilisayev.github.io/DataForge/">
+  <link rel="icon" href="assets/favicon.png" type="image/png" sizes="64x64">
+  <link rel="apple-touch-icon" href="assets/app-icon.png">
+  <link rel="stylesheet" href="styles.css">
+
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://ismayilisayev.github.io/DataForge/">
+  <meta property="og:title" content="DataForge — a fast, AI-native database client">
+  <meta property="og:description" content="6 MB. Opens instantly. MySQL, PostgreSQL, SQLite, SQL Server. AI-to-SQL, smart autocomplete, batch editing and SSH tunnels. Free and open source.">
+  <meta property="og:image" content="https://ismayilisayev.github.io/DataForge/assets/app-icon.png">
+  <meta property="og:image:alt" content="DataForge app icon">
+  <meta property="og:image:width" content="512">
+  <meta property="og:image:height" content="512">
+  <meta property="og:site_name" content="DataForge">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="DataForge — a fast, AI-native database client">
+  <meta name="twitter:description" content="6 MB. Opens instantly. MySQL, PostgreSQL, SQLite, SQL Server. AI-to-SQL, smart autocomplete, batch editing and SSH tunnels.">
+  <meta name="twitter:image" content="https://ismayilisayev.github.io/DataForge/assets/app-icon.png">
+  <meta name="twitter:image:alt" content="DataForge app icon">
+
+  <script defer src="main.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main" data-i18n="skip">Skip to content</a>
+
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="#top" aria-label="DataForge home">
+        <img src="assets/favicon.png" alt="" width="28" height="28">
+        <span>DataForge</span>
+      </a>
+      <nav class="nav" data-i18n-aria="nav.label" aria-label="Main">
+        <a href="#features" data-i18n="nav.features">Features</a>
+        <a href="#screenshots" data-i18n="nav.screenshots">Screenshots</a>
+        <a href="#compare" data-i18n="nav.compare">Compare</a>
+        <a href="#whatsnew" data-i18n="nav.whatsnew">What's new</a>
+        <a href="#faq" data-i18n="nav.faq">FAQ</a>
+      </nav>
+      <div class="header-actions">
+        <button class="lang-toggle" id="lang-toggle" type="button" aria-label="Switch language">AZ</button>
+        <a class="btn btn-small btn-primary" href="#download" data-i18n="nav.download">Download</a>
+      </div>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero" id="top" aria-labelledby="hero-title">
+      <div class="container hero-inner">
+        <picture class="hero-logo">
+          <source media="(prefers-color-scheme: dark)" srcset="assets/logo-light.png">
+          <img src="assets/logo.png" alt="DataForge logo" width="760" height="169">
+        </picture>
+        <p class="pill" data-i18n="hero.badge">Free &amp; open source (MIT)</p>
+        <h1 id="hero-title"><span class="brand-word">DataForge</span> — <span data-i18n="hero.titleBody">a fast, AI-native database client</span></h1>
+        <p class="hero-sub" data-i18n="hero.subline">6 MB. Opens instantly. MySQL, PostgreSQL, SQLite, SQL Server.</p>
+        <div class="hero-actions">
+          <a class="btn btn-primary" id="hero-download" href="https://github.com/IsmayilIsayev/DataForge/releases">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+            <span id="hero-download-label" data-i18n="hero.cta">Download for desktop</span>
+          </a>
+          <a class="btn btn-ghost" href="#download" data-i18n="hero.other">Other platforms</a>
+          <a class="btn btn-ghost" href="https://github.com/IsmayilIsayev/DataForge" target="_blank" rel="noopener noreferrer">
+            <svg class="icon icon-github" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3.3-.4 6.8-1.6 6.8-7.4a5.8 5.8 0 0 0-1.6-4 5.4 5.4 0 0 0-.2-4s-1.3-.4-4.1 1.5a14.4 14.4 0 0 0-7.8 0C4.3 3.2 3 3.6 3 3.6a5.4 5.4 0 0 0-.2 4 5.8 5.8 0 0 0-1.6 4c0 5.8 3.5 7 6.8 7.4A4.8 4.8 0 0 0 7 22.5"/><path d="M9 19c-3 .9-3-1.5-4-2"/></svg>
+            <span data-i18n="hero.github">View on GitHub</span>
+          </a>
+        </div>
+        <p class="hero-platforms" data-i18n="hero.platforms">Windows · macOS · Linux</p>
+      </div>
+    </section>
+
+    <section class="section" id="download" aria-labelledby="download-title">
+      <div class="container">
+        <div class="section-head">
+          <p class="eyebrow" data-i18n="download.eyebrow">Download</p>
+          <h2 id="download-title" data-i18n="download.title">Get DataForge for your desktop</h2>
+          <p class="section-lead" data-i18n="download.desc">One small installer. No Node, Rust, or runtime required.</p>
+        </div>
+
+        <div class="download-card">
+          <div class="download-main">
+            <p class="download-label" data-i18n="download.latest">Latest release</p>
+            <h3 class="release-version" id="release-version">DataForge</h3>
+            <p class="release-meta" id="release-meta" role="status" data-i18n="download.checking">Checking the latest release…</p>
+            <a class="btn btn-primary btn-wide" id="download-primary" href="https://github.com/IsmayilIsayev/DataForge/releases">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+              <span id="download-primary-label" data-i18n="download.cta">Download for desktop</span>
+            </a>
+            <p class="release-fallback"><a href="https://github.com/IsmayilIsayev/DataForge/releases" target="_blank" rel="noopener noreferrer" data-i18n="download.releases">All releases on GitHub</a></p>
+          </div>
+
+          <ul class="platform-list" id="platform-list">
+            <li data-os="windows">
+              <span class="platform-name">Windows</span>
+              <span class="platform-assets"><a href="https://github.com/IsmayilIsayev/DataForge/releases" data-i18n="download.releasesShort">Releases</a></span>
+            </li>
+            <li data-os="macos">
+              <span class="platform-name">macOS</span>
+              <span class="platform-assets"><a href="https://github.com/IsmayilIsayev/DataForge/releases" data-i18n="download.releasesShort">Releases</a></span>
+            </li>
+            <li data-os="linux">
+              <span class="platform-name">Linux</span>
+              <span class="platform-assets"><a href="https://github.com/IsmayilIsayev/DataForge/releases" data-i18n="download.releasesShort">Releases</a></span>
+            </li>
+          </ul>
+        </div>
+
+        <aside class="note" aria-labelledby="unsigned-title">
+          <svg class="icon note-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+          <div>
+            <strong id="unsigned-title" data-i18n="download.unsignedTitle">Unsigned builds</strong>
+            <p data-i18n="download.unsignedBody">These builds are not code-signed yet. On Windows, if SmartScreen appears, choose “More info → Run anyway”. On macOS, right-click the app → Open the first time.</p>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <section class="section section-alt" id="features" aria-labelledby="features-title">
+      <div class="container">
+        <div class="section-head">
+          <p class="eyebrow" data-i18n="features.eyebrow">Features</p>
+          <h2 id="features-title" data-i18n="features.title">Everything you need to work with data</h2>
+          <p class="section-lead" data-i18n="features.lead">Small app, serious toolset. Built for speed and everyday database work.</p>
+        </div>
+
+        <div class="features-grid">
+          <article class="feature">
+            <div class="feature-icon">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3z"/><path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9L19 15z"/></svg>
+            </div>
+            <h3 data-i18n="feature.ai.title">AI → SQL in your language</h3>
+            <p data-i18n="feature.ai.desc">Describe what you need in plain English or Azerbaijani and get a ready-to-run query.</p>
+          </article>
+
+          <article class="feature">
+            <div class="feature-icon">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 4 5 5L9 20l-5 1 1-5L16 5a1.4 1.4 0 0 1 2 0z"/><path d="m13 6 5 5"/><path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9L19 15z"/></svg>
+            </div>
+            <h3 data-i18n="feature.fix.title">Fix with AI, Explain, Optimize</h3>
+            <p data-i18n="feature.fix.desc">Turn errors into working SQL, understand complex queries, and optimize with the real EXPLAIN plan.</p>
+          </article>
+
+          <article class="feature">
+            <div class="feature-icon">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H7a2 2 0 0 0-2 2v4a2 2 0 0 1-2 2 2 2 0 0 1 2 2v4a2 2 0 0 0 2 2h1"/><path d="M16 3h1a2 2 0 0 1 2 2v4a2 2 0 0 0 2 2 2 2 0 0 0-2 2v4a2 2 0 0 1-2 2h-1"/><path d="M12 8v8"/></svg>
+            </div>
+            <h3 data-i18n="feature.autocomplete.title">Smart autocomplete + 30 templates</h3>
+            <p data-i18n="feature.autocomplete.desc">Keywords, tables, columns, aliases, and shortcuts for the queries you write every day.</p>
+          </article>
+
+          <article class="feature">
+            <div class="feature-icon">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18l-7 8v5l-4 2v-7L3 5z"/></svg>
+            </div>
+            <h3 data-i18n="feature.filter.title">Filter &amp; sort without SQL</h3>
+            <p data-i18n="feature.filter.desc">Click column headers to filter (=, contains, NULL, in list…) and sort, then keep working.</p>
+          </article>
+
+          <article class="feature">
+            <div class="feature-icon">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h11l3 3v15H5z"/><path d="M8 3v6h8V3"/><path d="M8 15h8v6H8z"/></svg>
+            </div>
+            <h3 data-i18n="feature.batch.title">Batch edits in one transaction</h3>
+            <p data-i18n="feature.batch.desc">Queue cell edits and row changes, then Save (Ctrl/Cmd+S) or Discard — all in one transaction.</p>
+          </article>
+
+          <article class="feature">
+            <div class="feature-icon">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+            </div>
+            <h3 data-i18n="feature.prod.title">Protected production connections</h3>
+            <p data-i18n="feature.prod.desc">Dev/test/prod labels, typed confirmation before writes, and optional read-only mode.</p>
+          </article>
+
+          <article class="feature">
+            <div class="feature-icon">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="7.5" cy="15.5" r="3.5"/><path d="m10 13 8-8 3 3-3 3-2-2-3 3"/></svg>
+            </div>
+            <h3 data-i18n="feature.ssh.title">SSH tunnel</h3>
+            <p data-i18n="feature.ssh.desc">Connect to MySQL and PostgreSQL through an SSH tunnel with a password or private key.</p>
+          </article>
+
+          <article class="feature">
+            <div class="feature-icon">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M12 12v6"/><path d="m9 15 3 3 3-3"/></svg>
+            </div>
+            <h3 data-i18n="feature.export.title">Export &amp; import, four formats</h3>
+            <p data-i18n="feature.export.desc">CSV, JSON, SQL, and Excel — with streaming, progress, and cancel for large tables.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="screenshots" aria-labelledby="screenshots-title">
+      <div class="container">
+        <div class="section-head">
+          <p class="eyebrow" data-i18n="screenshots.eyebrow">Screenshots</p>
+          <h2 id="screenshots-title" data-i18n="screenshots.title">Take a look inside</h2>
+          <p class="section-lead" data-i18n="screenshots.lead">The editor, data grid, AI actions, and connection manager.</p>
+        </div>
+
+        <div class="shots">
+          <figure class="shot">
+            <div class="shot-frame">
+              <img src="assets/screens/editor.png" alt="DataForge SQL editor with query tabs and autocomplete" width="1280" height="800" loading="lazy" decoding="async" data-i18n-alt="screenshot.editor.alt">
+            </div>
+            <figcaption data-i18n="screenshot.editor.caption">SQL editor with tabs, autocomplete, and query history.</figcaption>
+          </figure>
+
+          <figure class="shot">
+            <div class="shot-frame">
+              <img src="assets/screens/grid.png" alt="DataForge data grid with filtered and sorted rows" width="1280" height="800" loading="lazy" decoding="async" data-i18n-alt="screenshot.grid.alt">
+            </div>
+            <figcaption data-i18n="screenshot.grid.caption">Fast grid: filter, sort, edit, and copy rows.</figcaption>
+          </figure>
+
+          <figure class="shot">
+            <div class="shot-frame">
+              <img src="assets/screens/ai.png" alt="DataForge AI panel generating SQL from a natural-language prompt" width="1280" height="800" loading="lazy" decoding="async" data-i18n-alt="screenshot.ai.alt">
+            </div>
+            <figcaption data-i18n="screenshot.ai.caption">AI actions: generate, fix, explain, and optimize.</figcaption>
+          </figure>
+
+          <figure class="shot">
+            <div class="shot-frame">
+              <img src="assets/screens/connection.png" alt="DataForge connection manager with presets and environment labels" width="1280" height="800" loading="lazy" decoding="async" data-i18n-alt="screenshot.connection.alt">
+            </div>
+            <figcaption data-i18n="screenshot.connection.caption">Connection presets, colors, and protected environments.</figcaption>
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-alt" id="compare" aria-labelledby="compare-title">
+      <div class="container">
+        <div class="section-head">
+          <p class="eyebrow" data-i18n="compare.eyebrow">Comparison</p>
+          <h2 id="compare-title" data-i18n="compare.title">How it compares</h2>
+          <p class="section-lead" data-i18n="compare.lead">A lightweight alternative to the big database IDEs. Figures are approximate.</p>
+        </div>
+
+        <div class="table-wrap">
+          <table role="table">
+            <caption class="sr-only">Comparison of DataForge, DBeaver and Navicat</caption>
+            <thead role="rowgroup">
+              <tr role="row">
+                <th scope="col" role="columnheader" data-i18n="compare.feature">Feature</th>
+                <th scope="col" role="columnheader" class="col-df">DataForge</th>
+                <th scope="col" role="columnheader">DBeaver</th>
+                <th scope="col" role="columnheader">Navicat</th>
+              </tr>
+            </thead>
+            <tbody role="rowgroup">
+              <tr role="row">
+                <th scope="row" role="rowheader" data-i18n="compare.size">Installer size</th>
+                <td role="cell" class="col-df" data-label="DataForge" data-i18n="compare.size.df">~6 MB</td>
+                <td role="cell" data-label="DBeaver" data-i18n="compare.size.dbeaver">~100+ MB (Java)</td>
+                <td role="cell" data-label="Navicat" data-i18n="compare.size.navicat">Large</td>
+              </tr>
+              <tr role="row">
+                <th scope="row" role="rowheader" data-i18n="compare.startup">Startup</th>
+                <td role="cell" class="col-df" data-label="DataForge" data-i18n="compare.startup.df">Instant</td>
+                <td role="cell" data-label="DBeaver" data-i18n="compare.startup.dbeaver">Slower (Java)</td>
+                <td role="cell" data-label="Navicat" data-i18n="compare.startup.navicat">Fast</td>
+              </tr>
+              <tr role="row">
+                <th scope="row" role="rowheader" data-i18n="compare.price">Price</th>
+                <td role="cell" class="col-df" data-label="DataForge" data-i18n="compare.price.df">Free (MIT)</td>
+                <td role="cell" data-label="DBeaver" data-i18n="compare.price.dbeaver">Free Community; paid editions</td>
+                <td role="cell" data-label="Navicat" data-i18n="compare.price.navicat">Paid</td>
+              </tr>
+              <tr role="row">
+                <th scope="row" role="rowheader" data-i18n="compare.ai">AI built in</th>
+                <td role="cell" class="col-df" data-label="DataForge" data-i18n="compare.ai.df">Yes (bring your own key)</td>
+                <td role="cell" data-label="DBeaver" data-i18n="compare.ai.dbeaver">No (via extensions)</td>
+                <td role="cell" data-label="Navicat" data-i18n="compare.ai.navicat">Varies by version</td>
+              </tr>
+              <tr role="row">
+                <th scope="row" role="rowheader" data-i18n="compare.native">Native look</th>
+                <td role="cell" class="col-df" data-label="DataForge" data-i18n="compare.native.df">Yes (Tauri)</td>
+                <td role="cell" data-label="DBeaver" data-i18n="compare.native.dbeaver">No (Java/SWT)</td>
+                <td role="cell" data-label="Navicat" data-i18n="compare.native.navicat">Yes (native UI)</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="fine-print" data-i18n="compare.note">DBeaver and Navicat are trademarks of their respective owners. Details reflect their public editions and may change.</p>
+      </div>
+    </section>
+
+    <section class="section" id="whatsnew" aria-labelledby="whatsnew-title">
+      <div class="container">
+        <div class="section-head">
+          <p class="eyebrow" data-i18n="whatsnew.eyebrow">What's new</p>
+          <h2 id="whatsnew-title" data-i18n="whatsnew.title">Latest changes</h2>
+          <p class="section-lead" data-i18n="whatsnew.desc">Pulled from the project changelog on GitHub.</p>
+        </div>
+
+        <div class="whatsnew-grid" id="changelog" aria-live="polite">
+          <p class="muted" data-i18n="whatsnew.loading">Loading the latest changes…</p>
+        </div>
+        <p class="section-link">
+          <a href="https://github.com/IsmayilIsayev/DataForge/blob/main/CHANGELOG.md" target="_blank" rel="noopener noreferrer" data-i18n="whatsnew.full">Read the full changelog</a>
+        </p>
+      </div>
+    </section>
+
+    <section class="section section-alt" id="faq" aria-labelledby="faq-title">
+      <div class="container">
+        <div class="section-head">
+          <p class="eyebrow" data-i18n="faq.eyebrow">FAQ</p>
+          <h2 id="faq-title" data-i18n="faq.title">Common questions</h2>
+        </div>
+
+        <div class="faq-list">
+          <details>
+            <summary data-i18n="faq.q1">Is DataForge free?</summary>
+            <p data-i18n="faq.a1">Yes. It is open source under the MIT license — free to use, modify, and distribute.</p>
+          </details>
+          <details>
+            <summary data-i18n="faq.q2">Where are my passwords stored?</summary>
+            <p data-i18n="faq.a2">Database passwords and AI API keys are stored in your operating system's keychain, not in plain text in the app. Connection files do not contain passwords.</p>
+          </details>
+          <details>
+            <summary data-i18n="faq.q3">Which AI providers are supported?</summary>
+            <p data-i18n="faq.a3">OpenAI, OpenRouter, Google Gemini, Groq, and local models through Ollama or LM Studio. You bring your own key.</p>
+          </details>
+          <details>
+            <summary data-i18n="faq.q4">Does my data go to the AI?</summary>
+            <p data-i18n="faq.a4">Only the schema and SQL you send with a request. Requests go directly from your machine to the provider you configure; DataForge does not run a proxy server.</p>
+          </details>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <div class="footer-brand">
+        <img src="assets/favicon.png" alt="" width="24" height="24">
+        <span>DataForge</span>
+      </div>
+      <nav class="footer-links" data-i18n-aria="footer.label" aria-label="Footer">
+        <a href="https://github.com/IsmayilIsayev/DataForge/blob/main/LICENSE" target="_blank" rel="noopener noreferrer" data-i18n="footer.license">MIT license</a>
+        <a href="https://github.com/IsmayilIsayev/DataForge" target="_blank" rel="noopener noreferrer" data-i18n="footer.github">GitHub</a>
+        <a href="https://github.com/IsmayilIsayev/DataForge/issues" target="_blank" rel="noopener noreferrer" data-i18n="footer.issues">Issues</a>
+      </nav>
+      <p class="footer-note" data-i18n="footer.copyright">© {year} DataForge contributors. Free and open source.</p>
+    </div>
+  </footer>
+</body>
+</html>
