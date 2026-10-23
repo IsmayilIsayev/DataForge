@@ -7,27 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-10-23
-
 ### Added
 
 - Protected connections: dev/test/prod labels (PROD always spelled out), confirmation before any write on prod (type the database name for DROP/TRUNCATE and DELETE/UPDATE without WHERE), optional read-only mode.
 - Batch editing: cell edits, deleted and new rows are queued (highlighted) and saved together in one transaction with Save (Ctrl/Cmd+S) or dropped with Discard; Preview SQL, undo (Ctrl/Cmd+Z), and an "Auto-commit edits" switch for the old behaviour.
 
-### Added
+### Fixed
 
-- Long values open in a side or bottom panel on double-click (resizable, with Edit, Copy and pretty JSON).
-- "Update available" and one-time "What's new" windows that show the release notes.
+- SQL autocomplete now shows suggestions (the editor's suggest widget was missing from the slimmed-down editor build).
+- The "What's new" window also appears when updating from versions before 0.4.0.
+
+## [0.4.0] - 2026-10-23
+
+### Added
 
 - SQL autocomplete: keywords ("sel" → SELECT, "fr" → FROM), "SELECT " → "* FROM", table and column names (with aliases), and 30+ templates (sf, ins, upd, cte, upsert, ct, idx, tx, thismonth, dup...).
 - AI actions: "Fix with AI" on query errors (preview + Apply), Explain, and Optimize with the real EXPLAIN plan (Ctrl/Cmd+Shift+E / O).
 - Filter and sort from the grid column headers (=, contains, starts with, is NULL, in list…); table tabs filter in the database, query results in memory.
 - Connection presets for MariaDB, TiDB, CockroachDB, Supabase, Neon, Amazon RDS and PlanetScale, and a new SQL Server driver.
+- Long values open in a side or bottom panel on double-click (resizable, with Edit, Copy and pretty JSON).
+- "Update available" and one-time "What's new" windows that show the release notes.
 
 ### Changed
 
 - Lighter app: SQL-only editor, dialogs load on demand, a much smaller icon font.
-
 - Simpler AI settings: provider presets, a model list, and a base URL only for custom providers.
 - Stronger AI prompts: per-database syntax, LIMIT 100 by default, no write statements unless asked.
 
