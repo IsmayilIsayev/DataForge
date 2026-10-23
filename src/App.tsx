@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import lockupOnLight from "./assets/lockup.png";
 import lockupOnDark from "./assets/lockup-light.png";
+import changelogRaw from "../CHANGELOG.md?raw";
 import AiPanel from "./components/AiPanel";
 import CommandPalette from "./components/CommandPalette";
 import type { CommandAction } from "./components/CommandPalette";
@@ -15,6 +16,8 @@ import HistoryDialog from "./components/HistoryDialog";
 import Sidebar from "./components/Sidebar";
 import SqlEditor from "./components/SqlEditor";
 import TableDataView from "./components/TableDataView";
+import WhatsNewDialog from "./components/WhatsNewDialog";
+import { compareVersions, parseVersionSection } from "./changelog";
 import {
   connectConnection,
   errorMessage,
@@ -95,6 +98,10 @@ export default function App() {
     version: string;
     notes: string;
   } | null>(null);
+  const [whatsNew, setWhatsNew] = useState<{
+    version: string;
+    notes: string;
+  } | null>(null);
   const [updateBusy, setUpdateBusy] = useState<string | null>(null);
   // Holds the pending Update handle between "check" and "install" without
   // forcing re-renders (the object is not serialisable React state).
@@ -112,9 +119,17 @@ export default function App() {
       const update = await check();
       if (update) {
         pendingUpdateRef.current = update as typeof pendingUpdateRef.current;
-        setUpdateInfo({ version: update.version, notes: update.body ?? "" });
-        if (silent) {
-          void notify("DataForge", `Update available: v${update.version}`);
+        const notes =
+          update.body?.trim() ||
+          parseVersionSection(changelogRaw, update.version) ||
+          "See CHANGELOG.md";
+        const dismissed = localStorage.getItem("df-dismissed-update-version");
+        const show = !silent || dismissed !== update.version;
+        if (show) {
+          setUpdateInfo({ version: update.version, notes });
+          if (silent) {
+            void notify("DataForge", `Update available: v${update.version}`);
+          }
         }
       } else {
         pendingUpdateRef.current = null;
@@ -140,6 +155,38 @@ export default function App() {
       setUpdateBusy(null);
       void notify("DataForge", "Update failed: " + String(installError));
     }
+  }, []);
+
+  const dismissUpdate = useCallback(() => {
+    if (updateInfo) {
+      localStorage.setItem("df-dismissed-update-version", updateInfo.version);
+    }
+    setUpdateInfo(null);
+  }, [updateInfo]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    getVersion()
+      .then((version) => {
+        if (cancelled) return;
+        const lastSeen = localStorage.getItem("df-last-seen-version");
+        if (!lastSeen) {
+          localStorage.setItem("df-last-seen-version", version);
+          return;
+        }
+        if (compareVersions(version, lastSeen) > 0) {
+          const notes =
+            parseVersionSection(changelogRaw, version) || "See CHANGELOG.md";
+          setWhatsNew({ version, notes });
+        }
+        localStorage.setItem("df-last-seen-version", version);
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const activeConnection =
@@ -825,67 +872,6 @@ export default function App() {
         overflow: "hidden",
       }}
     >
-      {updateInfo && (
-        <div
-          style={{
-            flex: "none",
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-            height: 34,
-            padding: "0 12px",
-            background: "var(--acd)",
-            color: "#fff",
-            fontSize: 12.5,
-          }}
-        >
-          <i className="icon-download" style={{ fontSize: 15 }} />
-          <span style={{ fontWeight: 500 }}>
-            Update available — DataForge v{updateInfo.version}
-          </span>
-          <div style={{ flex: 1 }} />
-          {updateBusy ? (
-            <span style={{ opacity: 0.9 }}>{updateBusy}</span>
-          ) : (
-            <>
-              <button
-                type="button"
-                onClick={() => void installUpdate()}
-                style={{
-                  height: 22,
-                  padding: "0 12px",
-                  border: 0,
-                  borderRadius: 4,
-                  background: "#fff",
-                  color: "var(--acd)",
-                  fontSize: 12,
-                  fontWeight: 600,
-                  cursor: "default",
-                }}
-              >
-                Install &amp; Restart
-              </button>
-              <button
-                type="button"
-                onClick={() => setUpdateInfo(null)}
-                title="Dismiss until next launch"
-                style={{
-                  height: 22,
-                  padding: "0 10px",
-                  border: "1px solid rgba(255,255,255,.5)",
-                  borderRadius: 4,
-                  background: "transparent",
-                  color: "#fff",
-                  fontSize: 12,
-                  cursor: "default",
-                }}
-              >
-                Later
-              </button>
-            </>
-          )}
-        </div>
-      )}
       <div
         style={{
           height: 32,
@@ -1716,6 +1702,25 @@ export default function App() {
             </div>
           </div>
         </>
+      )}
+
+      {whatsNew && (
+        <WhatsNewDialog
+          kind="whats-new"
+          version={whatsNew.version}
+          notes={whatsNew.notes}
+          onClose={() => setWhatsNew(null)}
+        />
+      )}
+
+      {updateInfo && (
+        <WhatsNewDialog
+          version={updateInfo.version}
+          notes={updateInfo.notes}
+          busy={updateBusy}
+          onInstall={() => void installUpdate()}
+          onClose={dismissUpdate}
+        />
       )}
 
       <CommandPalette
