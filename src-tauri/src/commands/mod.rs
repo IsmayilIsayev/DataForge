@@ -5,4 +5,5 @@ pub mod export;
 pub mod import;
 pub mod plan;
 pub mod query;
+pub mod schema;
 pub mod search;

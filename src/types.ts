@@ -125,6 +125,96 @@ export interface ErSchema {
   truncated: boolean;
 }
 
+export interface SchemaColumn {
+  name: string;
+  data_type: string;
+  nullable: boolean;
+  primary_key: boolean;
+  default?: string | null;
+  auto_increment: boolean;
+}
+
+export interface SchemaIndex {
+  name: string;
+  columns: string[];
+  unique: boolean;
+}
+
+export interface SchemaForeignKey {
+  name: string;
+  from_table: string;
+  from_columns: string[];
+  to_table: string;
+  to_columns: string[];
+}
+
+export interface SchemaView {
+  name: string;
+  definition?: string | null;
+}
+
+export interface DiffSummary {
+  added_tables: number;
+  removed_tables: number;
+  changed_tables: number;
+  added_columns: number;
+  removed_columns: number;
+  changed_columns: number;
+  added_indexes: number;
+  removed_indexes: number;
+  added_foreign_keys: number;
+  removed_foreign_keys: number;
+  added_views: number;
+  removed_views: number;
+  changed_views: number;
+  statements: number;
+  destructive: number;
+}
+
+export interface DiffStatement {
+  sql: string;
+  kind: string;
+  table?: string | null;
+  destructive: boolean;
+  reason?: string | null;
+}
+
+export interface TableDiffItem {
+  kind: string;
+  label: string;
+  destructive: boolean;
+  reason?: string | null;
+  before?: string | null;
+  after?: string | null;
+  before_column?: SchemaColumn | null;
+  after_column?: SchemaColumn | null;
+  changes?: string[];
+}
+
+export interface TableDiff {
+  name: string;
+  status: "added" | "removed" | "changed";
+  items: TableDiffItem[];
+}
+
+export interface ViewDiff {
+  name: string;
+  status: "added" | "removed" | "changed";
+  definition?: string | null;
+}
+
+export interface SchemaDiff {
+  dialect: Dialect;
+  source_database: string;
+  target_database: string;
+  source_truncated: boolean;
+  target_truncated: boolean;
+  summary: DiffSummary;
+  tables: TableDiff[];
+  views: ViewDiff[];
+  statements: DiffStatement[];
+}
+
 export interface Nl2SqlResult {
   sql: string;
   explanation: string;

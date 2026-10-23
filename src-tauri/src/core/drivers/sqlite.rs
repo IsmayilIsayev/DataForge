@@ -12,6 +12,10 @@ use crate::core::drivers::{
     ErColumn, ErSchema, ErTable, ForeignKeyRow, QueryResult, SchemaSnapshot, SchemaTable, TableInfo,
     TableKind, TxError, TxInput, TxRowError, TxStreamOutcome, ER_TABLE_LIMIT,
 };
+use crate::core::schema_diff::{
+    ColumnSchema, ForeignKeySchema, IndexSchema, SchemaData, TableSchema, ViewSchema,
+    DIFF_TABLE_LIMIT,
+};
 use crate::error::{AppError, AppResult};
 
 const DEFAULT_MAX_ROWS: i64 = 1000;
@@ -51,6 +55,116 @@ fn first_keyword(sql: &str) -> String {
 
 fn quote_identifier(value: &str) -> String {
     format!("\"{}\"", value.replace('"', "\"\""))
+}
+
+fn split_sql_list(value: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut depth = 0;
+
+    for character in value.chars() {
+        if let Some(open) = quote {
+            current.push(character);
+            if character == open {
+                quote = None;
+            }
+            continue;
+        }
+        match character {
+            '"' | '\'' | '`' => {
+                quote = Some(character);
+                current.push(character);
+            }
+            '[' => {
+                quote = Some(']');
+                current.push(character);
+            }
+            '(' => {
+                depth += 1;
+                current.push(character);
+            }
+            ')' => {
+                depth -= 1;
+                current.push(character);
+            }
+            ',' if depth == 0 => {
+                parts.push(current.trim().to_string());
+                current.clear();
+            }
+            _ => current.push(character),
+        }
+    }
+    if !current.trim().is_empty() {
+        parts.push(current.trim().to_string());
+    }
+    parts
+}
+
+fn first_sql_token(value: &str) -> String {
+    let value = value.trim();
+    let Some(first) = value.chars().next() else {
+        return String::new();
+    };
+    let closing = match first {
+        '"' => Some('"'),
+        '`' => Some('`'),
+        '[' => Some(']'),
+        '\'' => Some('\''),
+        _ => None,
+    };
+    if let Some(closing) = closing {
+        let mut result = String::new();
+        let mut chars = value.chars();
+        chars.next();
+        for character in chars {
+            if character == closing {
+                break;
+            }
+            result.push(character);
+        }
+        return result;
+    }
+    value
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_string()
+}
+
+fn parse_sqlite_index(name: &str, _table: &str, sql: &str) -> Option<IndexSchema> {
+    let upper = sql.trim_start().to_ascii_uppercase();
+    let unique = upper.starts_with("CREATE UNIQUE INDEX");
+    let open = sql.find('(')?;
+    let close = sql.rfind(')')?;
+    if close <= open {
+        return None;
+    }
+    let columns: Vec<String> = split_sql_list(&sql[open + 1..close])
+        .into_iter()
+        .map(|part| first_sql_token(&part))
+        .filter(|column| !column.is_empty())
+        .collect();
+    if columns.is_empty() {
+        return None;
+    }
+    Some(IndexSchema {
+        name: name.to_string(),
+        columns,
+        unique,
+    })
+}
+
+fn sqlite_view_definition(sql: &str) -> Option<String> {
+    let upper = sql.to_ascii_uppercase();
+    let index = upper.find(" AS ")?;
+    Some(
+        sql[index + 4..]
+            .trim()
+            .trim_end_matches(';')
+            .trim()
+            .to_string(),
+    )
 }
 
 fn row_columns(row: &SqliteRow) -> Vec<String> {
@@ -402,6 +516,240 @@ impl Driver for SqliteDriver {
                 database,
                 tables,
                 foreign_keys: group_foreign_keys(foreign_key_rows),
+                truncated,
+            })
+        })
+    }
+
+    fn get_diff_schema<'a>(
+        &'a self,
+        database: Option<&'a str>,
+    ) -> BoxFuture<'a, AppResult<SchemaData>> {
+        Box::pin(async move {
+            let database = database
+                .filter(|value| !value.is_empty())
+                .unwrap_or("main")
+                .to_string();
+            let schema = quote_identifier(&database);
+
+            let objects_sql = format!(
+                "SELECT name, type, sql FROM {schema}.sqlite_master \
+                 WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' \
+                 ORDER BY name"
+            );
+            let object_rows = sqlx::query(&objects_sql)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(db_error)?;
+            let mut table_names = Vec::new();
+            let mut create_sql: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
+            let mut views = Vec::new();
+            for row in object_rows {
+                let name = row.try_get::<String, _>(0).unwrap_or_default();
+                let kind = row.try_get::<String, _>(1).unwrap_or_default();
+                let sql = row.try_get::<Option<String>, _>(2).unwrap_or(None);
+                if kind.eq_ignore_ascii_case("view") {
+                    if views.len() < DIFF_TABLE_LIMIT {
+                        views.push(ViewSchema {
+                            name,
+                            definition: sql.as_deref().and_then(sqlite_view_definition),
+                        });
+                    }
+                } else if !name.is_empty() {
+                    table_names.push(name.clone());
+                    if let Some(sql) = sql {
+                        create_sql.insert(name, sql);
+                    }
+                }
+            }
+            table_names.sort();
+            table_names.dedup();
+
+            let truncated = table_names.len() > DIFF_TABLE_LIMIT;
+            table_names.truncate(DIFF_TABLE_LIMIT);
+            let included: std::collections::HashSet<String> =
+                table_names.iter().cloned().collect();
+            let mut tables: std::collections::HashMap<String, TableSchema> = table_names
+                .iter()
+                .map(|name| {
+                    (
+                        name.clone(),
+                        TableSchema {
+                            name: name.clone(),
+                            columns: Vec::new(),
+                            indexes: Vec::new(),
+                            pk_constraint: None,
+                        },
+                    )
+                })
+                .collect();
+
+            if database == "main" {
+                let columns_sql = format!(
+                    "SELECT m.name, p.name, p.type, p.\"notnull\", p.pk, p.dflt_value \
+                     FROM {schema}.sqlite_master m \
+                     JOIN pragma_table_info(m.name) p \
+                     WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%' \
+                     ORDER BY m.name, p.cid"
+                );
+                let rows = sqlx::query(&columns_sql)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(db_error)?;
+                for row in rows {
+                    let table = row.try_get::<String, _>(0).unwrap_or_default();
+                    let Some(schema) = tables.get_mut(&table) else {
+                        continue;
+                    };
+                    let not_null = row.try_get::<i64, _>(3).unwrap_or(0);
+                    let pk = row.try_get::<i64, _>(4).unwrap_or(0);
+                    schema.columns.push(ColumnSchema {
+                        name: row.try_get::<String, _>(1).unwrap_or_default(),
+                        data_type: row.try_get::<String, _>(2).unwrap_or_default(),
+                        nullable: not_null == 0 && pk == 0,
+                        primary_key: pk > 0,
+                        default: row.try_get::<Option<String>, _>(5).unwrap_or(None),
+                        auto_increment: false,
+                    });
+                }
+            } else {
+                for table in &table_names {
+                    let sql = format!(
+                        "PRAGMA {schema}.table_info({})",
+                        quote_identifier(table)
+                    );
+                    let rows = sqlx::query(&sql)
+                        .fetch_all(&self.pool)
+                        .await
+                        .map_err(db_error)?;
+                    let Some(schema) = tables.get_mut(table) else {
+                        continue;
+                    };
+                    for row in rows {
+                        let not_null = row.try_get::<i64, _>(3).unwrap_or(0);
+                        let pk = row.try_get::<i64, _>(5).unwrap_or(0);
+                        schema.columns.push(ColumnSchema {
+                            name: row.try_get::<String, _>(1).unwrap_or_default(),
+                            data_type: row.try_get::<String, _>(2).unwrap_or_default(),
+                            nullable: not_null == 0 && pk == 0,
+                            primary_key: pk > 0,
+                            default: row.try_get::<Option<String>, _>(4).unwrap_or(None),
+                            auto_increment: false,
+                        });
+                    }
+                }
+            }
+
+            for (table, sql) in &create_sql {
+                if !sql.to_ascii_uppercase().contains("AUTOINCREMENT") {
+                    continue;
+                }
+                if let Some(schema) = tables.get_mut(table) {
+                    for column in &mut schema.columns {
+                        if column.primary_key {
+                            column.auto_increment = true;
+                        }
+                    }
+                }
+            }
+
+            let indexes_sql = format!(
+                "SELECT name, tbl_name, sql FROM {schema}.sqlite_master \
+                 WHERE type = 'index' AND sql IS NOT NULL AND name NOT LIKE 'sqlite_%' \
+                 ORDER BY tbl_name, name"
+            );
+            let index_rows = sqlx::query(&indexes_sql)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(db_error)?;
+            for row in index_rows {
+                let name = row.try_get::<String, _>(0).unwrap_or_default();
+                let table = row.try_get::<String, _>(1).unwrap_or_default();
+                if !included.contains(&table) {
+                    continue;
+                }
+                let Some(sql) = row.try_get::<Option<String>, _>(2).unwrap_or(None) else {
+                    continue;
+                };
+                if let Some(index) = parse_sqlite_index(&name, &table, &sql) {
+                    if let Some(schema) = tables.get_mut(&table) {
+                        schema.indexes.push(index);
+                    }
+                }
+            }
+
+            let mut pk_columns: std::collections::HashMap<String, Vec<(i64, String)>> =
+                std::collections::HashMap::new();
+            for table in &table_names {
+                if let Some(schema) = tables.get(table) {
+                    for (position, column) in schema.columns.iter().enumerate() {
+                        if column.primary_key {
+                            pk_columns
+                                .entry(table.clone())
+                                .or_default()
+                                .push((position as i64 + 1, column.name.clone()));
+                        }
+                    }
+                }
+            }
+
+            let mut foreign_key_rows = Vec::new();
+            for table in &table_names {
+                let sql = er::sqlite_foreign_keys_sql(&database, table);
+                let rows = sqlx::query(&sql)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(db_error)?;
+                for row in rows {
+                    let id = row.try_get::<i64, _>(0).unwrap_or(0);
+                    let seq = row.try_get::<i64, _>(1).unwrap_or(0);
+                    let to_table = row.try_get::<String, _>(2).unwrap_or_default();
+                    if !included.contains(&to_table) {
+                        continue;
+                    }
+                    let from_column = row.try_get::<String, _>(3).unwrap_or_default();
+                    let mut to_column = row
+                        .try_get::<Option<String>, _>(4)
+                        .unwrap_or(None)
+                        .unwrap_or_default();
+                    if to_column.is_empty() {
+                        to_column = pk_columns
+                            .get(&to_table)
+                            .and_then(|columns| columns.get(seq as usize))
+                            .map(|(_, name)| name.clone())
+                            .unwrap_or_default();
+                    }
+                    foreign_key_rows.push(ForeignKeyRow {
+                        constraint_name: format!("fk_{table}_{id}"),
+                        from_table: table.clone(),
+                        from_column,
+                        from_position: seq,
+                        to_table,
+                        to_column,
+                        to_position: seq,
+                    });
+                }
+            }
+            let foreign_keys = group_foreign_keys(foreign_key_rows)
+                .into_iter()
+                .map(|fk| ForeignKeySchema {
+                    name: fk.name,
+                    from_table: fk.from_table,
+                    from_columns: fk.from_columns,
+                    to_table: fk.to_table,
+                    to_columns: fk.to_columns,
+                })
+                .collect();
+
+            let mut table_list: Vec<TableSchema> = tables.into_values().collect();
+            table_list.sort_by(|a, b| a.name.cmp(&b.name));
+
+            Ok(SchemaData {
+                database,
+                tables: table_list,
+                foreign_keys,
+                views,
                 truncated,
             })
         })

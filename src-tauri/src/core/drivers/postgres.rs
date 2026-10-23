@@ -14,6 +14,10 @@ use crate::core::drivers::{
     ErColumn, ErSchema, ErTable, ForeignKeyRow, QueryResult, SchemaSnapshot, SchemaTable, SslMode,
     TableInfo, TableKind, TxError, TxInput, TxRowError, TxStreamOutcome, ER_TABLE_LIMIT,
 };
+use crate::core::schema_diff::{
+    ColumnSchema, ForeignKeySchema, IndexSchema, SchemaData, TableSchema, ViewSchema,
+    DIFF_TABLE_LIMIT,
+};
 use crate::error::{AppError, AppResult};
 
 const DEFAULT_MAX_ROWS: i64 = 1000;
@@ -518,6 +522,230 @@ impl Driver for PostgresDriver {
                 database,
                 tables,
                 foreign_keys: group_foreign_keys(foreign_key_rows),
+                truncated,
+            })
+        })
+    }
+
+    fn get_diff_schema<'a>(
+        &'a self,
+        database: Option<&'a str>,
+    ) -> BoxFuture<'a, AppResult<SchemaData>> {
+        Box::pin(async move {
+            let database = database
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(&self.database)
+                .to_string();
+            if database.is_empty() {
+                return Err(AppError::Config("sxem üçün baza seçilməyib".to_string()));
+            }
+
+            let mut conn = self.connect_to(&database).await?;
+            let rows = sqlx::query(er::postgres_tables_sql())
+                .fetch_all(&mut conn)
+                .await
+                .map_err(db_error)?;
+            let mut names: Vec<String> = rows
+                .iter()
+                .map(|row| row.try_get::<String, _>(0).unwrap_or_default())
+                .filter(|name| !name.is_empty())
+                .collect();
+            names.sort();
+            names.dedup();
+
+            let truncated = names.len() > DIFF_TABLE_LIMIT;
+            names.truncate(DIFF_TABLE_LIMIT);
+            let included: std::collections::HashSet<String> = names.iter().cloned().collect();
+            let mut tables: std::collections::HashMap<String, TableSchema> = names
+                .iter()
+                .map(|name| {
+                    (
+                        name.clone(),
+                        TableSchema {
+                            name: name.clone(),
+                            columns: Vec::new(),
+                            indexes: Vec::new(),
+                            pk_constraint: None,
+                        },
+                    )
+                })
+                .collect();
+
+            let column_rows = sqlx::query(er::postgres_columns_sql())
+                .fetch_all(&mut conn)
+                .await
+                .map_err(db_error)?;
+            for row in column_rows {
+                let table = row.try_get::<String, _>(0).unwrap_or_default();
+                let Some(schema) = tables.get_mut(&table) else {
+                    continue;
+                };
+                schema.columns.push(ColumnSchema {
+                    name: row.try_get::<String, _>(1).unwrap_or_default(),
+                    data_type: row.try_get::<String, _>(2).unwrap_or_default(),
+                    nullable: row
+                        .try_get::<String, _>(3)
+                        .map(|value| value.eq_ignore_ascii_case("YES"))
+                        .unwrap_or(true),
+                    primary_key: row.try_get::<bool, _>(4).unwrap_or(false),
+                    default: None,
+                    auto_increment: false,
+                });
+            }
+
+            let extra_rows = sqlx::query(
+                "SELECT table_name, column_name, column_default, is_identity \
+                 FROM information_schema.columns \
+                 WHERE table_schema = current_schema()",
+            )
+            .fetch_all(&mut conn)
+            .await
+            .map_err(db_error)?;
+            for row in extra_rows {
+                let table = row.try_get::<String, _>(0).unwrap_or_default();
+                let Some(schema) = tables.get_mut(&table) else {
+                    continue;
+                };
+                let column_name = row.try_get::<String, _>(1).unwrap_or_default();
+                let default = row.try_get::<Option<String>, _>(2).unwrap_or(None);
+                let identity = row
+                    .try_get::<String, _>(3)
+                    .map(|value| value.eq_ignore_ascii_case("YES"))
+                    .unwrap_or(false);
+                let serial = default
+                    .as_deref()
+                    .map(|value| value.trim_start().starts_with("nextval("))
+                    .unwrap_or(false);
+                if let Some(column) = schema
+                    .columns
+                    .iter_mut()
+                    .find(|column| column.name == column_name)
+                {
+                    column.auto_increment = identity || serial;
+                    column.default = if column.auto_increment { None } else { default };
+                }
+            }
+
+            let index_rows = sqlx::query(
+                "SELECT i.relname AS index_name, t.relname AS table_name, \
+                        a.attname AS column_name, x.ord AS position, \
+                        ix.indisunique, ix.indisprimary \
+                 FROM pg_catalog.pg_index ix \
+                 JOIN pg_catalog.pg_class i ON i.oid = ix.indexrelid \
+                 JOIN pg_catalog.pg_class t ON t.oid = ix.indrelid \
+                 JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace \
+                 JOIN LATERAL unnest(ix.indkey::smallint[]) WITH ORDINALITY AS x(attnum, ord) ON true \
+                 JOIN pg_catalog.pg_attribute a \
+                   ON a.attrelid = t.oid AND a.attnum = x.attnum \
+                 WHERE n.nspname = current_schema() \
+                 ORDER BY t.relname, i.relname, x.ord",
+            )
+            .fetch_all(&mut conn)
+            .await
+            .map_err(db_error)?;
+            let mut grouped_indexes: std::collections::BTreeMap<
+                (String, String),
+                (bool, bool, Vec<(i64, String)>),
+            > = std::collections::BTreeMap::new();
+            for row in index_rows {
+                let index_name = row.try_get::<String, _>(0).unwrap_or_default();
+                let table_name = row.try_get::<String, _>(1).unwrap_or_default();
+                if !included.contains(&table_name) {
+                    continue;
+                }
+                let entry = grouped_indexes
+                    .entry((table_name, index_name))
+                    .or_insert((false, false, Vec::new()));
+                entry.0 = row.try_get::<bool, _>(4).unwrap_or(false);
+                entry.1 = row.try_get::<bool, _>(5).unwrap_or(false);
+                entry.2.push((
+                    row.try_get::<i64, _>(3).unwrap_or(0),
+                    row.try_get::<String, _>(2).unwrap_or_default(),
+                ));
+            }
+            for ((table_name, index_name), (unique, primary, mut columns)) in grouped_indexes {
+                let Some(schema) = tables.get_mut(&table_name) else {
+                    continue;
+                };
+                if primary {
+                    schema.pk_constraint = Some(index_name);
+                    continue;
+                }
+                columns.sort_by_key(|(position, _)| *position);
+                let columns: Vec<String> = columns
+                    .into_iter()
+                    .map(|(_, column)| column)
+                    .filter(|column| !column.is_empty())
+                    .collect();
+                if columns.is_empty() {
+                    continue;
+                }
+                schema.indexes.push(IndexSchema {
+                    name: index_name,
+                    columns,
+                    unique,
+                });
+            }
+
+            let view_rows = sqlx::query(
+                "SELECT table_name, view_definition \
+                 FROM information_schema.views \
+                 WHERE table_schema = current_schema() \
+                 ORDER BY table_name",
+            )
+            .fetch_all(&mut conn)
+            .await
+            .map_err(db_error)?;
+            let views = view_rows
+                .into_iter()
+                .take(DIFF_TABLE_LIMIT)
+                .map(|row| ViewSchema {
+                    name: row.try_get::<String, _>(0).unwrap_or_default(),
+                    definition: row.try_get::<Option<String>, _>(1).unwrap_or(None),
+                })
+                .filter(|view| !view.name.is_empty())
+                .collect();
+
+            let fk_rows = sqlx::query(er::postgres_foreign_keys_sql())
+                .fetch_all(&mut conn)
+                .await
+                .map_err(db_error)?;
+            let mut foreign_key_rows = Vec::new();
+            for row in fk_rows {
+                let from_table = row.try_get::<String, _>(1).unwrap_or_default();
+                let to_table = row.try_get::<String, _>(4).unwrap_or_default();
+                if !included.contains(&from_table) || !included.contains(&to_table) {
+                    continue;
+                }
+                foreign_key_rows.push(ForeignKeyRow {
+                    constraint_name: row.try_get::<String, _>(0).unwrap_or_default(),
+                    from_table,
+                    from_column: row.try_get::<String, _>(2).unwrap_or_default(),
+                    from_position: row.try_get::<i64, _>(3).unwrap_or(0),
+                    to_table,
+                    to_column: row.try_get::<String, _>(5).unwrap_or_default(),
+                    to_position: row.try_get::<i64, _>(6).unwrap_or(0),
+                });
+            }
+            let foreign_keys = group_foreign_keys(foreign_key_rows)
+                .into_iter()
+                .map(|fk| ForeignKeySchema {
+                    name: fk.name,
+                    from_table: fk.from_table,
+                    from_columns: fk.from_columns,
+                    to_table: fk.to_table,
+                    to_columns: fk.to_columns,
+                })
+                .collect();
+
+            let mut table_list: Vec<TableSchema> = tables.into_values().collect();
+            table_list.sort_by(|a, b| a.name.cmp(&b.name));
+
+            Ok(SchemaData {
+                database,
+                tables: table_list,
+                foreign_keys,
+                views,
                 truncated,
             })
         })

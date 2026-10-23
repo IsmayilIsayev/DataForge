@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::core::schema_diff::SchemaData;
 use crate::core::ssh::{self, SshConfig, SshTunnel};
 use crate::error::{AppError, AppResult};
 
@@ -354,6 +355,17 @@ pub trait Driver: Send + Sync {
         &'a self,
         database: Option<&'a str>,
     ) -> BoxFuture<'a, AppResult<ErSchema>>;
+    fn get_diff_schema<'a>(
+        &'a self,
+        _database: Option<&'a str>,
+    ) -> BoxFuture<'a, AppResult<SchemaData>> {
+        Box::pin(async move {
+            Err(AppError::Config(format!(
+                "Schema compare is not supported for {}",
+                self.dialect_name()
+            )))
+        })
+    }
     fn list_databases<'a>(&'a self) -> BoxFuture<'a, AppResult<Vec<String>>>;
     fn list_tables<'a>(&'a self, database: &'a str) -> BoxFuture<'a, AppResult<Vec<TableInfo>>>;
     fn list_columns<'a>(

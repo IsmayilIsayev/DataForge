@@ -19,6 +19,7 @@ import type {
   ExplainPlan,
   Nl2SqlResult,
   QueryResult,
+  SchemaDiff,
   SchemaSnapshot,
   TableInfo,
   TestConnectionResult,
@@ -115,6 +116,25 @@ export const getErSchema = (connId: string, database: string) =>
   invoke<ErSchema>("get_er_schema", {
     conn_id: connId,
     database,
+  });
+
+export const compareSchemas = (
+  sourceConn: string,
+  sourceDb: string,
+  targetConn: string,
+  targetDb: string,
+) =>
+  invoke<SchemaDiff>("compare_schemas", {
+    source_conn: sourceConn,
+    source_db: sourceDb,
+    target_conn: targetConn,
+    target_db: targetDb,
+  });
+
+export const saveSqlScript = (sql: string, defaultName: string) =>
+  invoke<string | null>("save_sql_script", {
+    sql,
+    default_name: defaultName,
   });
 
 export const saveErd = (

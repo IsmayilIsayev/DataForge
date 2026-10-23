@@ -58,6 +58,9 @@ const ConnectionDialog = lazy(() => import("./components/ConnectionDialog"));
 const FindDialog = lazy(() => import("./components/FindDialog"));
 const HistoryDialog = lazy(() => import("./components/HistoryDialog"));
 const ProdConfirmDialog = lazy(() => import("./components/ProdConfirmDialog"));
+const SchemaCompareDialog = lazy(
+  () => import("./components/SchemaCompareDialog"),
+);
 
 const dialogFallback = (
   <div style={{ position: "fixed", inset: 0 }} aria-hidden="true" />
@@ -171,6 +174,10 @@ export default function App() {
     table?: string;
   } | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [compareOpen, setCompareOpen] = useState<{
+    connId: string | null;
+    database: string | null;
+  } | null>(null);
   const [sideW, setSideW] = useState(248);
   const [aiW, setAiW] = useState(320);
   const [editorH, setEditorH] = useState(236);
@@ -1152,6 +1159,40 @@ export default function App() {
     }
   }, []);
 
+  const openCompareSchemas = useCallback(
+    (connection: ConnectionMeta | null, database: string | null) => {
+      setCompareOpen({
+        connId: connection?.id ?? useAppStore.getState().activeConnId,
+        database: database ?? useAppStore.getState().activeDb,
+      });
+    },
+    [],
+  );
+
+  const openCompareSqlInEditor = useCallback(
+    async (sql: string, connId: string, database: string) => {
+      const store = useAppStore.getState();
+      if (store.activeConnId !== connId && !store.setActiveConn(connId)) {
+        return;
+      }
+      store.setActiveDb(database);
+
+      if (!store.connected[connId]) {
+        try {
+          await connectConnection(connId);
+          useAppStore.getState().setConnected(connId, true);
+        } catch (connectError) {
+          useAppStore.getState().setError(errorMessage(connectError));
+          return;
+        }
+      }
+
+      useAppStore.getState().addQueryTab(sql, "Schema migration");
+      setCompareOpen(null);
+    },
+    [],
+  );
+
   const toggleTheme = useCallback(() => {
     setTheme((current) => (current === "dark" ? "light" : "dark"));
   }, []);
@@ -1256,6 +1297,13 @@ export default function App() {
           );
         }
       },
+    },
+    {
+      id: "compare-schemas",
+      icon: "icon-git-compare",
+      label: "Compare schemas…",
+      group: "Schema",
+      run: () => openCompareSchemas(null, null),
     },
     {
       id: "query-history",
@@ -1520,6 +1568,9 @@ export default function App() {
           onOpenErd={handleOpenErd}
           onFindInTable={(connId, database, table) =>
             setFindOpen({ connId, database, table })
+          }
+          onCompareSchemas={(connection, database) =>
+            openCompareSchemas(connection, database)
           }
           width={sideOpen ? sideW : 0}
         />
@@ -2525,6 +2576,20 @@ export default function App() {
               } else {
                 store.addQueryTab(entry.sql);
               }
+            }}
+          />
+        </Suspense>
+      )}
+
+      {compareOpen && (
+        <Suspense fallback={dialogFallback}>
+          <SchemaCompareDialog
+            defaultConnId={compareOpen.connId}
+            defaultDatabase={compareOpen.database}
+            theme={theme}
+            onClose={() => setCompareOpen(null)}
+            onOpenInEditor={(sql, connId, database) => {
+              void openCompareSqlInEditor(sql, connId, database);
             }}
           />
         </Suspense>

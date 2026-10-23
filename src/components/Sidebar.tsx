@@ -43,6 +43,7 @@ interface Props {
     table: string,
   ) => void;
   onOpenErd: (connection: ConnectionMeta, database: string) => void;
+  onCompareSchemas: (connection: ConnectionMeta, database: string) => void;
   width: number;
 }
 
@@ -381,6 +382,7 @@ export default function Sidebar({
   onFindInTable,
   onOpenTable,
   onOpenErd,
+  onCompareSchemas,
   width,
 }: Props) {
   const connections = useAppStore((state) => state.connections);
@@ -1624,6 +1626,15 @@ export default function Sidebar({
                     const menu = contextMenu;
                     setContextMenu(null);
                     onOpenErd(contextConnection, menu.database);
+                  }}
+                />
+                <MenuItem
+                  icon="icon-git-compare"
+                  label="Compare schemas…"
+                  onClick={() => {
+                    const menu = contextMenu;
+                    setContextMenu(null);
+                    onCompareSchemas(contextConnection, menu.database);
                   }}
                 />
                 <MenuItem

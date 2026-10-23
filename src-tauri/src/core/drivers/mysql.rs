@@ -13,6 +13,10 @@ use crate::core::drivers::{
     Driver, ErColumn, ErSchema, ErTable, ForeignKeyRow, QueryResult, SchemaSnapshot, SchemaTable,
     SslMode, TableInfo, TableKind, TxError, TxInput, TxRowError, TxStreamOutcome, ER_TABLE_LIMIT,
 };
+use crate::core::schema_diff::{
+    ColumnSchema, ForeignKeySchema, IndexSchema, SchemaData, TableSchema, ViewSchema,
+    DIFF_TABLE_LIMIT,
+};
 use crate::error::{AppError, AppResult};
 
 const DEFAULT_MAX_ROWS: i64 = 1000;
@@ -631,6 +635,204 @@ impl Driver for MySqlDriver {
         })
     }
 
+    fn get_diff_schema<'a>(
+        &'a self,
+        database: Option<&'a str>,
+    ) -> BoxFuture<'a, AppResult<SchemaData>> {
+        Box::pin(async move {
+            let database = database
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(&self.database)
+                .to_string();
+            if database.is_empty() {
+                return Err(AppError::Config("sxem üçün baza seçilməyib".to_string()));
+            }
+
+            let rows = sqlx::query(er::mysql_tables_sql())
+                .bind(&database)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(db_error)?;
+            let mut names: Vec<String> = rows.iter().map(|row| cell_to_text(row, 0)).collect();
+            names.sort();
+            names.dedup();
+
+            let truncated = names.len() > DIFF_TABLE_LIMIT;
+            names.truncate(DIFF_TABLE_LIMIT);
+            let included: std::collections::HashSet<String> = names.iter().cloned().collect();
+            let mut tables: std::collections::HashMap<String, TableSchema> = names
+                .iter()
+                .map(|name| {
+                    (
+                        name.clone(),
+                        TableSchema {
+                            name: name.clone(),
+                            columns: Vec::new(),
+                            indexes: Vec::new(),
+                            pk_constraint: None,
+                        },
+                    )
+                })
+                .collect();
+
+            let column_rows = sqlx::query(er::mysql_columns_sql())
+                .bind(&database)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(db_error)?;
+            for row in column_rows {
+                let table = cell_to_text(&row, 0);
+                let Some(schema) = tables.get_mut(&table) else {
+                    continue;
+                };
+                let pk = cell_to_text(&row, 4);
+                schema.columns.push(ColumnSchema {
+                    name: cell_to_text(&row, 1),
+                    data_type: cell_to_text(&row, 2),
+                    nullable: cell_to_text(&row, 3).eq_ignore_ascii_case("YES"),
+                    primary_key: pk == "1" || pk.eq_ignore_ascii_case("true"),
+                    default: None,
+                    auto_increment: false,
+                });
+            }
+
+            let extra_rows = sqlx::query(
+                "SELECT TABLE_NAME, COLUMN_NAME, COLUMN_DEFAULT, EXTRA \
+                 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ?",
+            )
+            .bind(&database)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db_error)?;
+            for row in extra_rows {
+                let table = cell_to_text(&row, 0);
+                let Some(schema) = tables.get_mut(&table) else {
+                    continue;
+                };
+                let column_name = cell_to_text(&row, 1);
+                let default = row
+                    .try_get::<Option<String>, _>(2)
+                    .unwrap_or(None);
+                let extra = cell_to_text(&row, 3);
+                let auto_increment = extra.to_ascii_lowercase().contains("auto_increment");
+                if let Some(column) = schema
+                    .columns
+                    .iter_mut()
+                    .find(|column| column.name == column_name)
+                {
+                    column.auto_increment = auto_increment;
+                    column.default = render_mysql_default(default.as_deref(), &extra);
+                }
+            }
+
+            let index_rows = sqlx::query(
+                "SELECT INDEX_NAME, TABLE_NAME, COLUMN_NAME, SEQ_IN_INDEX, NON_UNIQUE \
+                 FROM information_schema.STATISTICS \
+                 WHERE TABLE_SCHEMA = ? AND INDEX_NAME <> 'PRIMARY' \
+                 ORDER BY TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX",
+            )
+            .bind(&database)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db_error)?;
+            let mut grouped_indexes: std::collections::BTreeMap<
+                (String, String),
+                (bool, Vec<(i64, String)>),
+            > = std::collections::BTreeMap::new();
+            for row in index_rows {
+                let index_name = cell_to_text(&row, 0);
+                let table_name = cell_to_text(&row, 1);
+                if !included.contains(&table_name) {
+                    continue;
+                }
+                let column_name = row.try_get::<Option<String>, _>(2).unwrap_or(None);
+                let Some(column_name) = column_name.filter(|value| !value.is_empty()) else {
+                    continue;
+                };
+                let unique = cell_to_text(&row, 4).trim() == "0";
+                let position = cell_to_text(&row, 3).parse::<i64>().unwrap_or(0);
+                let entry = grouped_indexes
+                    .entry((table_name, index_name))
+                    .or_insert((unique, Vec::new()));
+                entry.0 = unique;
+                entry.1.push((position, column_name));
+            }
+            for ((table_name, index_name), (unique, mut columns)) in grouped_indexes {
+                let Some(schema) = tables.get_mut(&table_name) else {
+                    continue;
+                };
+                columns.sort_by_key(|(position, _)| *position);
+                schema.indexes.push(IndexSchema {
+                    name: index_name,
+                    columns: columns.into_iter().map(|(_, column)| column).collect(),
+                    unique,
+                });
+            }
+
+            let view_rows = sqlx::query(
+                "SELECT TABLE_NAME, VIEW_DEFINITION FROM information_schema.VIEWS \
+                 WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME",
+            )
+            .bind(&database)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db_error)?;
+            let views = view_rows
+                .into_iter()
+                .take(DIFF_TABLE_LIMIT)
+                .map(|row| ViewSchema {
+                    name: cell_to_text(&row, 0),
+                    definition: row.try_get::<Option<String>, _>(1).unwrap_or(None),
+                })
+                .filter(|view| !view.name.is_empty())
+                .collect();
+
+            let fk_rows = sqlx::query(er::mysql_foreign_keys_sql())
+                .bind(&database)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(db_error)?;
+            let mut foreign_key_rows = Vec::new();
+            for row in fk_rows {
+                let from_table = cell_to_text(&row, 1);
+                let to_table = cell_to_text(&row, 4);
+                if !included.contains(&from_table) || !included.contains(&to_table) {
+                    continue;
+                }
+                foreign_key_rows.push(ForeignKeyRow {
+                    constraint_name: cell_to_text(&row, 0),
+                    from_table,
+                    from_column: cell_to_text(&row, 2),
+                    from_position: row.try_get::<u64, _>(3).unwrap_or(0) as i64,
+                    to_table,
+                    to_column: cell_to_text(&row, 5),
+                    to_position: row.try_get::<u64, _>(6).unwrap_or(0) as i64,
+                });
+            }
+            let foreign_keys = group_foreign_keys(foreign_key_rows)
+                .into_iter()
+                .map(|fk| ForeignKeySchema {
+                    name: fk.name,
+                    from_table: fk.from_table,
+                    from_columns: fk.from_columns,
+                    to_table: fk.to_table,
+                    to_columns: fk.to_columns,
+                })
+                .collect();
+
+            let mut table_list: Vec<TableSchema> = tables.into_values().collect();
+            table_list.sort_by(|a, b| a.name.cmp(&b.name));
+
+            Ok(SchemaData {
+                database,
+                tables: table_list,
+                foreign_keys,
+                views,
+                truncated,
+            })
+        })
+    }
+
     fn list_databases<'a>(&'a self) -> BoxFuture<'a, AppResult<Vec<String>>> {
         Box::pin(async move {
             let rows = sqlx::query("SHOW DATABASES")
@@ -677,6 +879,31 @@ fn bytes_value(bytes: Vec<u8>) -> Value {
     match String::from_utf8(bytes) {
         Ok(text) => Value::String(text),
         Err(error) => Value::String(format!("0x{}", hex(&error.into_bytes()))),
+    }
+}
+
+fn render_mysql_default(default: Option<&str>, extra: &str) -> Option<String> {
+    let value = default?.trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    let lower = value.to_ascii_lowercase();
+    let extra = extra.to_ascii_lowercase();
+    let expression = extra.contains("default_generated")
+        || lower == "current_timestamp"
+        || lower.starts_with("current_timestamp(")
+        || lower == "now()"
+        || lower == "null"
+        || value.starts_with('(')
+        || value.starts_with("b'")
+        || value.starts_with("0x")
+        || value.parse::<f64>().is_ok();
+
+    if expression || (value.starts_with('\'') && value.ends_with('\'')) {
+        Some(value.to_string())
+    } else {
+        Some(format!("'{}'", value.replace('\'', "''")))
     }
 }
 

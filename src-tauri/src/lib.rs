@@ -280,6 +280,8 @@ pub fn run() {
             commands::query::list_columns,
             commands::query::get_schema,
             commands::query::get_er_schema,
+            commands::schema::compare_schemas,
+            commands::schema::save_sql_script,
             commands::plan::explain_plan,
             commands::edit::update_cell,
             commands::edit::insert_row,
