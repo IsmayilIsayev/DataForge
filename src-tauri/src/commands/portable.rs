@@ -829,6 +829,8 @@ mod tests {
 
         let same_endpoint = PortableConnection {
             name: "Other".to_string(),
+            host: "db.example".to_string(),
+            database: Some("shop".to_string()),
             ..same_name.clone()
         };
         assert_eq!(
