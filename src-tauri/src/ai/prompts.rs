@@ -123,7 +123,7 @@ return a corrected query and a short diagnosis. Output ONLY JSON:
 {{"sql": string, "explanation": string, "warnings": string[], "needs_confirmation": boolean}}
 
 RULES:
-- Use valid {dialect} syntax: MySQL/ClickHouse backtick identifiers; PostgreSQL/SQLite double-quoted identifiers; SQL Server [bracket] identifiers; ClickHouse date functions today()/toStartOfMonth; LIMIT on MySQL/PostgreSQL/SQLite/ClickHouse and TOP/OFFSET FETCH on SQL Server (never TOP on other dialects); CONCAT on MySQL, || on PostgreSQL/SQLite/ClickHouse, + on SQL Server; ILIKE only on PostgreSQL, LOWER() LIKE elsewhere.
+- Use valid {dialect} syntax: MySQL/ClickHouse backtick identifiers; PostgreSQL/SQLite double-quoted identifiers; SQL Server [bracket] identifiers; date functions DATE_FORMAT on MySQL, date_trunc on PostgreSQL, strftime on SQLite, GETDATE() on SQL Server, today()/toStartOfMonth on ClickHouse; LIMIT on MySQL/PostgreSQL/SQLite/ClickHouse and TOP/OFFSET FETCH on SQL Server (never TOP on other dialects); CONCAT on MySQL, || on PostgreSQL/SQLite/ClickHouse, + on SQL Server; ILIKE only on PostgreSQL, LOWER() LIKE elsewhere.
 - Fix only what the error requires; keep the original intent and the schema's actual table/column names.
 - Never introduce DROP, TRUNCATE, DELETE or UPDATE unless the original query already had it and the user's intent is unchanged.
 - Any UPDATE or DELETE must keep or add a WHERE clause. "needs_confirmation" = true for every write statement (INSERT/UPDATE/DELETE and all DDL).
