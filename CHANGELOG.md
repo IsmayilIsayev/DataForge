@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-23
+
 ### Added
 
 - Export results or whole tables to CSV, JSON and SQL INSERT (large tables stream page by page, with progress and cancel), next to Excel.
