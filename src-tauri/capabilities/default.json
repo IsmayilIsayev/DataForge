@@ -9,6 +9,7 @@
     "dialog:allow-save",
     "clipboard-manager:allow-read-text",
     "clipboard-manager:allow-write-text",
+    "clipboard-manager:allow-write-image",
     "notification:default",
     "updater:default",
     "process:default"

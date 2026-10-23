@@ -1,8 +1,10 @@
-﻿import { useEffect, useMemo, useRef, useState } from "react";
+﻿import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent, MouseEvent } from "react";
 import { listen } from "@tauri-apps/api/event";
 import lockupOnLight from "../assets/lockup.png";
 import lockupOnDark from "../assets/lockup-light.png";
+import { autoChartConfig } from "../chartData";
+import type { ChartConfig } from "../chartData";
 import { copyText } from "../clipboard";
 import {
   applyChanges,
@@ -35,6 +37,8 @@ import { guardSqlExecution, readOnlyWriteError } from "../prodGuard";
 import { useAppStore } from "../store";
 import type { PendingChange } from "../store";
 import type { CellValue, ChatResultContext, Dialect } from "../types";
+
+const ResultChart = lazy(() => import("./ResultChart"));
 
 const INDEX_WIDTH = 44;
 const DEFAULT_COL_WIDTH = 160;
@@ -278,6 +282,14 @@ export default function DataGrid({
   const error = useAppStore((state) => state.error);
   const setResult = useAppStore((state) => state.setResult);
   const setError = useAppStore((state) => state.setError);
+  const resultView = useAppStore((state) =>
+    tabId ? (state.tabStates[tabId]?.resultView ?? "grid") : "grid",
+  );
+  const chartConfig = useAppStore((state) =>
+    tabId ? (state.tabStates[tabId]?.chartConfig ?? null) : null,
+  );
+  const setResultView = useAppStore((state) => state.setResultView);
+  const setChartConfig = useAppStore((state) => state.setChartConfig);
   const viewerPrefs = useAppStore((state) => state.viewerPrefs);
   const setViewerPref = useAppStore((state) => state.setViewerPref);
   const autoCommitEdits = useAppStore((state) => state.autoCommitEdits);
@@ -1377,6 +1389,25 @@ export default function DataGrid({
     });
   };
 
+  const toggleResultView = () => {
+    if (!tabId || !result) return;
+    if (resultView === "chart") {
+      setResultView("grid", tabId);
+      return;
+    }
+    if (!chartConfig) {
+      setChartConfig(
+        autoChartConfig(result.columns, result.rows),
+        tabId,
+      );
+    }
+    setResultView("chart", tabId);
+  };
+
+  const updateChartConfig = (next: ChartConfig) => {
+    if (tabId) setChartConfig(next, tabId);
+  };
+
   return (
     <section
       style={{
@@ -1544,6 +1575,31 @@ export default function DataGrid({
         )}
 
         {hasResult && hasColumns ? (
+          resultView === "chart" ? (
+            <Suspense
+              fallback={
+                <div
+                  style={{
+                    flex: 1,
+                    display: "grid",
+                    placeItems: "center",
+                    color: "var(--mu)",
+                    fontFamily: "var(--mono)",
+                    fontSize: 12,
+                  }}
+                >
+                  Loading chart…
+                </div>
+              }
+            >
+              <ResultChart
+                result={result}
+                config={chartConfig}
+                theme={theme}
+                onConfigChange={updateChartConfig}
+              />
+            </Suspense>
+          ) : (
           <div
             ref={gridRef}
             tabIndex={0}
@@ -1992,6 +2048,7 @@ export default function DataGrid({
               })}
             </div>
           </div>
+          )
         ) : hasResult && !hasColumns ? (
           <div
             style={{
@@ -2048,7 +2105,7 @@ export default function DataGrid({
           </div>
         )}
 
-        {viewer && activeCell && (
+        {resultView === "grid" && viewer && activeCell && (
           <div
             role="region"
             aria-label={`${activeColumn} value`}
@@ -2279,9 +2336,11 @@ export default function DataGrid({
           }}
         >
           <span style={{ flex: "none", color: "var(--fa)" }}>
-            {activeCell
-              ? `${activeColumn} · row ${activeCell.row + 1}`
-              : "No cell selected"}
+            {resultView === "chart"
+              ? "Chart view"
+              : activeCell
+                ? `${activeColumn} · row ${activeCell.row + 1}`
+                : "No cell selected"}
           </span>
           <span
             style={{
@@ -2295,16 +2354,18 @@ export default function DataGrid({
                 activeCell && activeValue === null ? "italic" : "normal",
             }}
           >
-            {activeCell
-              ? displayValue(activeValue)
-              : "Click a cell to preview · double-click to open"}
+            {resultView === "chart"
+              ? "Hover a mark for exact values"
+              : activeCell
+                ? displayValue(activeValue)
+                : "Click a cell to preview · double-click to open"}
           </span>
           <button
             type="button"
             className="v2-icon-btn"
             onClick={() => void copyActiveCell()}
             title="Copy cell value"
-            disabled={!activeCell}
+            disabled={!activeCell || resultView === "chart"}
             style={{
               height: 24,
               flex: "none",
@@ -2357,6 +2418,42 @@ export default function DataGrid({
               </span>
             </button>
           )}
+          <button
+            type="button"
+            className="v2-icon-btn"
+            onClick={toggleResultView}
+            title={
+              resultView === "chart"
+                ? "Switch back to the result grid"
+                : "Chart the result rows"
+            }
+            aria-pressed={resultView === "chart"}
+            disabled={!hasColumns || !tabId}
+            style={{
+              height: 24,
+              flex: "none",
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              padding: "0 6px",
+              border: 0,
+              borderRadius: 4,
+              background: "transparent",
+              color:
+                resultView === "chart" ? "var(--ac)" : "var(--mu)",
+              opacity: hasColumns && tabId ? 1 : 0.45,
+              fontSize: 12,
+              cursor: "default",
+            }}
+          >
+            <i
+              className={
+                resultView === "chart" ? "icon-table" : "icon-chart-column"
+              }
+              style={{ fontSize: 13 }}
+            />
+            <span>{resultView === "chart" ? "Grid" : "Chart"}</span>
+          </button>
           <button
             type="button"
             className="v2-icon-btn"
@@ -2458,9 +2555,11 @@ export default function DataGrid({
         <div style={{ flex: 1 }} />
         <span style={{ color: "var(--fa)" }}>
           {result
-            ? sort
-              ? `sorted by ${columns[sort.col]} ${sort.dir}`
-              : `${order.length} columns`
+            ? resultView === "chart"
+              ? "chart view"
+              : sort
+                ? `sorted by ${columns[sort.col]} ${sort.dir}`
+                : `${order.length} columns`
             : ""}
         </span>
       </div>

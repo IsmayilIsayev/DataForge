@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Charts from query results (Chart button on the result grid): bar, horizontal bar, line, area, pie/donut and scatter, picked automatically from the columns; grouping and aggregation, top N, stacking, tooltips, PNG/SVG export and copy as image.
+
 ## [0.4.4] - 2026-10-23
 
 ### Added

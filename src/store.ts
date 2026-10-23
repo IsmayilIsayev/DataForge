@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { ChartConfig } from "./chartData";
 import type { ColumnFilter } from "./gridFilter";
 import type { ClassifiedStatement } from "./sqlGuard";
 import type {
@@ -281,6 +282,8 @@ function sameFavorite(a: FavoriteTable, b: FavoriteTable): boolean {
 
 export type ResultTab = "results" | "plan";
 
+export type ResultView = "grid" | "chart";
+
 export interface TabViewState {
   result: QueryResult | null;
   error: string | null;
@@ -291,6 +294,8 @@ export interface TabViewState {
   resultVersion: number;
   plan: ExplainPlan | null;
   resultTab: ResultTab;
+  resultView: ResultView;
+  chartConfig: ChartConfig | null;
 }
 
 export interface QueryTab {
@@ -415,6 +420,8 @@ interface AppStore {
     database?: string | null,
   ) => void;
   setResultTab: (tab: ResultTab, tabId?: string) => void;
+  setResultView: (view: ResultView, tabId?: string) => void;
+  setChartConfig: (config: ChartConfig | null, tabId?: string) => void;
 }
 
 function emptyView(): TabViewState {
@@ -428,6 +435,8 @@ function emptyView(): TabViewState {
     resultVersion: 0,
     plan: null,
     resultTab: "results",
+    resultView: "grid",
+    chartConfig: null,
   };
 }
 
@@ -1043,6 +1052,28 @@ export const useAppStore = create<AppStore>((set, get) => ({
         tabStates: {
           ...state.tabStates,
           [target]: { ...view, resultTab },
+        },
+      };
+    }),
+  setResultView: (resultView, tabId) =>
+    set((state) => {
+      const target = tabId ?? state.activeTabId;
+      const view = state.tabStates[target] ?? emptyView();
+      return {
+        tabStates: {
+          ...state.tabStates,
+          [target]: { ...view, resultView },
+        },
+      };
+    }),
+  setChartConfig: (chartConfig, tabId) =>
+    set((state) => {
+      const target = tabId ?? state.activeTabId;
+      const view = state.tabStates[target] ?? emptyView();
+      return {
+        tabStates: {
+          ...state.tabStates,
+          [target]: { ...view, chartConfig },
         },
       };
     }),
