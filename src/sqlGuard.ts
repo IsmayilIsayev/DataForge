@@ -1,3 +1,5 @@
+import { dollarQuoteEnd, dollarTagAt } from "./dollarQuote";
+
 /**
  * Pure SQL classifier used for production safeguards and read-only connections.
  * It deliberately does not depend on any editor or UI code so it stays easy to
@@ -128,6 +130,15 @@ function maskSql(sql: string): string {
         out += blank(char);
         index += 1;
       }
+      continue;
+    }
+
+    const tag = dollarTagAt(sql, index);
+    if (tag) {
+      // Mask the whole dollar-quoted body so its keywords and ";" are ignored.
+      const end = dollarQuoteEnd(sql, index + tag.length, tag);
+      out += sql.slice(index, end).replace(/[^\n]/g, " ");
+      index = end;
       continue;
     }
 

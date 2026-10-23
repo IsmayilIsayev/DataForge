@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Charts from query results (Chart button on the result grid): bar, horizontal bar, line, area, pie/donut and scatter, picked automatically from the columns; grouping and aggregation, top N, stacking, tooltips, PNG/SVG export and copy as image.
 
+### Fixed
+
+- PostgreSQL functions, triggers and DO blocks run correctly: $$ … $$ and $tag$ … $tag$ bodies are no longer split at the ";" inside them (was "unterminated dollar-quoted string"). Also "--comment" without a space is a comment on PostgreSQL/SQLite/SQL Server, and "#" is only a comment on MySQL.
+
 ## [0.4.4] - 2026-10-23
 
 ### Added

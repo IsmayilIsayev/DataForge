@@ -1,4 +1,5 @@
 import type { Dialect } from "./types";
+import { dollarQuoteEnd, dollarTagAt } from "./dollarQuote";
 
 export type SqlDialect = "mysql" | "postgres" | "sqlite" | "mssql";
 
@@ -470,6 +471,11 @@ export function statementAtCursor(
     }
     if (char === "'" || char === '"' || char === "`") {
       quote = char;
+      continue;
+    }
+    const tag = dollarTagAt(sql, index);
+    if (tag) {
+      index = dollarQuoteEnd(sql, index + tag.length, tag) - 1;
       continue;
     }
     if (char === "-" && next === "-") {

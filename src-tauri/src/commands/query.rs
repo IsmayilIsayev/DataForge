@@ -68,6 +68,29 @@ enum ScanState {
     Bracket,
     LineComment,
     BlockComment,
+    /// PostgreSQL dollar-quoted body ($$ ... $$ or $tag$ ... $tag$), e.g. function bodies.
+    Dollar,
+}
+
+/// The `$tag$` opening a PostgreSQL dollar-quoted string at `index`, if any.
+fn dollar_tag_at(chars: &[char], index: usize) -> Option<String> {
+    if chars.get(index) != Some(&'$') {
+        return None;
+    }
+    // `a$b$` is part of an identifier, not a quote.
+    if index > 0 && (chars[index - 1].is_alphanumeric() || chars[index - 1] == '_') {
+        return None;
+    }
+    let mut end = index + 1;
+    while end < chars.len() && (chars[end].is_alphanumeric() || chars[end] == '_') {
+        end += 1;
+    }
+    let tag: String = chars[index + 1..end].iter().collect();
+    // Tags cannot start with a digit ($1 is a parameter).
+    if tag.chars().next().is_some_and(|c| c.is_ascii_digit()) || chars.get(end) != Some(&'$') {
+        return None;
+    }
+    Some(format!("${tag}$"))
 }
 
 fn split_statements(sql: &str, dialect: Dialect) -> Vec<String> {
@@ -77,6 +100,7 @@ fn split_statements(sql: &str, dialect: Dialect) -> Vec<String> {
     let mut buffer = String::new();
     let mut has_code = false;
     let mut state = ScanState::Normal;
+    let mut dollar_tag = String::new();
     let mut index = 0;
 
     while index < len {
@@ -104,11 +128,23 @@ fn split_statements(sql: &str, dialect: Dialect) -> Vec<String> {
                     has_code = true;
                     buffer.push(current);
                     index += 1;
-                } else if current == '#'
+                } else if let Some(tag) = (dialect == Dialect::Postgres)
+                    .then(|| dollar_tag_at(&chars, index))
+                    .flatten()
+                {
+                    state = ScanState::Dollar;
+                    has_code = true;
+                    buffer.push_str(&tag);
+                    index += tag.chars().count();
+                    dollar_tag = tag;
+                } else if (dialect == Dialect::Mysql && current == '#')
                     || (current == '-'
                         && index + 1 < len
                         && chars[index + 1] == '-'
-                        && (index + 2 == len || chars[index + 2].is_whitespace()))
+                        // MySQL needs whitespace after "--"; other dialects do not.
+                        && (dialect != Dialect::Mysql
+                            || index + 2 == len
+                            || chars[index + 2].is_whitespace()))
                 {
                     state = ScanState::LineComment;
                     buffer.push(current);
@@ -161,6 +197,17 @@ fn split_statements(sql: &str, dialect: Dialect) -> Vec<String> {
                         index += 1;
                     }
                 } else {
+                    index += 1;
+                }
+            }
+            ScanState::Dollar => {
+                let tag: Vec<char> = dollar_tag.chars().collect();
+                if chars[index..].starts_with(&tag) {
+                    buffer.push_str(&dollar_tag);
+                    index += tag.len();
+                    state = ScanState::Normal;
+                } else {
+                    buffer.push(current);
                     index += 1;
                 }
             }
@@ -240,6 +287,42 @@ pub async fn get_er_schema(
 ) -> AppResult<ErSchema> {
     let driver = state.pool.get(&conn_id).await?;
     driver.get_er_schema(Some(&database)).await
+}
+
+#[cfg(test)]
+mod dollar_tests {
+    use super::split_statements;
+    use crate::core::drivers::Dialect;
+
+    #[test]
+    fn postgres_dollar_quoted_function_body_stays_one_statement() {
+        let sql = "CREATE FUNCTION f() RETURNS trigger AS $$\nBEGIN\n  IF length(NEW.name) < 2 THEN RAISE EXCEPTION 'short'; END IF;\n  RETURN NEW;\nEND;\n$$ LANGUAGE plpgsql;\nSELECT 1;";
+        let parts = split_statements(sql, Dialect::Postgres);
+        assert_eq!(parts.len(), 2, "{parts:?}");
+        assert!(parts[0].ends_with("$$ LANGUAGE plpgsql"));
+        assert_eq!(parts[1], "SELECT 1");
+    }
+
+    #[test]
+    fn postgres_tagged_dollar_quotes_and_parameters() {
+        let sql = "DO $body$ BEGIN PERFORM 1; END $body$; SELECT $1::int; SELECT 'a$$b';";
+        let parts = split_statements(sql, Dialect::Postgres);
+        assert_eq!(parts.len(), 3, "{parts:?}");
+        assert_eq!(parts[0], "DO $body$ BEGIN PERFORM 1; END $body$");
+        assert_eq!(parts[1], "SELECT $1::int");
+    }
+
+    #[test]
+    fn postgres_double_dash_comment_without_space_hides_semicolon() {
+        let parts = split_statements("SELECT 1 --x;y\n;SELECT 2", Dialect::Postgres);
+        assert_eq!(parts, vec!["SELECT 1 --x;y".to_string(), "SELECT 2".to_string()]);
+    }
+
+    #[test]
+    fn hash_is_not_a_comment_outside_mysql() {
+        let parts = split_statements("SELECT 5 # 3; SELECT 2", Dialect::Postgres);
+        assert_eq!(parts.len(), 2, "{parts:?}");
+    }
 }
 
 #[cfg(test)]
