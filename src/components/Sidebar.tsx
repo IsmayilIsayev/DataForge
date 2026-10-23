@@ -18,6 +18,7 @@ import {
   saveSavedQueries,
 } from "../ipc";
 import { dropTableSql } from "../ddl";
+import { azLower } from "../fuzzy";
 import { selectAllSql } from "../sql";
 import { environmentColor, isProtectedEnvironment } from "../environment";
 import { guardSqlExecution } from "../prodGuard";
@@ -64,6 +65,7 @@ interface Props {
   onEditSavedQuery: (query: SavedQuery) => void;
   onExportConnections: () => void;
   onImportConnections: () => void;
+  onGoTo: () => void;
   width: number;
 }
 
@@ -410,6 +412,7 @@ export default function Sidebar({
   onEditSavedQuery,
   onExportConnections,
   onImportConnections,
+  onGoTo,
   width,
 }: Props) {
   const connections = useAppStore((state) => state.connections);
@@ -425,6 +428,9 @@ export default function Sidebar({
   const setConnPref = useAppStore((state) => state.setConnPref);
   const favorites = useAppStore((state) => state.favorites);
   const toggleFavorite = useAppStore((state) => state.toggleFavorite);
+  const tableIndex = useAppStore((state) => state.tableIndex);
+  const reveal = useAppStore((state) => state.reveal);
+  const clearReveal = useAppStore((state) => state.clearReveal);
   const connGroups = useAppStore((state) => state.connGroups);
   const setConnGroup = useAppStore((state) => state.setConnGroup);
   const groupStars = useAppStore((state) => state.groupStars);
@@ -597,6 +603,21 @@ export default function Sidebar({
     void loadTablesFor(activeConnId, activeDb);
   }, [activeConnId, activeDb, activeConnected]);
 
+  useEffect(() => {
+    if (!reveal) return;
+    const dbKey = `${reveal.connId}/${reveal.database}`;
+    setExpanded((current) => ({
+      ...current,
+      [reveal.connId]: true,
+      [dbKey]: true,
+    }));
+    setSelected(dbKey);
+    if (connected[reveal.connId]) {
+      void loadTablesFor(reveal.connId, reveal.database);
+    }
+    clearReveal();
+  }, [reveal, clearReveal, connected]);
+
   function setLoadingKey(key: string, value: boolean) {
     setLoading((current) => ({ ...current, [key]: value }));
   }
@@ -686,9 +707,13 @@ export default function Sidebar({
   }
 
   function databasesFor(connection: ConnectionMeta) {
-    return connection.id === activeConnId
-      ? databases
-      : (localDatabases[connection.id] ?? []);
+    const base =
+      connection.id === activeConnId
+        ? databases
+        : (localDatabases[connection.id] ?? []);
+    const indexed = tableIndex[connection.id]?.databases ?? [];
+    if (indexed.length === 0) return base;
+    return Array.from(new Set([...base, ...indexed]));
   }
 
   async function connectAndSelect(connection: ConnectionMeta) {
@@ -982,7 +1007,8 @@ export default function Sidebar({
     void loadTablesFor(tab.connectionId, tab.database);
   }
 
-  const query = filter.trim().toLowerCase();
+  const query = azLower(filter.trim());
+  const matchesFilter = (value: string) => azLower(value).includes(query);
 
   function matchingColumns(
     connId: string,
@@ -991,11 +1017,12 @@ export default function Sidebar({
   ) {
     const all = columns[columnKey(connId, database, table)] ?? [];
     if (!query) return all;
-    return all.filter((column) => column.name.toLowerCase().includes(query));
+    return all.filter((column) => matchesFilter(column.name));
   }
 
   function renderTree() {
     const rows: ReactNode[] = [];
+    let unloadedMatches = 0;
     const guides = (depth: number) =>
       Array.from({ length: depth }, (_, index) => 15 + index * 14);
 
@@ -1100,13 +1127,33 @@ export default function Sidebar({
       const connectionOpen = query ? true : !!expanded[connectionKey];
       const isActive = connection.id === activeConnId;
 
+      const indexedTables = tableIndex[connection.id]?.tables ?? [];
+      const indexedByDatabase = new Map<string, typeof indexedTables>();
+      for (const table of indexedTables) {
+        const list = indexedByDatabase.get(table.database);
+        if (list) {
+          list.push(table);
+        } else {
+          indexedByDatabase.set(table.database, [table]);
+        }
+      }
       const dbEntries = dbs
         .map((database) => {
           const dbKey = `${connectionKey}/${database}`;
-          const allTables = tables[tableKey(connection.id, database)] ?? [];
+          const loadedTables = tables[tableKey(connection.id, database)];
+          const allTables = loadedTables ?? [];
+          const dbNameMatch = !!query && matchesFilter(database);
+          const indexMatches = query
+            ? (indexedByDatabase.get(database) ?? []).filter((table) =>
+                matchesFilter(table.name),
+              )
+            : [];
+          if (query && !loadedTables && indexMatches.length > 0) {
+            unloadedMatches += indexMatches.length;
+          }
           const items = allTables
             .map((table) => {
-              const nameMatch = table.name.toLowerCase().includes(query);
+              const nameMatch = matchesFilter(table.name);
               const colHits = matchingColumns(
                 connection.id,
                 database,
@@ -1116,14 +1163,20 @@ export default function Sidebar({
                 table,
                 nameMatch,
                 colHits,
-                show: !query || nameMatch || colHits.length > 0,
+                show: !query || dbNameMatch || nameMatch || colHits.length > 0,
               };
             })
             .filter((item) => item.show);
 
-          return { database, dbKey, allTables, items };
+          return { database, dbKey, allTables, items, dbNameMatch, indexMatches };
         })
-        .filter((entry) => !query || entry.items.length > 0);
+        .filter(
+          (entry) =>
+            !query ||
+            entry.items.length > 0 ||
+            entry.dbNameMatch ||
+            entry.indexMatches.length > 0,
+        );
 
       if (query && dbEntries.length === 0) continue;
 
@@ -1200,7 +1253,7 @@ export default function Sidebar({
       }
 
       for (const entry of dbEntries) {
-        const { database, dbKey, allTables, items } = entry;
+        const { database, dbKey, allTables, items, indexMatches } = entry;
         const dbOpen = query ? true : !!expanded[dbKey];
 
         rows.push(
@@ -1234,6 +1287,29 @@ export default function Sidebar({
         );
 
         if (!dbOpen) continue;
+
+        if (
+          query &&
+          !tables[tableKey(connection.id, database)] &&
+          indexMatches.length > 0
+        ) {
+          rows.push(
+            <TreeRow
+              key={`index-hit-${dbKey}`}
+              pad={34}
+              guides={guides(2)}
+              icon="icon-search"
+              ic="var(--ac)"
+              label={`${indexMatches.length} match${
+                indexMatches.length === 1 ? "" : "es"
+              } — press Ctrl+P`}
+              color="var(--ac)"
+              fs={11.5}
+              onClick={onGoTo}
+            />,
+          );
+          continue;
+        }
 
         const tablesError = errors[tableKey(connection.id, database)];
         if (tablesError) {
@@ -1337,7 +1413,7 @@ export default function Sidebar({
 
           for (const column of columnsToShow) {
             const columnId = `${tableKeyId}/${column.name}`;
-            const hit = query && column.name.toLowerCase().includes(query);
+            const hit = query && matchesFilter(column.name);
             rows.push(
               <TreeRow
                 key={columnId}
@@ -1356,6 +1432,24 @@ export default function Sidebar({
           }
         }
       }
+    }
+
+    if (query && unloadedMatches > 0) {
+      rows.push(
+        <TreeRow
+          key="__index_more"
+          pad={6}
+          guides={[]}
+          icon="icon-search"
+          ic="var(--ac)"
+          label={`${unloadedMatches} match${
+            unloadedMatches === 1 ? "" : "es"
+          } in databases not yet loaded — press Ctrl+P`}
+          color="var(--ac)"
+          fs={11.5}
+          onClick={onGoTo}
+        />,
+      );
     }
 
     const savedExpanded = expanded["__saved"] !== false;
@@ -1603,6 +1697,27 @@ export default function Sidebar({
             color: "var(--tx)",
           }}
         />
+        <button
+          type="button"
+          className="df2-icon-btn"
+          onClick={onGoTo}
+          title="Go to… (Ctrl+P)"
+          style={{
+            width: 22,
+            height: 22,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            border: 0,
+            borderRadius: 4,
+            background: "transparent",
+            color: "var(--mu)",
+            cursor: "default",
+            padding: 0,
+          }}
+        >
+          <i className="icon-search" style={{ fontSize: 13 }} />
+        </button>
         <button
           type="button"
           className="df2-icon-btn"

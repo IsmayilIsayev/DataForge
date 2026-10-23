@@ -3,9 +3,9 @@ use std::time::{Duration, Instant};
 use serde_json::{Number, Value};
 
 use crate::core::drivers::{
-    int_json, uint_json, BoxFuture, ColumnInfo, ConnectionInput, Dialect, Driver, ErColumn,
-    ErSchema, ErTable, QueryResult, SchemaSnapshot, SchemaTable, SslMode, TableInfo, TableKind,
-    TxError, TxInput, TxRowError, TxStreamOutcome, ER_TABLE_LIMIT,
+    all_tables_sql, int_json, uint_json, BoxFuture, ColumnInfo, ConnectionInput, DatabaseTable,
+    Dialect, Driver, ErColumn, ErSchema, ErTable, QueryResult, SchemaSnapshot, SchemaTable,
+    SslMode, TableInfo, TableKind, TxError, TxInput, TxRowError, TxStreamOutcome, ER_TABLE_LIMIT,
 };
 use crate::error::{AppError, AppResult};
 
@@ -444,6 +444,33 @@ impl Driver for ClickHouseDriver {
         Box::pin(async move {
             let database = self.database(Some(database));
             self.tables_on(database).await
+        })
+    }
+
+    fn list_all_tables<'a>(&'a self) -> BoxFuture<'a, AppResult<Vec<DatabaseTable>>> {
+        Box::pin(async move {
+            let sql = all_tables_sql(Dialect::Clickhouse).expect("ClickHouse all-tables SQL");
+            let result = self
+                .execute_statement(sql, MAX_ROWS, None, None)
+                .await?;
+
+            Ok(result
+                .rows
+                .iter()
+                .map(|row| {
+                    let engine = text_at(row, 2);
+                    DatabaseTable {
+                        database: text_at(row, 0),
+                        name: text_at(row, 1),
+                        kind: if engine.to_ascii_lowercase().contains("view") {
+                            TableKind::View
+                        } else {
+                            TableKind::Table
+                        },
+                    }
+                })
+                .filter(|table| !table.name.is_empty())
+                .collect())
         })
     }
 

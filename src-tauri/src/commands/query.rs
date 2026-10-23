@@ -1,7 +1,7 @@
 use tauri::State;
 
 use crate::core::drivers::{
-    ColumnInfo, Dialect, ErSchema, QueryResult, SchemaSnapshot, TableInfo,
+    ColumnInfo, DatabaseTable, Dialect, ErSchema, QueryResult, SchemaSnapshot, TableInfo,
 };
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
@@ -256,6 +256,15 @@ pub async fn list_tables(
 ) -> AppResult<Vec<TableInfo>> {
     let driver = state.pool.get(&conn_id).await?;
     driver.list_tables(&database).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn list_all_tables(
+    state: State<'_, AppState>,
+    conn_id: String,
+) -> AppResult<Vec<DatabaseTable>> {
+    let driver = state.pool.get(&conn_id).await?;
+    driver.list_all_tables().await
 }
 
 #[tauri::command(rename_all = "snake_case")]

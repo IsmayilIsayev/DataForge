@@ -9,9 +9,10 @@ use sqlx::types::chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use sqlx::{Column, Connection, Executor, Row, Statement, TypeInfo, ValueRef};
 
 use crate::core::drivers::{
-    er, group_foreign_keys, int_json, uint_json, BoxFuture, ColumnInfo, ConnectionInput, Dialect,
-    Driver, ErColumn, ErSchema, ErTable, ForeignKeyRow, QueryResult, SchemaSnapshot, SchemaTable,
-    SslMode, TableInfo, TableKind, TxError, TxInput, TxRowError, TxStreamOutcome, ER_TABLE_LIMIT,
+    all_tables_sql, er, group_foreign_keys, int_json, uint_json, BoxFuture, ColumnInfo,
+    ConnectionInput, DatabaseTable, Dialect, Driver, ErColumn, ErSchema, ErTable, ForeignKeyRow,
+    QueryResult, SchemaSnapshot, SchemaTable, SslMode, TableInfo, TableKind, TxError, TxInput,
+    TxRowError, TxStreamOutcome, ER_TABLE_LIMIT,
 };
 use crate::core::schema_diff::{
     ColumnSchema, ForeignKeySchema, IndexSchema, SchemaData, TableSchema, ViewSchema,
@@ -846,6 +847,32 @@ impl Driver for MySqlDriver {
 
     fn list_tables<'a>(&'a self, database: &'a str) -> BoxFuture<'a, AppResult<Vec<TableInfo>>> {
         Box::pin(async move { self.tables(database).await })
+    }
+
+    fn list_all_tables<'a>(&'a self) -> BoxFuture<'a, AppResult<Vec<DatabaseTable>>> {
+        Box::pin(async move {
+            let sql = all_tables_sql(Dialect::Mysql).expect("MySQL all-tables SQL");
+            let rows = sqlx::query(sql)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(db_error)?;
+
+            Ok(rows
+                .into_iter()
+                .map(|row| {
+                    let table_type = cell_to_text(&row, 2);
+                    DatabaseTable {
+                        database: cell_to_text(&row, 0),
+                        name: cell_to_text(&row, 1),
+                        kind: if table_type.to_ascii_uppercase().contains("VIEW") {
+                            TableKind::View
+                        } else {
+                            TableKind::Table
+                        },
+                    }
+                })
+                .collect())
+        })
     }
 
     fn list_columns<'a>(

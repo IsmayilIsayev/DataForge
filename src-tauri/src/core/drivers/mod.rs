@@ -291,6 +291,13 @@ pub struct TableInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatabaseTable {
+    pub database: String,
+    pub name: String,
+    pub kind: TableKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ColumnInfo {
     pub name: String,
     pub data_type: String,
@@ -371,11 +378,78 @@ pub trait Driver: Send + Sync {
     }
     fn list_databases<'a>(&'a self) -> BoxFuture<'a, AppResult<Vec<String>>>;
     fn list_tables<'a>(&'a self, database: &'a str) -> BoxFuture<'a, AppResult<Vec<TableInfo>>>;
+    fn list_all_tables<'a>(&'a self) -> BoxFuture<'a, AppResult<Vec<DatabaseTable>>> {
+        Box::pin(async move {
+            let mut tables = Vec::new();
+            for database in self.list_databases().await? {
+                for table in self.list_tables(&database).await? {
+                    tables.push(DatabaseTable {
+                        database: database.clone(),
+                        name: table.name,
+                        kind: table.kind,
+                    });
+                }
+            }
+            Ok(tables)
+        })
+    }
     fn list_columns<'a>(
         &'a self,
         database: &'a str,
         table: &'a str,
     ) -> BoxFuture<'a, AppResult<Vec<ColumnInfo>>>;
+}
+
+pub(crate) fn all_tables_sql(dialect: Dialect) -> Option<&'static str> {
+    match dialect {
+        Dialect::Mysql => Some(
+            "SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE FROM information_schema.TABLES \
+             WHERE TABLE_SCHEMA NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys') \
+             ORDER BY TABLE_SCHEMA, TABLE_NAME",
+        ),
+        Dialect::Postgres => Some(
+            "SELECT table_catalog, table_name, table_type FROM information_schema.tables \
+             WHERE table_schema NOT IN ('pg_catalog', 'information_schema') \
+             ORDER BY table_catalog, table_name",
+        ),
+        Dialect::Clickhouse => Some(
+            "SELECT database, name, engine FROM system.tables \
+             WHERE database NOT IN ('system', 'INFORMATION_SCHEMA', 'information_schema') \
+             ORDER BY database, name",
+        ),
+        _ => None,
+    }
+}
+
+fn quote_mssql_identifier(value: &str) -> String {
+    format!("[{}]", value.replace(']', "]]"))
+}
+
+fn quote_mssql_literal(value: &str) -> String {
+    format!("N'{}'", value.replace('\'', "''"))
+}
+
+pub(crate) fn mssql_all_tables_sql(databases: &[String]) -> String {
+    if databases.is_empty() {
+        return "SELECT DB_NAME() AS database_name, TABLE_NAME, TABLE_TYPE \
+                FROM INFORMATION_SCHEMA.TABLES \
+                WHERE TABLE_SCHEMA = 'dbo' ORDER BY TABLE_NAME"
+            .to_string();
+    }
+
+    databases
+        .iter()
+        .map(|database| {
+            format!(
+                "SELECT {} AS database_name, TABLE_NAME, TABLE_TYPE \
+                 FROM {}.INFORMATION_SCHEMA.TABLES \
+                 WHERE TABLE_SCHEMA = 'dbo'",
+                quote_mssql_literal(database),
+                quote_mssql_identifier(database)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" UNION ALL ")
 }
 
 pub struct ConnectedDriver {
@@ -601,5 +675,60 @@ mod tests {
         let ssh = input.ssh.expect("ssh config");
         assert_eq!(ssh.port, 22);
         assert_eq!(ssh.auth, crate::core::ssh::SshAuth::Key);
+    }
+}
+
+#[cfg(test)]
+mod all_tables_tests {
+    use super::{all_tables_sql, mssql_all_tables_sql, Dialect};
+
+    #[test]
+    fn mysql_lists_every_schema_in_one_query() {
+        let sql = all_tables_sql(Dialect::Mysql).expect("mysql all tables SQL");
+        assert!(sql.contains("information_schema.TABLES"));
+        assert!(sql.contains("TABLE_SCHEMA"));
+        assert!(sql.contains("TABLE_NAME"));
+        assert!(sql.contains("TABLE_TYPE"));
+    }
+
+    #[test]
+    fn postgres_reads_catalog_and_table_names() {
+        let sql = all_tables_sql(Dialect::Postgres).expect("postgres all tables SQL");
+        assert!(sql.contains("information_schema.tables"));
+        assert!(sql.contains("table_catalog"));
+        assert!(sql.contains("table_name"));
+        assert!(sql.contains("table_type"));
+    }
+
+    #[test]
+    fn clickhouse_reads_system_tables() {
+        let sql = all_tables_sql(Dialect::Clickhouse).expect("clickhouse all tables SQL");
+        assert!(sql.contains("system.tables"));
+        assert!(sql.contains("database"));
+        assert!(sql.contains("name"));
+        assert!(sql.contains("engine"));
+    }
+
+    #[test]
+    fn sqlite_has_no_cross_database_catalog_query() {
+        assert!(all_tables_sql(Dialect::Sqlite).is_none());
+    }
+
+    #[test]
+    fn mssql_unions_each_database_with_quoted_names() {
+        let databases = vec!["shop".to_string(), "it's".to_string()];
+        let sql = mssql_all_tables_sql(&databases);
+        assert!(sql.contains("[shop].INFORMATION_SCHEMA.TABLES"));
+        assert!(sql.contains("[it's].INFORMATION_SCHEMA.TABLES"));
+        assert!(sql.contains("N'shop' AS database_name"));
+        assert!(sql.contains("N'it''s' AS database_name"));
+        assert!(sql.contains("UNION ALL"));
+    }
+
+    #[test]
+    fn mssql_empty_database_list_uses_the_current_database() {
+        let sql = mssql_all_tables_sql(&[]);
+        assert!(sql.contains("DB_NAME()"));
+        assert!(!sql.contains("UNION ALL"));
     }
 }

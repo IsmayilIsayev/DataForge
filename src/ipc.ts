@@ -17,6 +17,7 @@ import type {
   ConnectionInput,
   ConnectionMeta,
   ConnectionState,
+  DatabaseTable,
   Dialect,
   ErSchema,
   ExplainPlan,
@@ -132,6 +133,9 @@ export const listTables = (connId: string, database: string) =>
     conn_id: connId,
     database,
   });
+
+export const listAllTables = (connId: string) =>
+  invoke<DatabaseTable[]>("list_all_tables", { conn_id: connId });
 
 export const listColumns = (
   connId: string,

@@ -10,9 +10,10 @@ use sqlx::{Column, Connection, Executor, Row, Statement, TypeInfo, ValueRef};
 use uuid::Uuid;
 
 use crate::core::drivers::{
-    er, group_foreign_keys, int_json, BoxFuture, ColumnInfo, ConnectionInput, Dialect, Driver,
-    ErColumn, ErSchema, ErTable, ForeignKeyRow, QueryResult, SchemaSnapshot, SchemaTable, SslMode,
-    TableInfo, TableKind, TxError, TxInput, TxRowError, TxStreamOutcome, ER_TABLE_LIMIT,
+    all_tables_sql, er, group_foreign_keys, int_json, BoxFuture, ColumnInfo, ConnectionInput,
+    DatabaseTable, Dialect, Driver, ErColumn, ErSchema, ErTable, ForeignKeyRow, QueryResult,
+    SchemaSnapshot, SchemaTable, SslMode, TableInfo, TableKind, TxError, TxInput, TxRowError,
+    TxStreamOutcome, ER_TABLE_LIMIT,
 };
 use crate::core::schema_diff::{
     ColumnSchema, ForeignKeySchema, IndexSchema, SchemaData, TableSchema, ViewSchema,
@@ -777,6 +778,38 @@ impl Driver for PostgresDriver {
 
             let mut conn = self.connect_to(database).await?;
             Self::tables_on(&mut conn).await
+        })
+    }
+
+    fn list_all_tables<'a>(&'a self) -> BoxFuture<'a, AppResult<Vec<DatabaseTable>>> {
+        Box::pin(async move {
+            let mut tables = Vec::new();
+            for database in self.list_databases().await? {
+                let Ok(mut conn) = self.connect_to(&database).await else {
+                    continue;
+                };
+                let Ok(rows) = sqlx::query(all_tables_sql(Dialect::Postgres).expect("Postgres SQL"))
+                    .fetch_all(&mut conn)
+                    .await
+                else {
+                    continue;
+                };
+
+                for row in rows {
+                    let name: String = row.try_get(1).unwrap_or_default();
+                    let table_type: String = row.try_get(2).unwrap_or_default();
+                    tables.push(DatabaseTable {
+                        database: row.try_get(0).unwrap_or_else(|_| database.clone()),
+                        name,
+                        kind: if table_type.eq_ignore_ascii_case("VIEW") {
+                            TableKind::View
+                        } else {
+                            TableKind::Table
+                        },
+                    });
+                }
+            }
+            Ok(tables)
         })
     }
 

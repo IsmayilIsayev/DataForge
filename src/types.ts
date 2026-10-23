@@ -86,6 +86,12 @@ export interface TableInfo {
   kind: "table" | "view";
 }
 
+export interface DatabaseTable {
+  database: string;
+  name: string;
+  kind: "table" | "view";
+}
+
 export interface ColumnInfo {
   name: string;
   data_type: string;

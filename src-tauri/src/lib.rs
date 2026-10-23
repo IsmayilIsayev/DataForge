@@ -277,6 +277,7 @@ pub fn run() {
             commands::query::run_query,
             commands::query::list_databases,
             commands::query::list_tables,
+            commands::query::list_all_tables,
             commands::query::list_columns,
             commands::query::get_schema,
             commands::query::get_er_schema,

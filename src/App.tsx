@@ -44,6 +44,7 @@ import { environmentColor, isProtectedEnvironment } from "./environment";
 import { guardSqlExecution } from "./prodGuard";
 import { useAppStore } from "./store";
 import type { TableTab } from "./store";
+import { ensureSchemaIndex } from "./schemaIndex";
 import { upsertSavedQuery } from "./savedQueries";
 import type {
   AiActionState,
@@ -61,6 +62,7 @@ const ErDiagram = lazy(() => import("./components/ErDiagram"));
 const PlanView = lazy(() => import("./components/PlanView"));
 const ConnectionDialog = lazy(() => import("./components/ConnectionDialog"));
 const FindDialog = lazy(() => import("./components/FindDialog"));
+const GoToPalette = lazy(() => import("./components/GoToPalette"));
 const HistoryDialog = lazy(() => import("./components/HistoryDialog"));
 const SavedQueryDialog = lazy(() => import("./components/SavedQueryDialog"));
 const PortableConnectionsDialog = lazy(
@@ -196,6 +198,7 @@ export default function App() {
   const [planBusy, setPlanBusy] = useState(false);
   const editorApiRef = useRef<SqlEditorHandle | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [goToOpen, setGoToOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [appVersion, setAppVersion] = useState("0.1.0");
   const [sideOpen, setSideOpen] = useState(true);
@@ -395,6 +398,26 @@ export default function App() {
     };
   }, []);
 
+  const connectedKey = connections
+    .filter((connection) => connected[connection.id])
+    .map((connection) => connection.id)
+    .join("|");
+  const prevConnectedRef = useRef<string[]>([]);
+
+  useEffect(() => {
+    const ids = connectedKey ? connectedKey.split("|") : [];
+    const previous = new Set(prevConnectedRef.current);
+    const added = ids.filter((id) => !previous.has(id));
+    prevConnectedRef.current = ids;
+    if (ids.length === 0) return;
+
+    if (added.length > 0) {
+      ensureSchemaIndex(true, added);
+    } else {
+      ensureSchemaIndex(false);
+    }
+  }, [connectedKey]);
+
   useEffect(() => {
     let cancelled = false;
     loadSavedQueries()
@@ -450,7 +473,13 @@ export default function App() {
       if (mod && key === "k") {
         event.preventDefault();
         event.stopPropagation();
+        setGoToOpen(false);
         setPaletteOpen((open) => !open);
+      } else if (mod && !event.shiftKey && !event.altKey && key === "p") {
+        event.preventDefault();
+        event.stopPropagation();
+        setPaletteOpen(false);
+        setGoToOpen((open) => !open);
       } else if (mod && key === "b") {
         event.preventDefault();
         event.stopPropagation();
@@ -462,6 +491,7 @@ export default function App() {
         setAiOpen((open) => !open);
       } else if (event.key === "Escape") {
         setPaletteOpen(false);
+        setGoToOpen(false);
         setMenu(null);
         setAboutOpen(false);
       }
@@ -829,6 +859,64 @@ export default function App() {
       }
     },
     [loadTableData],
+  );
+
+  const handleGoToDatabase = useCallback(
+    async (connection: ConnectionMeta, database: string) => {
+      const store = useAppStore.getState();
+      if (
+        store.activeConnId !== connection.id &&
+        !store.setActiveConn(connection.id)
+      ) {
+        return;
+      }
+      store.setActiveDb(database);
+
+      if (!store.connected[connection.id]) {
+        try {
+          await connectConnection(connection.id);
+          useAppStore.getState().setConnected(connection.id, true);
+        } catch (connectError) {
+          useAppStore.getState().setError(errorMessage(connectError));
+          return;
+        }
+      }
+
+      useAppStore.getState().revealDatabase(connection.id, database);
+    },
+    [],
+  );
+
+  const handleGoToTableQuery = useCallback(
+    async (
+      connection: ConnectionMeta,
+      database: string,
+      table: string,
+    ) => {
+      const store = useAppStore.getState();
+      if (
+        store.activeConnId !== connection.id &&
+        !store.setActiveConn(connection.id)
+      ) {
+        return;
+      }
+      store.setActiveDb(database);
+
+      if (!store.connected[connection.id]) {
+        try {
+          await connectConnection(connection.id);
+          useAppStore.getState().setConnected(connection.id, true);
+        } catch (connectError) {
+          useAppStore.getState().setError(errorMessage(connectError));
+          return;
+        }
+      }
+
+      useAppStore
+        .getState()
+        .addQueryTab(selectAllSql(connection.dialect, database, table, 100));
+    },
+    [],
   );
 
   const handleOpenErd = useCallback(
@@ -1321,6 +1409,13 @@ export default function App() {
     }
   }, [openEditConnection]);
 
+  const handleGoToConnection = useCallback(
+    (connection: ConnectionMeta) => {
+      void selectConnection(connection.id);
+    },
+    [selectConnection],
+  );
+
   const openCompareSchemas = useCallback(
     (connection: ConnectionMeta | null, database: string | null) => {
       setCompareOpen({
@@ -1442,6 +1537,14 @@ export default function App() {
       group: "View",
       kb: "Ctrl B",
       run: () => setSideOpen((open) => !open),
+    },
+    {
+      id: "goto",
+      icon: "icon-search",
+      label: "Go to table or database…",
+      group: "View",
+      kb: "Ctrl P",
+      run: () => setGoToOpen(true),
     },
     {
       id: "find-in-db",
@@ -1763,6 +1866,7 @@ export default function App() {
           }
           onExportConnections={() => setConnectionsTransfer("export")}
           onImportConnections={() => setConnectionsTransfer("import")}
+          onGoTo={() => setGoToOpen(true)}
           width={sideOpen ? sideW : 0}
         />
 
@@ -2711,6 +2815,25 @@ export default function App() {
         onClose={() => setPaletteOpen(false)}
         actions={paletteActions}
       />
+
+      {goToOpen && (
+        <Suspense fallback={dialogFallback}>
+          <GoToPalette
+            open={goToOpen}
+            onClose={() => setGoToOpen(false)}
+            onOpenConnection={handleGoToConnection}
+            onOpenDatabase={(connection, database) =>
+              void handleGoToDatabase(connection, database)
+            }
+            onOpenTable={(connection, database, table) =>
+              void handleOpenTable(connection, database, table)
+            }
+            onOpenTableQuery={(connection, database, table) =>
+              void handleGoToTableQuery(connection, database, table)
+            }
+          />
+        </Suspense>
+      )}
 
       {dialogOpen && (
         <Suspense fallback={dialogFallback}>

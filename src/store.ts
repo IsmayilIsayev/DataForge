@@ -9,6 +9,7 @@ import type {
   ChatMessage,
   ConnectionMeta,
   ConnectionState,
+  DatabaseTable,
   ExplainPlan,
   QueryResult,
   SavedQueriesFile,
@@ -34,6 +35,23 @@ export interface FavoriteTable {
   connId: string;
   database: string;
   table: string;
+}
+
+export interface TableIndexCache {
+  databases: string[];
+  tables: DatabaseTable[];
+  loadedAt: number;
+}
+
+export interface TableIndexProgress {
+  done: number;
+  total: number;
+}
+
+export interface RevealTarget {
+  connId: string;
+  database: string;
+  nonce: number;
 }
 
 const FAVORITES_KEY = "df-favorites";
@@ -365,6 +383,16 @@ interface AppStore {
   clearPendingChanges: (tabId: string) => void;
   favorites: FavoriteTable[];
   toggleFavorite: (fav: FavoriteTable) => void;
+  tableIndex: Record<string, TableIndexCache>;
+  indexProgress: Record<string, TableIndexProgress>;
+  setTableIndex: (connId: string, entry: TableIndexCache) => void;
+  setIndexProgress: (
+    connId: string,
+    progress: TableIndexProgress | null,
+  ) => void;
+  reveal: RevealTarget | null;
+  revealDatabase: (connId: string, database: string) => void;
+  clearReveal: () => void;
   connGroups: Record<string, string>;
   setConnGroup: (id: string, group: string | undefined) => void;
   groupStars: Record<string, boolean>;
@@ -470,6 +498,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
   prodConfirm: null,
   pendingChanges: {},
   favorites: loadFavorites(),
+  tableIndex: {},
+  indexProgress: {},
+  reveal: null,
   connGroups: loadConnGroups(),
   groupStars: loadGroupStars(),
   queryHistory: loadQueryHistory(),
@@ -605,6 +636,23 @@ export const useAppStore = create<AppStore>((set, get) => ({
       }
       return { favorites: next };
     }),
+  setTableIndex: (connId, entry) =>
+    set((state) => ({
+      tableIndex: { ...state.tableIndex, [connId]: entry },
+    })),
+  setIndexProgress: (connId, progress) =>
+    set((state) => {
+      const next = { ...state.indexProgress };
+      if (progress) {
+        next[connId] = progress;
+      } else {
+        delete next[connId];
+      }
+      return { indexProgress: next };
+    }),
+  revealDatabase: (connId, database) =>
+    set({ reveal: { connId, database, nonce: Date.now() } }),
+  clearReveal: () => set({ reveal: null }),
   setConnGroup: (id, group) =>
     set((state) => {
       const next = { ...state.connGroups };

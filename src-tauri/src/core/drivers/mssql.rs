@@ -7,9 +7,10 @@ use tokio::net::TcpStream;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
 use crate::core::drivers::{
-    er, group_foreign_keys, int_json, BoxFuture, ColumnInfo, ConnectionInput, Dialect, Driver,
-    ErColumn, ErSchema, ErTable, ForeignKeyRow, QueryResult, SchemaSnapshot, SchemaTable, TableInfo,
-    TableKind, TxError, TxInput, TxRowError, TxStreamOutcome, ER_TABLE_LIMIT,
+    er, group_foreign_keys, int_json, mssql_all_tables_sql, BoxFuture, ColumnInfo, ConnectionInput,
+    DatabaseTable, Dialect, Driver, ErColumn, ErSchema, ErTable, ForeignKeyRow, QueryResult,
+    SchemaSnapshot, SchemaTable, TableInfo, TableKind, TxError, TxInput, TxRowError,
+    TxStreamOutcome, ER_TABLE_LIMIT,
 };
 use crate::error::{AppError, AppResult};
 
@@ -633,6 +634,51 @@ impl Driver for MssqlDriver {
             };
             let mut client = self.client_for(database).await?;
             Self::tables_on(&mut client, database).await
+        })
+    }
+
+    fn list_all_tables<'a>(&'a self) -> BoxFuture<'a, AppResult<Vec<DatabaseTable>>> {
+        Box::pin(async move {
+            let databases = self.list_databases().await?;
+            let sql = mssql_all_tables_sql(&databases);
+            let mut client = self.client_for(&self.database).await?;
+            let rows = client
+                .simple_query(sql)
+                .await
+                .map_err(db_error)?
+                .into_first_result()
+                .await
+                .map_err(db_error)?;
+
+            Ok(rows
+                .iter()
+                .map(|row| {
+                    let table_type = row
+                        .try_get::<&str, _>(2)
+                        .ok()
+                        .flatten()
+                        .unwrap_or_default();
+                    DatabaseTable {
+                        database: row
+                            .try_get::<&str, _>(0)
+                            .ok()
+                            .flatten()
+                            .unwrap_or_default()
+                            .to_string(),
+                        name: row
+                            .try_get::<&str, _>(1)
+                            .ok()
+                            .flatten()
+                            .unwrap_or_default()
+                            .to_string(),
+                        kind: if table_type.eq_ignore_ascii_case("VIEW") {
+                            TableKind::View
+                        } else {
+                            TableKind::Table
+                        },
+                    }
+                })
+                .collect())
         })
     }
 
