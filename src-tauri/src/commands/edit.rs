@@ -17,6 +17,7 @@ pub struct CellRef {
 fn quote_ident(dialect: Dialect, name: &str) -> String {
     match dialect {
         Dialect::Mysql => format!("`{}`", name.replace('`', "``")),
+        Dialect::Mssql => format!("[{}]", name.replace(']', "]]")),
         _ => format!("\"{}\"", name.replace('"', "\"\"")),
     }
 }
@@ -40,6 +41,7 @@ fn quote_lit(dialect: Dialect, value: Option<&str>) -> String {
             };
             match dialect {
                 Dialect::Postgres => format!("E'{escaped}'"),
+                Dialect::Mssql => format!("N'{escaped}'"),
                 _ => format!("'{escaped}'"),
             }
         }
@@ -52,6 +54,12 @@ fn table_ref(dialect: Dialect, database: &str, table: &str) -> String {
         Dialect::Mysql if !database.trim().is_empty() => {
             format!("{}.{}", quote_ident(dialect, database), quoted)
         }
+        Dialect::Mssql if !database.trim().is_empty() => format!(
+            "{}.{}.{}",
+            quote_ident(dialect, database),
+            quote_ident(dialect, "dbo"),
+            quoted
+        ),
         _ => quoted,
     }
 }
@@ -108,7 +116,7 @@ fn insert_sql(
         // standard DEFAULT VALUES form.
         return match dialect {
             Dialect::Mysql => Ok(format!("INSERT INTO {target} () VALUES ()")),
-            Dialect::Postgres | Dialect::Sqlite => {
+            Dialect::Postgres | Dialect::Sqlite | Dialect::Mssql => {
                 Ok(format!("INSERT INTO {target} DEFAULT VALUES"))
             }
             _ => Err(AppError::Config(
@@ -233,6 +241,10 @@ mod tests {
             insert_sql(Dialect::Mysql, "shop", "users", &[]).unwrap(),
             "INSERT INTO `shop`.`users` () VALUES ()"
         );
+        assert_eq!(
+            insert_sql(Dialect::Mssql, "shop", "users", &[]).unwrap(),
+            "INSERT INTO [shop].[dbo].[users] DEFAULT VALUES"
+        );
     }
 
     #[test]
@@ -262,6 +274,10 @@ mod tests {
         assert_eq!(
             quote_lit(Dialect::Sqlite, Some(r"\'; DROP TABLE users; --")),
             r"'\''; DROP TABLE users; --'"
+        );
+        assert_eq!(
+            quote_lit(Dialect::Mssql, Some(r"\'; DROP TABLE users; --")),
+            r"N'\''; DROP TABLE users; --'"
         );
     }
 

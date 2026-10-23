@@ -1,3 +1,4 @@
+pub mod mssql;
 pub mod mysql;
 pub mod postgres;
 pub mod sqlite;
@@ -74,6 +75,10 @@ pub struct ConnectionMeta {
     pub database: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub read_only: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flavor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust_cert: Option<bool>,
 }
 
 impl ConnectionMeta {
@@ -87,6 +92,8 @@ impl ConnectionMeta {
             username: input.username.clone(),
             database: input.database.clone(),
             read_only: input.read_only,
+            flavor: input.flavor.clone(),
+            trust_cert: input.trust_cert,
         }
     }
 
@@ -101,6 +108,8 @@ impl ConnectionMeta {
             password: None,
             save_password: true,
             read_only: self.read_only,
+            flavor: self.flavor.clone(),
+            trust_cert: self.trust_cert,
         }
     }
 }
@@ -120,6 +129,10 @@ pub struct ConnectionInput {
     pub save_password: bool,
     #[serde(default)]
     pub read_only: Option<bool>,
+    #[serde(default)]
+    pub flavor: Option<String>,
+    #[serde(default)]
+    pub trust_cert: Option<bool>,
 }
 
 fn default_true() -> bool {
@@ -206,6 +219,9 @@ pub async fn connect(
         )),
         Dialect::Sqlite => Ok(Arc::new(
             sqlite::SqliteDriver::connect(input, password).await?,
+        )),
+        Dialect::Mssql => Ok(Arc::new(
+            mssql::MssqlDriver::connect(input, password).await?,
         )),
         other => Err(AppError::Config(format!(
             "{} dialekti MVP-də dəstəklənmir",

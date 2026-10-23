@@ -53,8 +53,11 @@ tauri-plugin-process = "2"
 webview2-com = "0.39"
 windows = "0.62"
 
+# SQL Server
+tiberius = { version = "0.12", default-features = false, features = ["rustls", "tds73", "chrono"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+
 # --- v1/v2 (lazım olanda aç) ---
-# tiberius = "0.12"
 # mongodb = "3.1"
 # russh = "0.45"
 

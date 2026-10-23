@@ -20,7 +20,7 @@ interface Props {
   onSaved: (meta: ConnectionMeta) => void;
 }
 
-type DialectOption = "mysql" | "postgres" | "sqlite";
+type DialectOption = "mysql" | "postgres" | "sqlite" | "mssql";
 type ActiveTab =
   | "general"
   | "advanced"
@@ -61,6 +61,7 @@ interface ExtraState {
   httpUse: boolean;
   httpUrl: string;
   sqliteReadOnly: boolean;
+  trustCert: boolean;
 }
 
 const initialForm: FormState = {
@@ -94,12 +95,39 @@ const initialExtra: ExtraState = {
   httpUse: false,
   httpUrl: "",
   sqliteReadOnly: false,
+  trustCert: false,
 };
 
 const ENGINE_LABELS: Array<{ id: DialectOption; label: string }> = [
   { id: "postgres", label: "PostgreSQL" },
   { id: "mysql", label: "MySQL" },
+  { id: "mssql", label: "SQL Server" },
   { id: "sqlite", label: "SQLite" },
+];
+
+interface Preset {
+  id: string;
+  label: string;
+  dialect: DialectOption;
+  flavor?: string;
+  port: string;
+  database?: string;
+  hint?: string;
+}
+
+const PRESETS: Preset[] = [
+  { id: "mysql", label: "MySQL", dialect: "mysql", port: "3306" },
+  { id: "mariadb", label: "MariaDB", dialect: "mysql", flavor: "mariadb", port: "3306" },
+  { id: "tidb", label: "TiDB", dialect: "mysql", flavor: "tidb", port: "4000" },
+  { id: "planetscale", label: "PlanetScale", dialect: "mysql", flavor: "planetscale", port: "3306", hint: "SSL required" },
+  { id: "postgres", label: "PostgreSQL", dialect: "postgres", port: "5432" },
+  { id: "cockroachdb", label: "CockroachDB", dialect: "postgres", flavor: "cockroachdb", port: "26257" },
+  { id: "supabase", label: "Supabase", dialect: "postgres", flavor: "supabase", port: "5432", hint: "SSL usually required" },
+  { id: "neon", label: "Neon", dialect: "postgres", flavor: "neon", port: "5432", hint: "SSL usually required" },
+  { id: "rds", label: "Amazon RDS", dialect: "postgres", flavor: "rds", port: "5432", hint: "SSL usually required" },
+  { id: "azure_postgres", label: "Azure Postgres", dialect: "postgres", flavor: "azure_postgres", port: "5432", hint: "SSL usually required" },
+  { id: "mssql", label: "SQL Server", dialect: "mssql", port: "1433" },
+  { id: "sqlite", label: "SQLite", dialect: "sqlite", port: "" },
 ];
 
 const MAIN_TABS: ActiveTab[] = [
@@ -121,13 +149,29 @@ const TAB_LABELS: Record<ActiveTab, string> = {
 };
 
 function isSupportedDialect(dialect: Dialect): dialect is DialectOption {
-  return dialect === "mysql" || dialect === "postgres" || dialect === "sqlite";
+  return (
+    dialect === "mysql" ||
+    dialect === "postgres" ||
+    dialect === "sqlite" ||
+    dialect === "mssql"
+  );
 }
 
 function defaultPort(dialect: DialectOption) {
   if (dialect === "mysql") return "3306";
   if (dialect === "postgres") return "5432";
+  if (dialect === "mssql") return "1433";
   return "";
+}
+
+function presetFor(dialect: DialectOption, flavor?: string | null) {
+  if (flavor) {
+    const match = PRESETS.find(
+      (preset) => preset.dialect === dialect && preset.flavor === flavor,
+    );
+    if (match) return match;
+  }
+  return PRESETS.find((preset) => preset.id === dialect);
 }
 
 /** Parse a connection URL (postgresql://, mysql://, sqlite://) into form fields. */
@@ -139,6 +183,7 @@ function parseConnectionUrl(raw: string): {
   password: string;
   database: string;
   sslMode?: string;
+  flavor?: string;
 } | null {
   const text = raw.trim();
   const schemeMatch = text.match(/^([a-zA-Z][\w+.-]*):\/\//);
@@ -146,8 +191,13 @@ function parseConnectionUrl(raw: string): {
   const scheme = schemeMatch[1].toLowerCase();
 
   let dialect: DialectOption | null = null;
+  let flavor: string | undefined;
   if (scheme === "postgres" || scheme === "postgresql") dialect = "postgres";
-  else if (scheme === "mysql" || scheme === "mariadb") dialect = "mysql";
+  else if (scheme === "mysql") dialect = "mysql";
+  else if (scheme === "mariadb") {
+    dialect = "mysql";
+    flavor = "mariadb";
+  } else if (scheme === "sqlserver" || scheme === "mssql") dialect = "mssql";
   else if (scheme === "sqlite" || scheme === "sqlite3") dialect = "sqlite";
   if (!dialect) return null;
 
@@ -185,6 +235,7 @@ function parseConnectionUrl(raw: string): {
     password: decode(url.password),
     database: decode(url.pathname.replace(/^\//, "")),
     sslMode: url.searchParams.get("sslmode") ?? undefined,
+    flavor,
   };
 }
 
@@ -192,6 +243,8 @@ function buildInput(
   form: FormState,
   dialect: DialectOption,
   sqliteReadOnly: boolean,
+  flavor: string | null,
+  trustCert: boolean,
 ): ConnectionInput {
   if (dialect === "sqlite") {
     return {
@@ -209,7 +262,11 @@ function buildInput(
 
   const requestedDatabase = form.database.trim();
   const database =
-    dialect === "postgres" ? requestedDatabase || "postgres" : requestedDatabase;
+    dialect === "postgres"
+      ? requestedDatabase || "postgres"
+      : dialect === "mssql"
+        ? requestedDatabase || "master"
+        : requestedDatabase;
 
   return {
     name: form.name.trim(),
@@ -220,6 +277,8 @@ function buildInput(
     database: database || undefined,
     password: form.password || undefined,
     save_password: form.savePassword,
+    flavor: flavor || undefined,
+    trust_cert: dialect === "mssql" ? trustCert : undefined,
   };
 }
 
@@ -364,6 +423,8 @@ export default function ConnectionDialog({
 }: Props) {
   const [activeTab, setActiveTab] = useState<ActiveTab>("general");
   const [dialect, setDialect] = useState<DialectOption>("mysql");
+  const [flavor, setFlavor] = useState<string | null>(null);
+  const [presetId, setPresetId] = useState("mysql");
   const [form, setForm] = useState<FormState>(initialForm);
   const [extra, setExtra] = useState<ExtraState>(initialExtra);
 
@@ -371,13 +432,21 @@ export default function ConnectionDialog({
     const parsed = parseConnectionUrl(raw);
     if (!parsed) return;
     setDialect(parsed.dialect);
+    setFlavor(parsed.flavor ?? null);
+    setPresetId(parsed.flavor ?? parsed.dialect);
     setForm((current) => ({
       ...current,
       host: parsed.host || current.host,
       port: parsed.port || current.port,
       username: parsed.username || current.username,
       password: parsed.password || current.password,
-      database: parsed.database || current.database,
+      database:
+        parsed.database ||
+        (parsed.dialect === "postgres"
+          ? "postgres"
+          : parsed.dialect === "mssql"
+            ? "master"
+            : current.database),
       name: current.name.trim() || parsed.database || parsed.host,
     }));
     if (parsed.sslMode) {
@@ -398,6 +467,7 @@ export default function ConnectionDialog({
     setExtra({
       ...initialExtra,
       sqliteReadOnly: connection?.read_only ?? false,
+      trustCert: connection?.trust_cert ?? false,
     });
 
     if (connection) {
@@ -405,6 +475,10 @@ export default function ConnectionDialog({
         ? connection.dialect
         : "mysql";
       setDialect(nextDialect);
+      setFlavor(connection.flavor ?? null);
+      setPresetId(
+        presetFor(nextDialect, connection.flavor)?.id ?? nextDialect,
+      );
       setForm({
         name: connection.name,
         host: connection.host,
@@ -416,11 +490,15 @@ export default function ConnectionDialog({
         database:
           nextDialect === "postgres"
             ? connection.database || "postgres"
-            : connection.database ?? "",
+            : nextDialect === "mssql"
+              ? connection.database || "master"
+              : connection.database ?? "",
         savePassword: true,
       });
     } else {
       setDialect("postgres");
+      setFlavor(null);
+      setPresetId("postgres");
       setForm({
         ...initialForm,
         name: "staging-pg",
@@ -460,8 +538,68 @@ export default function ConnectionDialog({
     setExtra((current) => ({ ...current, [field]: value }));
   };
 
+  const applyPreset = (nextId: string) => {
+    const preset = PRESETS.find((item) => item.id === nextId);
+    if (!preset) return;
+
+    setPresetId(preset.id);
+    setFlavor(preset.flavor ?? null);
+    setDialect(preset.dialect);
+    setActiveTab("general");
+    setStatus(null);
+    setShowPassword(false);
+
+    setForm((current) => {
+      if (preset.dialect === "sqlite") {
+        return {
+          ...current,
+          host: "",
+          port: "",
+          username: "",
+          password: "",
+          database: "",
+          savePassword: false,
+        };
+      }
+
+      const username =
+        preset.dialect === "postgres"
+          ? current.username && current.username !== "root"
+            ? current.username
+            : "postgres"
+          : preset.dialect === "mssql"
+            ? current.username &&
+              current.username !== "root" &&
+              current.username !== "postgres"
+              ? current.username
+              : "sa"
+            : current.username && current.username !== "postgres"
+              ? current.username
+              : "root";
+
+      const database =
+        preset.database ??
+        (preset.dialect === "postgres"
+          ? "postgres"
+          : preset.dialect === "mssql"
+            ? "master"
+            : "");
+
+      return {
+        ...current,
+        host: current.host || "127.0.0.1",
+        port: preset.port,
+        username,
+        database,
+        savePassword: true,
+      };
+    });
+  };
+
   const changeDialect = (next: DialectOption) => {
     setDialect(next);
+    setFlavor(null);
+    setPresetId(next);
     setActiveTab("general");
     setStatus(null);
     setShowPassword(false);
@@ -489,6 +627,22 @@ export default function ConnectionDialog({
               ? "postgres"
               : current.username,
           database: current.database || "postgres",
+          savePassword: true,
+        };
+      }
+
+      if (next === "mssql") {
+        return {
+          ...current,
+          host: current.host || "127.0.0.1",
+          port: "1433",
+          username:
+            !current.username ||
+            current.username === "root" ||
+            current.username === "postgres"
+              ? "sa"
+              : current.username,
+          database: current.database || "master",
           savePassword: true,
         };
       }
@@ -538,7 +692,7 @@ export default function ConnectionDialog({
 
     try {
       const result = await testConnection(
-        buildInput(form, dialect, extra.sqliteReadOnly),
+        buildInput(form, dialect, extra.sqliteReadOnly, flavor, extra.trustCert),
         connection?.id,
       );
       setStatus({
@@ -565,7 +719,13 @@ export default function ConnectionDialog({
     setStatus({ tone: "info", text: "Connecting and saving…" });
 
     try {
-      const input = buildInput(form, dialect, extra.sqliteReadOnly);
+      const input = buildInput(
+        form,
+        dialect,
+        extra.sqliteReadOnly,
+        flavor,
+        extra.trustCert,
+      );
       const meta = connection
         ? await updateConnection(connection.id, input)
         : await saveConnection(input);
@@ -579,6 +739,7 @@ export default function ConnectionDialog({
   };
 
   const tabs = dialect === "sqlite" ? MAIN_TABS.slice(0, 2) : MAIN_TABS;
+  const currentPreset = PRESETS.find((preset) => preset.id === presetId);
   const inputClass = "v2-input";
   const mono = {
     fontFamily: "var(--mono)",
@@ -780,6 +941,25 @@ export default function ConnectionDialog({
               </>
             ) : (
               <>
+                <Row label="Preset">
+                  <select
+                    value={presetId}
+                    onChange={(event) => applyPreset(event.target.value)}
+                    className={inputClass}
+                    style={{ ...mono, height: 26, minWidth: 170, padding: "0 8px", background: "var(--bg)", border: "1px solid var(--bd2)", borderRadius: 4, color: "var(--tx)", fontSize: 12.5 }}
+                  >
+                    {PRESETS.map((preset) => (
+                      <option key={preset.id} value={preset.id}>
+                        {preset.label}
+                      </option>
+                    ))}
+                  </select>
+                  {currentPreset?.hint && (
+                    <span style={{ color: "var(--wn)", fontSize: 11 }}>
+                      {currentPreset.hint}
+                    </span>
+                  )}
+                </Row>
                 <Row label="Connection URL">
                   <input
                     onChange={(event) => applyUrl(event.target.value)}
@@ -820,7 +1000,13 @@ export default function ConnectionDialog({
                   <input
                     value={form.username}
                     onChange={update("username")}
-                    placeholder={dialect === "postgres" ? "postgres" : "root"}
+                    placeholder={
+                      dialect === "postgres"
+                        ? "postgres"
+                        : dialect === "mssql"
+                          ? "sa"
+                          : "root"
+                    }
                     className={inputClass}
                     style={{ ...mono, height: 26, flex: 1, minWidth: 0, padding: "0 8px", background: "var(--bg)", border: "1px solid var(--bd2)", borderRadius: 4, color: "var(--tx)", fontSize: 12.5 }}
                   />
@@ -869,6 +1055,17 @@ export default function ConnectionDialog({
                     }
                   />
                 </Row>
+                {dialect === "mssql" && (
+                  <Row label="">
+                    <Check
+                      checked={extra.trustCert}
+                      label="Trust server certificate"
+                      onChange={() =>
+                        setExtraField("trustCert", !extra.trustCert)
+                      }
+                    />
+                  </Row>
+                )}
               </>
             ))}
 

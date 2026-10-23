@@ -38,13 +38,37 @@ function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
 
-function engineShort(dialect: string) {
+const FLAVOR_SHORT: Record<string, string> = {
+  mariadb: "mariadb",
+  tidb: "tidb",
+  cockroachdb: "crdb",
+  supabase: "supabase",
+  neon: "neon",
+  rds: "rds",
+  azure_postgres: "azure pg",
+  planetscale: "planetscale",
+};
+
+const FLAVOR_LABELS: Record<string, string> = {
+  mariadb: "MariaDB",
+  tidb: "TiDB",
+  cockroachdb: "CockroachDB",
+  supabase: "Supabase",
+  neon: "Neon",
+  rds: "Amazon RDS",
+  azure_postgres: "Azure Postgres",
+  planetscale: "PlanetScale",
+};
+
+function engineShort(dialect: string, flavor?: string) {
+  if (flavor && FLAVOR_SHORT[flavor]) return FLAVOR_SHORT[flavor];
   if (dialect === "postgres") return "pg";
   if (dialect === "mongodb") return "mongo";
   return dialect;
 }
 
-function engineLabel(dialect: string | undefined) {
+function engineLabel(dialect: string | undefined, flavor?: string) {
+  if (flavor && FLAVOR_LABELS[flavor]) return FLAVOR_LABELS[flavor];
   if (dialect === "postgres") return "PostgreSQL";
   if (dialect === "sqlite") return "SQLite";
   if (dialect === "mssql") return "SQL Server";
@@ -1419,7 +1443,7 @@ export default function App() {
         </span>
         <span style={{ fontFamily: "var(--mono)", fontSize: 11 }}>
           {activeConnection?.name ?? "No connection"} ·{" "}
-          {engineLabel(activeConnection?.dialect)} ·{" "}
+          {engineLabel(activeConnection?.dialect, activeConnection?.flavor)} ·{" "}
           {activeDb ?? "no database"}
         </span>
         <div style={{ flex: 1 }} />
@@ -1513,7 +1537,7 @@ export default function App() {
                         color: "var(--fa)",
                       }}
                     >
-                      {engineShort(connection.dialect)}
+                      {engineShort(connection.dialect, connection.flavor)}
                     </span>
                   </button>
                 ))}

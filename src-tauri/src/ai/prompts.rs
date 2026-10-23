@@ -10,15 +10,15 @@ OUTPUT CONTRACT (do not change):
 - Write "explanation" and every "warnings" entry in the SAME language as the question (Azerbaijani question → Azerbaijani explanation/warnings; English question → English).
 - If the request is ambiguous, choose the most likely interpretation and state the assumption briefly in "explanation" (in the user's language).
 
-DIALECT: {dialect} (supported: mysql, postgres, sqlite).
-- Identifier quoting: MySQL uses backticks (`table`); PostgreSQL and SQLite use double quotes ("table"). Never translate or rename schema identifiers.
-- Dates/times: MySQL → NOW(), CURRENT_DATE, DATE_FORMAT(col, '%Y-%m'), DATE_SUB(...); PostgreSQL → NOW(), CURRENT_DATE, date_trunc('month', col); SQLite → date('now'), datetime('now'), strftime('%Y-%m', col). Use only the current dialect's functions.
-- Result limits: use LIMIT (all three dialects support it). Do not emit TOP; it is not valid here.
-- String concatenation: MySQL → CONCAT(a, b); PostgreSQL/SQLite → a || b.
-- Case-insensitive text: PostgreSQL → ILIKE, or LOWER(col) LIKE LOWER(...). Never emit ILIKE on MySQL or SQLite; use LOWER(col) LIKE LOWER(...) there.
+DIALECT: {dialect} (supported: mysql, postgres, sqlite, SQL Server / mssql).
+- Identifier quoting: MySQL uses backticks (`table`); PostgreSQL and SQLite use double quotes ("table"); SQL Server uses [brackets]. Never translate or rename schema identifiers.
+- Dates/times: MySQL → NOW(), CURRENT_DATE, DATE_FORMAT(col, '%Y-%m'), DATE_SUB(...); PostgreSQL → NOW(), CURRENT_DATE, date_trunc('month', col); SQLite → date('now'), datetime('now'), strftime('%Y-%m', col); SQL Server → GETDATE(), CAST(GETDATE() AS date), FORMAT(col, 'yyyy-MM'), DATEADD(...). Use only the current dialect's functions.
+- Result limits: use LIMIT on MySQL, PostgreSQL and SQLite. On SQL Server use TOP (n) or OFFSET ... FETCH. Do not emit TOP on other dialects; it is not valid there.
+- String literals on SQL Server use N'...' with single quotes doubled. String concatenation: MySQL → CONCAT(a, b); PostgreSQL/SQLite → a || b; SQL Server → a + b.
+- Case-insensitive text: PostgreSQL → ILIKE, or LOWER(col) LIKE LOWER(...). Never emit ILIKE on MySQL, SQLite or SQL Server; use LOWER(col) LIKE LOWER(...) there.
 
 READ QUERIES:
-- Add LIMIT 100 by default to row-returning queries, unless the user asks for all rows, a count, or an aggregate-only result.
+- Add LIMIT 100 by default (SQL Server: SELECT TOP (100)) to row-returning queries, unless the user asks for all rows, a count, or an aggregate-only result.
 - When the question names columns, list those columns explicitly. Never SELECT * from a wide table; SELECT * is acceptable only when the user asks for every column of a narrow table.
 - Use explicit JOIN ... ON with the foreign-key relationships visible in the schema. Never use implicit comma joins.
 - Qualify columns with table aliases whenever more than one table is involved, and qualify any ambiguous column.
@@ -66,7 +66,7 @@ Output ONLY JSON: {{"suggestions": string[], "rewritten_sql": string|null}}.
 
 RULES:
 - Keep the rewritten query semantically equivalent and valid {dialect} SQL.
-- Follow {dialect} dialect rules: identifier quoting (MySQL backticks; PostgreSQL/SQLite double quotes), date/time functions (NOW()/CURRENT_DATE/date_trunc on PostgreSQL, DATE_FORMAT on MySQL, strftime on SQLite), string concatenation (CONCAT on MySQL, || on PostgreSQL/SQLite), and case-insensitive matching (ILIKE on PostgreSQL, LOWER() LIKE elsewhere).
+- Follow {dialect} dialect rules: identifier quoting (MySQL backticks; PostgreSQL/SQLite double quotes; SQL Server brackets), date/time functions (NOW()/CURRENT_DATE/date_trunc on PostgreSQL, DATE_FORMAT on MySQL, strftime on SQLite, GETDATE() on SQL Server), string concatenation (CONCAT on MySQL, || on PostgreSQL/SQLite, + on SQL Server), result limits (LIMIT on MySQL/PostgreSQL/SQLite, TOP/OFFSET FETCH on SQL Server), and case-insensitive matching (ILIKE on PostgreSQL, LOWER() LIKE elsewhere).
 - Prefer adding or using indexes, removing SELECT *, eliminating full table scans, and replacing correlated subqueries with JOINs where appropriate.
 - Never turn a read query into a write, and never drop or truncate data. If the input is a write, preserve its WHERE clause exactly.
 - "suggestions" must be concrete (which index, which predicate, which join), not generic advice."#
@@ -80,7 +80,7 @@ return a corrected query and a short diagnosis. Output ONLY JSON:
 {{"sql": string, "explanation": string, "warnings": string[], "needs_confirmation": boolean}}
 
 RULES:
-- Use valid {dialect} syntax: MySQL backtick identifiers and DATE_FORMAT; PostgreSQL/SQLite double-quoted identifiers with date_trunc/strftime respectively; LIMIT (never TOP); CONCAT on MySQL and || on PostgreSQL/SQLite; ILIKE only on PostgreSQL, LOWER() LIKE elsewhere.
+- Use valid {dialect} syntax: MySQL backtick identifiers and DATE_FORMAT; PostgreSQL/SQLite double-quoted identifiers with date_trunc/strftime respectively; SQL Server [bracket] identifiers and GETDATE(); LIMIT on MySQL/PostgreSQL/SQLite and TOP/OFFSET FETCH on SQL Server (never TOP on other dialects); CONCAT on MySQL, || on PostgreSQL/SQLite, + on SQL Server; ILIKE only on PostgreSQL, LOWER() LIKE elsewhere.
 - Fix only what the error requires; keep the original intent and the schema's actual table/column names.
 - Never introduce DROP, TRUNCATE, DELETE or UPDATE unless the original query already had it and the user's intent is unchanged.
 - Any UPDATE or DELETE must keep or add a WHERE clause. "needs_confirmation" = true for every write statement (INSERT/UPDATE/DELETE and all DDL).

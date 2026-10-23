@@ -79,7 +79,9 @@ export function selectAllSql(
   where = "",
 ): string {
   const filter = where.trim();
-  return `SELECT *\nFROM ${qualifiedTable(dialect, database, table)}${
+  const select = dialect === "mssql" ? `SELECT TOP (${limit}) *` : "SELECT *";
+  const limitClause = dialect === "mssql" ? "" : `\nLIMIT ${limit}`;
+  return `${select}\nFROM ${qualifiedTable(dialect, database, table)}${
     filter ? `\nWHERE ${filter}` : ""
-  }\nLIMIT ${limit};`;
+  }${limitClause};`;
 }

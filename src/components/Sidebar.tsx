@@ -16,7 +16,7 @@ import {
   runQuery,
 } from "../ipc";
 import { dropTableSql } from "../ddl";
-import { qualifiedTable } from "../sql";
+import { selectAllSql } from "../sql";
 import CreateTableDialog from "./CreateTableDialog";
 import StructureDialog from "./StructureDialog";
 import { useAppStore } from "../store";
@@ -60,6 +60,46 @@ const ENGINE_SHORT: Record<string, string> = {
   mssql: "mssql",
   mongodb: "mongo",
 };
+
+const FLAVOR_SHORT: Record<string, string> = {
+  mariadb: "mariadb",
+  tidb: "tidb",
+  cockroachdb: "crdb",
+  supabase: "supabase",
+  neon: "neon",
+  rds: "rds",
+  azure_postgres: "azure pg",
+  planetscale: "planetscale",
+};
+
+const FLAVOR_LABELS: Record<string, string> = {
+  mariadb: "MariaDB",
+  tidb: "TiDB",
+  cockroachdb: "CockroachDB",
+  supabase: "Supabase",
+  neon: "Neon",
+  rds: "Amazon RDS",
+  azure_postgres: "Azure Postgres",
+  planetscale: "PlanetScale",
+};
+
+function engineMeta(connection: ConnectionMeta) {
+  if (connection.flavor) {
+    return (
+      FLAVOR_SHORT[connection.flavor] ??
+      FLAVOR_LABELS[connection.flavor] ??
+      connection.flavor
+    );
+  }
+  return ENGINE_SHORT[connection.dialect] ?? connection.dialect;
+}
+
+function engineName(connection: ConnectionMeta) {
+  if (connection.flavor) {
+    return FLAVOR_LABELS[connection.flavor] ?? connection.flavor;
+  }
+  return connection.dialect;
+}
 
 function columnIcon(column: ColumnInfo) {
   if (column.key === "PRI") return "icon-key-round";
@@ -835,13 +875,7 @@ export default function Sidebar({
     void activateDatabase(connection, database);
     useAppStore
       .getState()
-      .addQueryTab(
-        `SELECT *\nFROM ${qualifiedTable(
-          connection.dialect,
-          database,
-          table,
-        )}\nLIMIT 100;`,
-      );
+      .addQueryTab(selectAllSql(connection.dialect, database, table, 100));
   }
 
   function openFavorite(fav: FavoriteTable) {
@@ -1027,9 +1061,9 @@ export default function Sidebar({
           }
           label={connection.name}
           fs={12.5}
-          meta={`${connPrefs[connection.id]?.starred ? "★ " : ""}${
-            ENGINE_SHORT[connection.dialect] ?? connection.dialect
-          }`}
+          meta={`${connPrefs[connection.id]?.starred ? "★ " : ""}${engineMeta(
+            connection,
+          )}`}
           onClick={() => {
             if (!connected[connection.id]) {
               void connectAndSelect(connection);
@@ -1051,7 +1085,7 @@ export default function Sidebar({
             event.dataTransfer.setData("application/df-conn", connection.id);
           }}
           onContextMenu={(event) => openContextMenu(event, connection)}
-          title={`${connection.dialect} · ${connection.host}:${connection.port} · ${
+          title={`${engineName(connection)} · ${connection.host}:${connection.port} · ${
             connected[connection.id] ? "connected" : "disconnected"
           }`}
         />,

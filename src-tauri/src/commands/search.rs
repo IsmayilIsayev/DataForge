@@ -28,6 +28,7 @@ pub struct SearchHit {
 fn quote_ident(dialect: Dialect, name: &str) -> String {
     match dialect {
         Dialect::Mysql => format!("`{}`", name.replace('`', "``")),
+        Dialect::Mssql => format!("[{}]", name.replace(']', "]]")),
         _ => format!("\"{}\"", name.replace('"', "\"\"")),
     }
 }
@@ -39,7 +40,7 @@ fn is_text_type(data_type: &str) -> bool {
         .any(|needle| t.contains(needle))
 }
 
-fn like_literal(term: &str) -> String {
+fn like_literal(dialect: Dialect, term: &str) -> String {
     // Escape LIKE wildcards, the escape character itself and the quote, then
     // wrap for a "contains" match.
     let escaped = term
@@ -47,13 +48,17 @@ fn like_literal(term: &str) -> String {
         .replace('%', "\\%")
         .replace('_', "\\_")
         .replace('\'', "''");
-    format!("'%{escaped}%'")
+    if dialect == Dialect::Mssql {
+        format!("N'%{escaped}%'")
+    } else {
+        format!("'%{escaped}%'")
+    }
 }
 
 fn like_escape_clause(dialect: Dialect) -> &'static str {
-    // SQLite only honours backslash as the LIKE escape character when an
-    // explicit ESCAPE clause is present. MySQL/Postgres use it by default.
-    if dialect == Dialect::Sqlite {
+    // SQLite and SQL Server only honour backslash as the LIKE escape character
+    // when an explicit ESCAPE clause is present. MySQL/Postgres use it by default.
+    if dialect == Dialect::Sqlite || dialect == Dialect::Mssql {
         " ESCAPE '\\'"
     } else {
         ""
@@ -120,7 +125,7 @@ pub async fn find_in_database(
         } else {
             "LIKE"
         };
-        let pattern = like_literal(&needle);
+        let pattern = like_literal(dialect, &needle);
         let escape = like_escape_clause(dialect);
 
         // Build one SQL job per table that has text columns.
@@ -168,6 +173,12 @@ pub async fn find_in_database(
                     Dialect::Mysql => format!(
                         "{}.{}",
                         quote_ident(dialect, &database),
+                        quote_ident(dialect, &table.name)
+                    ),
+                    Dialect::Mssql => format!(
+                        "{}.{}.{}",
+                        quote_ident(dialect, &database),
+                        quote_ident(dialect, "dbo"),
                         quote_ident(dialect, &table.name)
                     ),
                     _ => quote_ident(dialect, &table.name),
@@ -268,14 +279,19 @@ mod tests {
 
     #[test]
     fn escapes_backslashes_and_wildcards() {
-        assert_eq!(like_literal("100%"), "'%100\\%%'");
-        assert_eq!(like_literal("a_b"), "'%a\\_b%'");
-        assert_eq!(like_literal("a\\b"), "'%a\\\\b%'");
+        assert_eq!(like_literal(Dialect::Mysql, "100%"), "'%100\\%%'");
+        assert_eq!(like_literal(Dialect::Mysql, "a_b"), "'%a\\_b%'");
+        assert_eq!(like_literal(Dialect::Mysql, "a\\b"), "'%a\\\\b%'");
+        assert_eq!(
+            like_literal(Dialect::Mssql, "O'Brien"),
+            "N'%O''Brien%'"
+        );
     }
 
     #[test]
-    fn only_sqlite_needs_an_explicit_escape_clause() {
+    fn sqlite_and_mssql_need_an_explicit_escape_clause() {
         assert_eq!(like_escape_clause(Dialect::Sqlite), " ESCAPE '\\'");
+        assert_eq!(like_escape_clause(Dialect::Mssql), " ESCAPE '\\'");
         assert_eq!(like_escape_clause(Dialect::Mysql), "");
         assert_eq!(like_escape_clause(Dialect::Postgres), "");
     }

@@ -247,6 +247,8 @@ mod tests {
             password: None,
             save_password: true,
             read_only: None,
+            flavor: None,
+            trust_cert: None,
         }
     }
 
@@ -260,6 +262,8 @@ mod tests {
             username: username.to_string(),
             database: database.map(str::to_string),
             read_only: None,
+            flavor: None,
+            trust_cert: None,
         }
     }
 

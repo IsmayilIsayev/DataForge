@@ -22,6 +22,12 @@ export function tableRef(
   if (dialect === "mysql" && database.trim()) {
     return `${quoteIdentifier(dialect, database)}.${t}`;
   }
+  if (dialect === "mssql" && database.trim()) {
+    return `${quoteIdentifier(dialect, database)}.${quoteIdentifier(
+      dialect,
+      "dbo",
+    )}.${t}`;
+  }
   return t;
 }
 

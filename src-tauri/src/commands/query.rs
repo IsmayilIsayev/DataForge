@@ -37,6 +37,7 @@ enum ScanState {
     SingleQuote,
     DoubleQuote,
     Backtick,
+    Bracket,
     LineComment,
     BlockComment,
 }
@@ -67,6 +68,11 @@ fn split_statements(sql: &str, dialect: Dialect) -> Vec<String> {
                     index += 1;
                 } else if current == '`' {
                     state = ScanState::Backtick;
+                    has_code = true;
+                    buffer.push(current);
+                    index += 1;
+                } else if dialect == Dialect::Mssql && current == '[' {
+                    state = ScanState::Bracket;
                     has_code = true;
                     buffer.push(current);
                     index += 1;
@@ -102,12 +108,16 @@ fn split_statements(sql: &str, dialect: Dialect) -> Vec<String> {
                     index += 1;
                 }
             }
-            ScanState::SingleQuote | ScanState::DoubleQuote | ScanState::Backtick => {
+            ScanState::SingleQuote
+            | ScanState::DoubleQuote
+            | ScanState::Backtick
+            | ScanState::Bracket => {
                 buffer.push(current);
 
                 let quote = match state {
                     ScanState::SingleQuote => '\'',
                     ScanState::DoubleQuote => '"',
+                    ScanState::Bracket => ']',
                     _ => '`',
                 };
 
@@ -264,8 +274,24 @@ mod tests {
             expected(&["SELECT 'C:\\'", "SELECT 2"])
         );
         assert_eq!(
+            split_with(sql, Dialect::Mssql),
+            expected(&["SELECT 'C:\\'", "SELECT 2"])
+        );
+        assert_eq!(
             split_with(sql, Dialect::Mysql),
             expected(&["SELECT 'C:\\'; SELECT 2"])
+        );
+    }
+
+    #[test]
+    fn keeps_semicolons_in_sql_server_bracket_identifiers() {
+        assert_eq!(
+            split_with("SELECT [a;b] FROM t; SELECT 2", Dialect::Mssql),
+            expected(&["SELECT [a;b] FROM t", "SELECT 2"])
+        );
+        assert_eq!(
+            split_with("SELECT [a]]b] FROM t; SELECT 2", Dialect::Mssql),
+            expected(&["SELECT [a]]b] FROM t", "SELECT 2"])
         );
     }
 }

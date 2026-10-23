@@ -158,6 +158,12 @@ function tableRef(
 ) {
   const quotedTable = quoteIdentifier(dialect, table);
   if (!database) return quotedTable;
+  if (dialect === "mssql") {
+    return `${quoteIdentifier(dialect, database)}.${quoteIdentifier(
+      dialect,
+      "dbo",
+    )}.${quotedTable}`;
+  }
   return `${quoteIdentifier(dialect, database)}.${quotedTable}`;
 }
 

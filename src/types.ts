@@ -9,6 +9,8 @@ export interface ConnectionMeta {
   username: string;
   database?: string;
   read_only?: boolean;
+  flavor?: string;
+  trust_cert?: boolean;
 }
 
 export interface ConnectionInput extends Omit<ConnectionMeta, "id"> {
