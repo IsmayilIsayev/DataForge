@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - "Update available" and one-time "What's new" windows that show the release notes.
 
 - SQL autocomplete: keywords ("sel" → SELECT, "fr" → FROM), "SELECT " → "* FROM", table and column names (with aliases), and 30+ templates (sf, ins, upd, cte, upsert, ct, idx, tx, thismonth, dup...).
+- AI actions: "Fix with AI" on query errors (preview + Apply), Explain, and Optimize with the real EXPLAIN plan (Ctrl/Cmd+Shift+E / O).
 - Connection presets for MariaDB, TiDB, CockroachDB, Supabase, Neon, Amazon RDS and PlanetScale, and a new SQL Server driver.
 
 ### Changed

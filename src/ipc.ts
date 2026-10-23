@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AiConfig,
   AiExplainResult,
+  AiFixResult,
+  AiOptimizeResult,
   AiProvider,
   CellValue,
   ColumnInfo,
@@ -179,6 +181,30 @@ export const aiNl2Sql = (
 
 export const aiExplain = (sql: string, language?: string) =>
   invoke<AiExplainResult>("ai_explain", { sql, language: language ?? null });
+
+export const aiFixError = (
+  connId: string,
+  database: string | undefined,
+  sql: string,
+  error: string,
+) =>
+  invoke<AiFixResult>("ai_fix_error", {
+    conn_id: connId,
+    database: database ?? null,
+    sql,
+    error,
+  });
+
+export const aiOptimize = (
+  connId: string,
+  database: string | undefined,
+  sql: string,
+) =>
+  invoke<AiOptimizeResult>("ai_optimize", {
+    conn_id: connId,
+    database: database ?? null,
+    sql,
+  });
 
 export const aiGetConfig = () => invoke<AiConfig>("ai_get_config");
 

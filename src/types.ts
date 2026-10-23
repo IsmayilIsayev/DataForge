@@ -75,10 +75,46 @@ export interface AiExplainResult {
   summary: string;
 }
 
+export interface AiFixResult {
+  sql: string;
+  explanation: string;
+  warnings: string[];
+  needs_confirmation: boolean;
+}
+
 export interface AiOptimizeResult {
   suggestions: string[];
-  rewritten_sql?: string;
+  rewritten_sql?: string | null;
 }
+
+export interface AiTextTarget {
+  sql: string;
+  start: number;
+  end: number;
+}
+
+export type AiActionState =
+  | {
+      kind: "fix";
+      originalSql: string;
+      target: AiTextTarget | null;
+      result: AiFixResult | null;
+      error: string | null;
+    }
+  | {
+      kind: "explain";
+      originalSql: string;
+      target: AiTextTarget | null;
+      result: AiExplainResult | null;
+      error: string | null;
+    }
+  | {
+      kind: "optimize";
+      originalSql: string;
+      target: AiTextTarget | null;
+      result: AiOptimizeResult | null;
+      error: string | null;
+    };
 
 export interface TestConnectionResult {
   ok: boolean;

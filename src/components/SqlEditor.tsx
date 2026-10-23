@@ -1,4 +1,10 @@
-﻿import { useEffect, useRef, useState } from "react";
+﻿import {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from "react";
 import Editor from "@monaco-editor/react";
 import type { Monaco, OnMount } from "@monaco-editor/react";
 import type * as MonacoTypes from "monaco-editor";
@@ -8,6 +14,7 @@ import {
   baseTableName,
   buildSuggestions,
   isColumnContext,
+  statementAtCursor,
 } from "../sqlComplete";
 import type { CompletionSchema } from "../sqlComplete";
 import {
@@ -16,6 +23,13 @@ import {
   ensureColumns,
   ensureTables,
 } from "../sqlSchemaCache";
+import type { AiTextTarget } from "../types";
+
+export interface SqlEditorHandle {
+  getAiTarget: () => AiTextTarget | null;
+  applyTarget: (target: AiTextTarget, replacement: string) => void;
+  replaceStatement: (original: string, replacement: string) => boolean;
+}
 
 interface Props {
   onRun: (sqlOverride?: string) => void;
@@ -23,6 +37,34 @@ interface Props {
 }
 
 type MonacoEditorInstance = Parameters<OnMount>[0];
+
+function targetFromEditor(editor: MonacoEditorInstance): AiTextTarget | null {
+  const model = editor.getModel();
+  if (!model) return null;
+
+  const selection = editor.getSelection();
+  if (selection && !selection.isEmpty()) {
+    const sql = model.getValueInRange(selection);
+    if (!sql.trim()) return null;
+    return {
+      sql,
+      start: model.getOffsetAt(selection.getStartPosition()),
+      end: model.getOffsetAt(selection.getEndPosition()),
+    };
+  }
+
+  const position = editor.getPosition();
+  const offset = position
+    ? model.getOffsetAt(position)
+    : model.getValueLength();
+  const statement = statementAtCursor(model.getValue(), offset);
+  if (!statement.text.trim()) return null;
+  return {
+    sql: statement.text,
+    start: statement.start,
+    end: statement.end,
+  };
+}
 
 const DARK = {
   bg: "#0f1115",
@@ -67,7 +109,10 @@ const LIGHT = {
   operator: "616770",
   function: "3a3f46",
 };
-export default function SqlEditor({ onRun, theme }: Props) {
+const SqlEditor = forwardRef<SqlEditorHandle, Props>(function SqlEditor(
+  { onRun, theme },
+  ref,
+) {
   const sql = useAppStore((state) => state.sql);
   const setSql = useAppStore((state) => state.setSql);
   const setSelection = useAppStore((state) => state.setSelection);
@@ -267,6 +312,80 @@ export default function SqlEditor({ onRun, theme }: Props) {
   const executeRunRef = useRef(executeRun);
   executeRunRef.current = executeRun;
 
+  const applyTarget = (target: AiTextTarget, replacement: string) => {
+    const editor = editorRef.current;
+    const model = editor?.getModel();
+    if (!editor || !model) return;
+
+    const length = model.getValueLength();
+    const startOffset = Math.max(0, Math.min(target.start, length));
+    const endOffset = Math.max(startOffset, Math.min(target.end, length));
+    const start = model.getPositionAt(startOffset);
+    const end = model.getPositionAt(endOffset);
+
+    editor.pushUndoStop();
+    editor.executeEdits("ai", [
+      {
+        range: {
+          startLineNumber: start.lineNumber,
+          startColumn: start.column,
+          endLineNumber: end.lineNumber,
+          endColumn: end.column,
+        },
+        text: replacement,
+        forceMoveMarkers: true,
+      },
+    ]);
+    editor.pushUndoStop();
+    editor.focus();
+  };
+
+  const replaceStatement = (
+    original: string,
+    replacement: string,
+  ): boolean => {
+    const editor = editorRef.current;
+    const model = editor?.getModel();
+    if (!editor || !model) return false;
+
+    const needle = original.trim();
+    if (!needle) return false;
+
+    const selection = editor.getSelection();
+    if (
+      selection &&
+      !selection.isEmpty() &&
+      model.getValueInRange(selection).trim() === needle
+    ) {
+      applyTarget(
+        {
+          sql: needle,
+          start: model.getOffsetAt(selection.getStartPosition()),
+          end: model.getOffsetAt(selection.getEndPosition()),
+        },
+        replacement,
+      );
+      return true;
+    }
+
+    const index = model.getValue().indexOf(needle);
+    if (index < 0) return false;
+    applyTarget(
+      { sql: needle, start: index, end: index + needle.length },
+      replacement,
+    );
+    return true;
+  };
+
+  useImperativeHandle(ref, () => ({
+    getAiTarget: () => {
+      const editor = editorRef.current;
+      return editor ? targetFromEditor(editor) : null;
+    },
+    applyTarget,
+    replaceStatement,
+  }));
+
   const handleMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
     setMonacoApi(monaco);
@@ -274,7 +393,6 @@ export default function SqlEditor({ onRun, theme }: Props) {
       monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter,
       () => executeRunRef.current(),
     );
-
     selectionSubRef.current?.dispose();
     selectionSubRef.current = editor.onDidChangeCursorSelection(() => {
       const selection = editor.getSelection();
@@ -376,5 +494,6 @@ export default function SqlEditor({ onRun, theme }: Props) {
       />
     </div>
   );
-}
+});
 
+export default SqlEditor;

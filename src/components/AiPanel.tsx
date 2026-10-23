@@ -8,6 +8,7 @@ import type { AiConfig, AiProvider, Nl2SqlResult } from "../types";
 
 interface Props {
   onClose: () => void;
+  settingsSignal?: number;
 }
 
 const CUSTOM_MODEL = "__custom__";
@@ -213,7 +214,7 @@ function Field({
   );
 }
 
-export default function AiPanel({ onClose }: Props) {
+export default function AiPanel({ onClose, settingsSignal = 0 }: Props) {
   const activeConnId = useAppStore((state) => state.activeConnId);
   const activeDb = useAppStore((state) => state.activeDb);
 
@@ -279,6 +280,15 @@ export default function AiPanel({ onClose }: Props) {
       cancelled = true;
     };
   }, []);
+
+  const handledSettingsSignal = useRef(settingsSignal);
+
+  useEffect(() => {
+    if (settingsSignal !== handledSettingsSignal.current) {
+      handledSettingsSignal.current = settingsSignal;
+      setSettingsOpen(true);
+    }
+  }, [settingsSignal]);
 
   useEffect(() => {
     setResult(null);

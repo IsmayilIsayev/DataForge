@@ -283,6 +283,8 @@ pub fn run() {
             commands::export::export_result_xlsx,
             commands::ai::ai_nl2sql,
             commands::ai::ai_explain,
+            commands::ai::ai_fix_error,
+            commands::ai::ai_optimize,
             commands::ai::ai_get_config,
             commands::ai::ai_set_config,
             commands::ai::ai_has_key,

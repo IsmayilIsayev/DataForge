@@ -18,10 +18,15 @@ import type { CommandAction } from "./components/CommandPalette";
 import DataGrid from "./components/DataGrid";
 import Sidebar from "./components/Sidebar";
 import SqlEditor from "./components/SqlEditor";
+import type { SqlEditorHandle } from "./components/SqlEditor";
 import TableDataView from "./components/TableDataView";
 import WhatsNewDialog from "./components/WhatsNewDialog";
 import { compareVersions, parseVersionSection } from "./changelog";
 import {
+  aiExplain,
+  aiFixError,
+  aiHasKey,
+  aiOptimize,
   connectConnection,
   errorMessage,
   exportResultXlsx,
@@ -33,8 +38,9 @@ import { notify } from "./notifications";
 import { formatSql, selectAllSql } from "./sql";
 import { useAppStore } from "./store";
 import type { TableTab } from "./store";
-import type { ConnectionMeta } from "./types";
+import type { AiActionState, AiTextTarget, ConnectionMeta } from "./types";
 
+const AiActionPanel = lazy(() => import("./components/AiActionPanel"));
 const AiPanel = lazy(() => import("./components/AiPanel"));
 const ConnectionDialog = lazy(() => import("./components/ConnectionDialog"));
 const FindDialog = lazy(() => import("./components/FindDialog"));
@@ -45,6 +51,21 @@ const dialogFallback = (
 );
 
 type Theme = "dark" | "light";
+
+function detectUiLanguage(): "az" | "en" {
+  let stored: string | null = null;
+  try {
+    stored = localStorage.getItem("dataforge-language");
+  } catch {
+    stored = null;
+  }
+  if (stored === "az" || stored === "en") return stored;
+  return (navigator.language || "en").toLowerCase().startsWith("az")
+    ? "az"
+    : "en";
+}
+
+const UI_LANGUAGE = detectUiLanguage();
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
@@ -110,6 +131,12 @@ export default function App() {
   const [editingConnection, setEditingConnection] =
     useState<ConnectionMeta | null>(null);
   const [aiOpen, setAiOpen] = useState(false);
+  const [aiSettingsSignal, setAiSettingsSignal] = useState(0);
+  const [aiAction, setAiAction] = useState<AiActionState | null>(null);
+  const [aiBusy, setAiBusy] = useState<
+    "fix" | "explain" | "optimize" | null
+  >(null);
+  const editorApiRef = useRef<SqlEditorHandle | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [appVersion, setAppVersion] = useState("0.1.0");
@@ -681,6 +708,172 @@ export default function App() {
       store.setSql(formatSql(store.sql, dialect));
     }, []);
 
+  const ensureAiKey = useCallback(async () => {
+    try {
+      if (await aiHasKey()) return true;
+      setAiOpen(true);
+      setAiSettingsSignal((value) => value + 1);
+      return false;
+    } catch (keyError) {
+      setAiOpen(true);
+      setAiSettingsSignal((value) => value + 1);
+      useAppStore.getState().setError(errorMessage(keyError));
+      return false;
+    }
+  }, []);
+
+  const startAiAction = useCallback(
+    async (kind: "explain" | "optimize", target: AiTextTarget) => {
+      const store = useAppStore.getState();
+      if (!target.sql.trim()) {
+        store.setError("Select a statement or place the cursor in one.");
+        return;
+      }
+      if (kind === "optimize" && !store.activeConnId) {
+        store.setError("Select a connection first.");
+        return;
+      }
+      if (!(await ensureAiKey())) return;
+
+      setAiAction(null);
+      setAiBusy(kind);
+      try {
+        if (kind === "explain") {
+          const result = await aiExplain(target.sql, UI_LANGUAGE);
+          setAiAction({
+            kind,
+            originalSql: target.sql,
+            target,
+            result,
+            error: null,
+          });
+        } else {
+          const result = await aiOptimize(
+            store.activeConnId!,
+            store.activeDb ?? undefined,
+            target.sql,
+          );
+          setAiAction({
+            kind,
+            originalSql: target.sql,
+            target,
+            result,
+            error: null,
+          });
+        }
+      } catch (actionError) {
+        setAiAction({
+          kind,
+          originalSql: target.sql,
+          target,
+          result: null,
+          error: errorMessage(actionError),
+        });
+      } finally {
+        setAiBusy(null);
+      }
+    },
+    [ensureAiKey],
+  );
+
+  const handleEditorAiAction = useCallback(
+    (kind: "explain" | "optimize") => {
+      const editor = editorApiRef.current;
+      if (!editor) return;
+      const target = editor.getAiTarget();
+      if (!target) {
+        useAppStore
+          .getState()
+          .setError("Select a statement or place the cursor in one.");
+        return;
+      }
+      void startAiAction(kind, target);
+    },
+    [startAiAction],
+  );
+
+  const handleFixWithAi = useCallback(async () => {
+    const store = useAppStore.getState();
+    const view = store.tabStates[store.activeTabId];
+    const sql = view?.executedSql ?? store.sql;
+    const database = view?.database ?? store.activeDb ?? undefined;
+    const connId = view?.connId ?? store.activeConnId;
+    const message = view?.error ?? store.error;
+
+    if (!connId || !message || !sql.trim()) return;
+    if (!(await ensureAiKey())) return;
+
+    setAiAction(null);
+    setAiBusy("fix");
+    try {
+      const result = await aiFixError(connId, database, sql, message);
+      setAiAction({
+        kind: "fix",
+        originalSql: sql,
+        target: null,
+        result,
+        error: null,
+      });
+    } catch (actionError) {
+      setAiAction({
+        kind: "fix",
+        originalSql: sql,
+        target: null,
+        result: null,
+        error: errorMessage(actionError),
+      });
+    } finally {
+      setAiBusy(null);
+    }
+  }, [ensureAiKey]);
+
+  const applyAiReplacement = useCallback(
+    (replacement: string) => {
+      if (!aiAction) return;
+      const editor = editorApiRef.current;
+      if (!editor) return;
+
+      let applied = false;
+      if (aiAction.target) {
+        editor.applyTarget(aiAction.target, replacement);
+        applied = true;
+      } else {
+        applied = editor.replaceStatement(aiAction.originalSql, replacement);
+      }
+
+      if (!applied) {
+        useAppStore
+          .getState()
+          .setError(
+            "Could not find the original statement in the editor; it may have changed.",
+          );
+        return;
+      }
+      setAiAction(null);
+    },
+    [aiAction],
+  );
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const mod = event.metaKey || event.ctrlKey;
+      if (!mod || !event.shiftKey) return;
+
+      const key = event.key.toLowerCase();
+      if (key !== "e" && key !== "o") return;
+      event.preventDefault();
+      event.stopPropagation();
+      handleEditorAiAction(key === "e" ? "explain" : "optimize");
+    };
+
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [handleEditorAiAction]);
+
+  useEffect(() => {
+    setAiAction(null);
+  }, [activeTabId, activeConnId]);
+
   const handleNewQuery = useCallback(() => {
     useAppStore.getState().addQueryTab("");
   }, []);
@@ -1118,6 +1311,7 @@ export default function App() {
             display: "flex",
             flexDirection: "column",
             minHeight: 0,
+            position: "relative",
           }}
         >
           <div
@@ -1286,6 +1480,54 @@ export default function App() {
                   <i className="icon-align-left" style={{ fontSize: 13 }} />
                   <span>Format</span>
                 </button>
+                <button
+                  type="button"
+                  className="df2-quiet df2-hover-tx"
+                  onClick={() => handleEditorAiAction("explain")}
+                  disabled={aiBusy !== null}
+                  title="Explain with AI (Ctrl+Shift+E)"
+                  style={{
+                    height: 24,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "0 8px",
+                    border: 0,
+                    borderRadius: 4,
+                    color: "var(--mu)",
+                    cursor: aiBusy ? "not-allowed" : "default",
+                    opacity: aiBusy ? 0.6 : 1,
+                  }}
+                >
+                  <i className="icon-eye" style={{ fontSize: 13 }} />
+                  <span>
+                    {aiBusy === "explain" ? "Explaining…" : "Explain"}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  className="df2-quiet df2-hover-tx"
+                  onClick={() => handleEditorAiAction("optimize")}
+                  disabled={aiBusy !== null}
+                  title="Optimize with AI (Ctrl+Shift+O)"
+                  style={{
+                    height: 24,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "0 8px",
+                    border: 0,
+                    borderRadius: 4,
+                    color: "var(--mu)",
+                    cursor: aiBusy ? "not-allowed" : "default",
+                    opacity: aiBusy ? 0.6 : 1,
+                  }}
+                >
+                  <i className="icon-crosshair" style={{ fontSize: 13 }} />
+                  <span>
+                    {aiBusy === "optimize" ? "Optimizing…" : "Optimize"}
+                  </span>
+                </button>
                 <div style={{ flex: 1 }} />
                 <span
                   style={{
@@ -1313,7 +1555,11 @@ export default function App() {
                   lineHeight: "20px",
                 }}
               >
-                <SqlEditor onRun={handleRun} theme={theme} />
+                <SqlEditor
+                  ref={editorApiRef}
+                  onRun={handleRun}
+                  theme={theme}
+                />
               </div>
 
               <div
@@ -1383,6 +1629,25 @@ export default function App() {
                   >
                     {error}
                   </span>
+                  <button
+                    type="button"
+                    className="v2-btn"
+                    onClick={() => void handleFixWithAi()}
+                    disabled={aiBusy !== null}
+                    title="Fix with AI"
+                    style={{
+                      height: 20,
+                      flex: "none",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 4,
+                      padding: "0 8px",
+                      fontSize: 11.5,
+                    }}
+                  >
+                    <i className="icon-sparkles" style={{ fontSize: 11 }} />
+                    <span>{aiBusy === "fix" ? "Fixing…" : "Fix with AI"}</span>
+                  </button>
                 </div>
               )}
               <DataGrid
@@ -1395,6 +1660,16 @@ export default function App() {
               />
             </>
           ) : null}
+
+          {aiAction && (
+            <Suspense fallback={null}>
+              <AiActionPanel
+                state={aiAction}
+                onClose={() => setAiAction(null)}
+                onApply={applyAiReplacement}
+              />
+            </Suspense>
+          )}
         </main>
 
         {aiOpen && (
@@ -1423,7 +1698,10 @@ export default function App() {
               }}
             >
               <Suspense fallback={<div style={{ flex: 1 }} />}>
-                <AiPanel onClose={() => setAiOpen(false)} />
+                <AiPanel
+                  onClose={() => setAiOpen(false)}
+                  settingsSignal={aiSettingsSignal}
+                />
               </Suspense>
             </aside>
           </>
