@@ -1,7 +1,7 @@
 use tauri::State;
 
 use crate::core::drivers::{
-    ColumnInfo, DatabaseTable, Dialect, ErSchema, QueryResult, SchemaSnapshot, TableInfo,
+    ColumnInfo, DatabaseTable, Dialect, ErSchema, QueryResult, TableInfo,
 };
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
@@ -276,16 +276,6 @@ pub async fn list_columns(
 ) -> AppResult<Vec<ColumnInfo>> {
     let driver = state.pool.get(&conn_id).await?;
     driver.list_columns(&database, &table).await
-}
-
-#[tauri::command(rename_all = "snake_case")]
-pub async fn get_schema(
-    state: State<'_, AppState>,
-    conn_id: String,
-    database: String,
-) -> AppResult<SchemaSnapshot> {
-    let driver = state.pool.get(&conn_id).await?;
-    driver.get_schema(Some(&database)).await
 }
 
 #[tauri::command(rename_all = "snake_case")]

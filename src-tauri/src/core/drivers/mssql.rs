@@ -47,10 +47,6 @@ fn first_keyword(sql: &str) -> String {
         .to_ascii_uppercase()
 }
 
-#[allow(dead_code)]
-fn quote_ident(name: &str) -> String {
-    format!("[{}]", name.replace(']', "]]"))
-}
 
 fn quote_lit(value: Option<&str>) -> String {
     match value {
@@ -891,12 +887,6 @@ mod tests {
     use tiberius::numeric::Numeric;
     use tiberius::ColumnData;
     use uuid::Uuid;
-
-    #[test]
-    fn brackets_are_quoted_and_doubled() {
-        assert_eq!(quote_ident("users"), "[users]");
-        assert_eq!(quote_ident("we]ird"), "[we]]ird]");
-    }
 
     #[test]
     fn literals_are_n_prefixed_and_single_quotes_are_doubled() {

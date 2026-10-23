@@ -213,9 +213,8 @@ impl RowGenerator {
         }
 
         let attempts = if column.unique { 64 } else { 1 };
-        let mut candidate = Value::Null;
         for _ in 0..attempts {
-            candidate = generate_raw(
+            let candidate = generate_raw(
                 &mut self.rng,
                 &column.generator,
                 &column.data_type,

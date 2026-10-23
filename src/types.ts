@@ -99,11 +99,6 @@ export interface ColumnInfo {
   key?: "PRI" | "UNI" | "MUL";
 }
 
-export interface SchemaSnapshot {
-  database: string;
-  tables: Array<{ name: string; columns: ColumnInfo[] }>;
-}
-
 export interface ErColumn {
   name: string;
   data_type: string;
@@ -138,25 +133,6 @@ export interface SchemaColumn {
   primary_key: boolean;
   default?: string | null;
   auto_increment: boolean;
-}
-
-export interface SchemaIndex {
-  name: string;
-  columns: string[];
-  unique: boolean;
-}
-
-export interface SchemaForeignKey {
-  name: string;
-  from_table: string;
-  from_columns: string[];
-  to_table: string;
-  to_columns: string[];
-}
-
-export interface SchemaView {
-  name: string;
-  definition?: string | null;
 }
 
 export interface DiffSummary {

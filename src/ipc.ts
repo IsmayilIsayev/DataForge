@@ -26,7 +26,6 @@ import type {
   QueryResult,
   SavedQueriesFile,
   SchemaDiff,
-  SchemaSnapshot,
   TableInfo,
   TestConnectionResult,
   TestDataColumn,
@@ -146,12 +145,6 @@ export const listColumns = (
     conn_id: connId,
     database,
     table,
-  });
-
-export const getSchema = (connId: string, database: string) =>
-  invoke<SchemaSnapshot>("get_schema", {
-    conn_id: connId,
-    database,
   });
 
 export const getErSchema = (connId: string, database: string) =>
