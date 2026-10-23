@@ -1,11 +1,16 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import type { KeyboardEvent } from "react";
 import DataGrid from "./DataGrid";
-import InsertRowDialog from "./InsertRowDialog";
 import { listColumns } from "../ipc";
 import type { ColumnInfo } from "../types";
 import type { TableTab } from "../store";
 import { useAppStore } from "../store";
+
+const InsertRowDialog = lazy(() => import("./InsertRowDialog"));
+
+const dialogFallback = (
+  <div style={{ position: "fixed", inset: 0 }} aria-hidden="true" />
+);
 
 interface Props {
   tab: TableTab;
@@ -164,15 +169,17 @@ export default function TableDataView({ tab, onRefresh, theme }: Props) {
       </div>
 
       {insertOpen && (
-        <InsertRowDialog
-          connId={tab.connectionId}
-          database={tab.database}
-          table={tab.table}
-          dialect={dialect}
-          columns={columns}
-          onClose={() => setInsertOpen(false)}
-          onInserted={refresh}
-        />
+        <Suspense fallback={dialogFallback}>
+          <InsertRowDialog
+            connId={tab.connectionId}
+            database={tab.database}
+            table={tab.table}
+            dialect={dialect}
+            columns={columns}
+            onClose={() => setInsertOpen(false)}
+            onInserted={refresh}
+          />
+        </Suspense>
       )}
 
       {error && (

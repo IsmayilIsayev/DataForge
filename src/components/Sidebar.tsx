@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import type {
   CSSProperties,
   DragEvent,
@@ -18,10 +18,15 @@ import {
 import { dropTableSql } from "../ddl";
 import { selectAllSql } from "../sql";
 import CreateTableDialog from "./CreateTableDialog";
-import StructureDialog from "./StructureDialog";
 import { useAppStore } from "../store";
 import type { FavoriteTable } from "../store";
 import type { ColumnInfo, ConnectionMeta, Dialect, TableInfo } from "../types";
+
+const StructureDialog = lazy(() => import("./StructureDialog"));
+
+const dialogFallback = (
+  <div style={{ position: "fixed", inset: 0 }} aria-hidden="true" />
+);
 
 interface Props {
   onNewConnection: () => void;
@@ -1732,20 +1737,22 @@ export default function Sidebar({
       )}
 
       {structureFor && (
-        <StructureDialog
-          connId={structureFor.connection.id}
-          database={structureFor.database}
-          table={structureFor.table}
-          dialect={structureFor.connection.dialect as Dialect}
-          onClose={() => setStructureFor(null)}
-          onApplied={() =>
-            refreshTable(
-              structureFor.connection,
-              structureFor.database,
-              structureFor.table,
-            )
-          }
-        />
+        <Suspense fallback={dialogFallback}>
+          <StructureDialog
+            connId={structureFor.connection.id}
+            database={structureFor.database}
+            table={structureFor.table}
+            dialect={structureFor.connection.dialect as Dialect}
+            onClose={() => setStructureFor(null)}
+            onApplied={() =>
+              refreshTable(
+                structureFor.connection,
+                structureFor.database,
+                structureFor.table,
+              )
+            }
+          />
+        </Suspense>
       )}
 
       {createFor && (

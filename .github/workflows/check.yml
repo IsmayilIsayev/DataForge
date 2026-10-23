@@ -35,6 +35,9 @@ jobs:
       - name: Frontend build (tsc + vite)
         run: npm run build
 
+      - name: Frontend bundle size
+        run: ls -la dist/assets
+
       - name: Rust tests
         working-directory: src-tauri
         run: cargo test

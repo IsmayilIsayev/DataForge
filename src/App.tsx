@@ -1,4 +1,11 @@
-﻿import { useCallback, useEffect, useRef, useState } from "react";
+﻿import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
@@ -6,13 +13,9 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import lockupOnLight from "./assets/lockup.png";
 import lockupOnDark from "./assets/lockup-light.png";
 import changelogRaw from "../CHANGELOG.md?raw";
-import AiPanel from "./components/AiPanel";
 import CommandPalette from "./components/CommandPalette";
 import type { CommandAction } from "./components/CommandPalette";
-import ConnectionDialog from "./components/ConnectionDialog";
 import DataGrid from "./components/DataGrid";
-import FindDialog from "./components/FindDialog";
-import HistoryDialog from "./components/HistoryDialog";
 import Sidebar from "./components/Sidebar";
 import SqlEditor from "./components/SqlEditor";
 import TableDataView from "./components/TableDataView";
@@ -31,6 +34,15 @@ import { formatSql, selectAllSql } from "./sql";
 import { useAppStore } from "./store";
 import type { TableTab } from "./store";
 import type { ConnectionMeta } from "./types";
+
+const AiPanel = lazy(() => import("./components/AiPanel"));
+const ConnectionDialog = lazy(() => import("./components/ConnectionDialog"));
+const FindDialog = lazy(() => import("./components/FindDialog"));
+const HistoryDialog = lazy(() => import("./components/HistoryDialog"));
+
+const dialogFallback = (
+  <div style={{ position: "fixed", inset: 0 }} aria-hidden="true" />
+);
 
 type Theme = "dark" | "light";
 
@@ -1410,7 +1422,9 @@ export default function App() {
                 minHeight: 0,
               }}
             >
-              <AiPanel onClose={() => setAiOpen(false)} />
+              <Suspense fallback={<div style={{ flex: 1 }} />}>
+                <AiPanel onClose={() => setAiOpen(false)} />
+              </Suspense>
             </aside>
           </>
         )}
@@ -1753,90 +1767,98 @@ export default function App() {
         actions={paletteActions}
       />
 
-      <ConnectionDialog
-        open={dialogOpen}
-        connection={editingConnection}
-        onClose={closeConnectionDialog}
-        onSaved={handleSaved}
-      />
+      {dialogOpen && (
+        <Suspense fallback={dialogFallback}>
+          <ConnectionDialog
+            open={dialogOpen}
+            connection={editingConnection}
+            onClose={closeConnectionDialog}
+            onSaved={handleSaved}
+          />
+        </Suspense>
+      )}
 
       {findOpen && (
-        <FindDialog
-          connId={findOpen.connId}
-          database={findOpen.database}
-          dialect={
-            connections.find((c) => c.id === findOpen.connId)?.dialect ??
-            "mysql"
-          }
-          onlyTable={findOpen.table}
-          onClose={() => setFindOpen(null)}
-          onOpenResult={(table, where) => {
-            const store = useAppStore.getState();
-            const tabId = store.addTableTab(
-              findOpen.connId,
-              findOpen.database,
-              table,
-              1000,
-              where ?? "",
-            );
-            const tab = useAppStore
-              .getState()
-              .tabs.find((item) => item.id === tabId);
-            if (tab?.type === "table") void loadTableData(tab);
-          }}
-          onRunSql={(sql) => {
-            const store = useAppStore.getState();
-            store.setActiveConn(findOpen.connId);
-            if (findOpen.database) store.setActiveDb(findOpen.database);
-            store.addQueryTab(sql, "AI search");
-          }}
-        />
+        <Suspense fallback={dialogFallback}>
+          <FindDialog
+            connId={findOpen.connId}
+            database={findOpen.database}
+            dialect={
+              connections.find((c) => c.id === findOpen.connId)?.dialect ??
+              "mysql"
+            }
+            onlyTable={findOpen.table}
+            onClose={() => setFindOpen(null)}
+            onOpenResult={(table, where) => {
+              const store = useAppStore.getState();
+              const tabId = store.addTableTab(
+                findOpen.connId,
+                findOpen.database,
+                table,
+                1000,
+                where ?? "",
+              );
+              const tab = useAppStore
+                .getState()
+                .tabs.find((item) => item.id === tabId);
+              if (tab?.type === "table") void loadTableData(tab);
+            }}
+            onRunSql={(sql) => {
+              const store = useAppStore.getState();
+              store.setActiveConn(findOpen.connId);
+              if (findOpen.database) store.setActiveDb(findOpen.database);
+              store.addQueryTab(sql, "AI search");
+            }}
+          />
+        </Suspense>
       )}
 
       {historyOpen && (
-        <HistoryDialog
-          onClose={() => setHistoryOpen(false)}
-          onPick={(entry) => {
-            const store = useAppStore.getState();
-            const origin = entry.connId
-              ? store.connections.find((item) => item.id === entry.connId)
-              : null;
+        <Suspense fallback={dialogFallback}>
+          <HistoryDialog
+            onClose={() => setHistoryOpen(false)}
+            onPick={(entry) => {
+              const store = useAppStore.getState();
+              const origin = entry.connId
+                ? store.connections.find((item) => item.id === entry.connId)
+                : null;
 
-            if (entry.connId && entry.connId !== store.activeConnId) {
-              const target = origin?.name ?? entry.connId;
-              const label = entry.database
-                ? `${target} / ${entry.database}`
-                : target;
-              if (
-                !window.confirm(
-                  `This query was run on ${label}. Switch to that connection and load it?`,
-                )
-              ) {
-                return;
+              if (entry.connId && entry.connId !== store.activeConnId) {
+                const target = origin?.name ?? entry.connId;
+                const label = entry.database
+                  ? `${target} / ${entry.database}`
+                  : target;
+                if (
+                  !window.confirm(
+                    `This query was run on ${label}. Switch to that connection and load it?`,
+                  )
+                ) {
+                  return;
+                }
+                store.setActiveConn(entry.connId);
+                if (entry.database) store.setActiveDb(entry.database);
+              } else if (entry.database && entry.database !== store.activeDb) {
+                if (
+                  !window.confirm(
+                    `This query was run on database ${entry.database}. Switch to it and load the query?`,
+                  )
+                ) {
+                  return;
+                }
+                store.setActiveDb(entry.database);
               }
-              store.setActiveConn(entry.connId);
-              if (entry.database) store.setActiveDb(entry.database);
-            } else if (entry.database && entry.database !== store.activeDb) {
-              if (
-                !window.confirm(
-                  `This query was run on database ${entry.database}. Switch to it and load the query?`,
-                )
-              ) {
-                return;
-              }
-              store.setActiveDb(entry.database);
-            }
 
-            const active = store.tabs.find(
-              (item) => item.id === store.activeTabId,
-            );
-            if (active?.type === "query") {
-              store.setSql(entry.sql);
-            } else {
-              store.addQueryTab(entry.sql);
-            }
-          }}
-        />
+              const active = store.tabs.find(
+                (item) => item.id === store.activeTabId,
+              );
+              if (active?.type === "query") {
+                store.setSql(entry.sql);
+              } else {
+                store.addQueryTab(entry.sql);
+              }
+            }}
+          />
+        </Suspense>
       )}
     </div>
   );
