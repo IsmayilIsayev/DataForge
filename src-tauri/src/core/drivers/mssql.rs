@@ -560,8 +560,8 @@ impl Driver for MssqlDriver {
                 tables[position].columns.push(ErColumn {
                     name: text(row, 1),
                     data_type: text(row, 2),
-                    nullable: row.try_get::<bool, _>(3).unwrap_or(true),
-                    pk: row.try_get::<i32, _>(4).unwrap_or(0) != 0,
+                    nullable: row.try_get::<bool, _>(3).ok().flatten().unwrap_or(true),
+                    pk: row.try_get::<i32, _>(4).ok().flatten().unwrap_or(0) != 0,
                 });
             }
 
@@ -583,10 +583,10 @@ impl Driver for MssqlDriver {
                     constraint_name: text(row, 0),
                     from_table,
                     from_column: text(row, 2),
-                    from_position: row.try_get::<i32, _>(3).unwrap_or(0) as i64,
+                    from_position: row.try_get::<i32, _>(3).ok().flatten().unwrap_or(0) as i64,
                     to_table,
                     to_column: text(row, 5),
-                    to_position: row.try_get::<i32, _>(6).unwrap_or(0) as i64,
+                    to_position: row.try_get::<i32, _>(6).ok().flatten().unwrap_or(0) as i64,
                 });
             }
 
