@@ -1672,7 +1672,7 @@ mod tests {
             .iter()
             .find(|statement| statement.sql.contains("MODIFY COLUMN `id`"))
             .expect("id modify statement");
-        assert!(alter_id.sql.contains("INT NOT NULL AUTO_INCREMENT"));
+        assert!(alter_id.sql.to_ascii_uppercase().contains("INT NOT NULL AUTO_INCREMENT"));
         assert!(alter_id.destructive);
         assert!(alter_id
             .reason
