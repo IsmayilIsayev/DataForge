@@ -22,6 +22,8 @@ import {
 } from "../gridFilter";
 import type { ColumnFilter, FilterOperator } from "../gridFilter";
 import { quoteIdentifier, sqliteBooleanLiteral } from "../sql";
+import { isProduction } from "../environment";
+import { guardSqlExecution, readOnlyWriteError } from "../prodGuard";
 import { useAppStore } from "../store";
 import type { PendingChange } from "../store";
 import type { CellValue, Dialect } from "../types";
@@ -265,6 +267,11 @@ export default function DataGrid({
   const viewerPrefs = useAppStore((state) => state.viewerPrefs);
   const setViewerPref = useAppStore((state) => state.setViewerPref);
   const autoCommitEdits = useAppStore((state) => state.autoCommitEdits);
+  const connection = useAppStore((state) =>
+    state.connections.find((item) => item.id === connId),
+  );
+  const effectiveAutoCommit =
+    autoCommitEdits && connection?.environment !== "prod";
   const storedPending = useAppStore((state) =>
     tabId ? state.pendingChanges[tabId] : undefined,
   );
@@ -580,7 +587,7 @@ export default function DataGrid({
       return { column: name, value: pkValue(value) };
     });
 
-    if (!autoCommitEdits) {
+    if (!effectiveAutoCommit) {
       addPendingChange(tabId, {
         kind: "update",
         sourceIndex: source.index,
@@ -594,6 +601,17 @@ export default function DataGrid({
       setFailedChangeId(null);
       setError(null);
       setCopied("Edit queued");
+      return;
+    }
+
+    const guard = await guardSqlExecution(
+      connId,
+      `UPDATE ${table} SET ${columnName} = NULL WHERE ...`,
+      database ?? undefined,
+    );
+    if (!guard.allow) {
+      if (guard.error) setError(guard.error);
+      setCopied("Edit blocked");
       return;
     }
 
@@ -650,7 +668,7 @@ export default function DataGrid({
       sourceIndexes.push(source.index);
     }
 
-    if (!autoCommitEdits) {
+    if (!effectiveAutoCommit) {
       pkList.forEach((pk, index) => {
         addPendingChange(tabId, {
           kind: "delete",
@@ -663,6 +681,19 @@ export default function DataGrid({
       setAnchor(null);
       setFocus(null);
       setCopied(`Queued ${pkList.length} delete(s)`);
+      setConfirmDelete(null);
+      return;
+    }
+
+    const guard = await guardSqlExecution(
+      connId,
+      `DELETE FROM ${table} WHERE ...`,
+      database ?? undefined,
+      { title: "Delete rows" },
+    );
+    if (!guard.allow) {
+      if (guard.error) setError(guard.error);
+      setCopied("Delete blocked");
       setConfirmDelete(null);
       return;
     }
@@ -698,10 +729,38 @@ export default function DataGrid({
     }
 
     const changes = pendingChanges.slice();
+    const readOnlyError = readOnlyWriteError(connId);
+    if (readOnlyError) {
+      setError(readOnlyError);
+      setCopied("Save blocked");
+      return;
+    }
+
     setSavingChanges(true);
     setFailedChangeId(null);
     setError(null);
     try {
+      if (isProduction(connection)) {
+        const preview = await previewChanges(
+          connId,
+          database ?? "",
+          table,
+          changes.map(toChangeInput),
+        );
+        const previewSql = preview.join(";\n");
+        const guard = await guardSqlExecution(
+          connId,
+          previewSql,
+          database ?? undefined,
+          { title: "Save changes", previewSql },
+        );
+        if (!guard.allow) {
+          if (guard.error) setError(guard.error);
+          setCopied("Save cancelled");
+          return;
+        }
+      }
+
       const outcome = await applyChanges(
         connId,
         database ?? "",
@@ -2518,7 +2577,7 @@ export default function DataGrid({
               </span>
             </div>
             <p style={{ margin: "0 0 14px", fontSize: 12, color: "var(--mu)", lineHeight: 1.5 }}>
-              {autoCommitEdits ? (
+              {effectiveAutoCommit ? (
                 <>
                   This runs{" "}
                   <code style={{ fontFamily: "var(--mono)" }}>DELETE</code>{" "}

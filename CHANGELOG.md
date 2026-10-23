@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Protected connections: dev/test/prod labels (PROD always spelled out), confirmation before any write on prod (type the database name for DROP/TRUNCATE and DELETE/UPDATE without WHERE), optional read-only mode.
 - Batch editing: cell edits, deleted and new rows are queued (highlighted) and saved together in one transaction with Save (Ctrl/Cmd+S) or dropped with Discard; Preview SQL, undo (Ctrl/Cmd+Z), and an "Auto-commit edits" switch for the old behaviour.
 
 ### Added

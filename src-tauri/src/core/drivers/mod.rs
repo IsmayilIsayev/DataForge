@@ -77,6 +77,14 @@ impl fmt::Display for Dialect {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConnectionEnvironment {
+    Dev,
+    Test,
+    Prod,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionMeta {
     pub id: String,
@@ -89,6 +97,8 @@ pub struct ConnectionMeta {
     pub database: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub read_only: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<ConnectionEnvironment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flavor: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -106,6 +116,7 @@ impl ConnectionMeta {
             username: input.username.clone(),
             database: input.database.clone(),
             read_only: input.read_only,
+            environment: input.environment,
             flavor: input.flavor.clone(),
             trust_cert: input.trust_cert,
         }
@@ -122,6 +133,7 @@ impl ConnectionMeta {
             password: None,
             save_password: true,
             read_only: self.read_only,
+            environment: self.environment,
             flavor: self.flavor.clone(),
             trust_cert: self.trust_cert,
         }
@@ -143,6 +155,8 @@ pub struct ConnectionInput {
     pub save_password: bool,
     #[serde(default)]
     pub read_only: Option<bool>,
+    #[serde(default)]
+    pub environment: Option<ConnectionEnvironment>,
     #[serde(default)]
     pub flavor: Option<String>,
     #[serde(default)]

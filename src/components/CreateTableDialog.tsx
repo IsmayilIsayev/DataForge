@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { createTableSql } from "../ddl";
 import type { ColumnSpec } from "../ddl";
 import { errorMessage, runQuery } from "../ipc";
+import { guardSqlExecution } from "../prodGuard";
 import type { Dialect } from "../types";
 
 interface Props {
@@ -71,6 +72,15 @@ export default function CreateTableDialog({
 
   const create = async () => {
     if (!canCreate) return;
+
+    const guard = await guardSqlExecution(connId, preview, database, {
+      title: "Create table",
+    });
+    if (!guard.allow) {
+      if (guard.error) setError(guard.error);
+      return;
+    }
+
     setBusy(true);
     setError(null);
     try {

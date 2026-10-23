@@ -59,9 +59,12 @@ export default function TableDataView({ tab, onRefresh, theme }: Props) {
     };
   }, [tab.connectionId, tab.database, tab.table]);
 
-  const dialect =
-    connections.find((connection) => connection.id === tab.connectionId)
-      ?.dialect ?? "mysql";
+  const connection = connections.find(
+    (item) => item.id === tab.connectionId,
+  );
+  const dialect = connection?.dialect ?? "mysql";
+  const isProd = connection?.environment === "prod";
+  const autoCommitActive = autoCommitEdits && !isProd;
 
   const refresh = () => {
     setTableWhere(tab.id, where);
@@ -149,7 +152,11 @@ export default function TableDataView({ tab, onRefresh, theme }: Props) {
           }}
         />
         <label
-          title="ON writes every edit immediately; OFF batches changes until Save"
+          title={
+            isProd
+              ? "Auto-commit is disabled for production connections. Save batches changes through the production confirmation."
+              : "ON writes every edit immediately; OFF batches changes until Save"
+          }
           style={{
             display: "flex",
             alignItems: "center",
@@ -158,11 +165,13 @@ export default function TableDataView({ tab, onRefresh, theme }: Props) {
             color: "var(--mu)",
             whiteSpace: "nowrap",
             userSelect: "none",
+            opacity: isProd ? 0.55 : 1,
           }}
         >
           <input
             type="checkbox"
-            checked={autoCommitEdits}
+            checked={autoCommitActive}
+            disabled={isProd}
             onChange={(event) => setAutoCommitEdits(event.target.checked)}
             style={{ margin: 0, accentColor: "var(--ac)" }}
           />
@@ -222,7 +231,7 @@ export default function TableDataView({ tab, onRefresh, theme }: Props) {
             table={tab.table}
             dialect={dialect}
             columns={columns}
-            batch={!autoCommitEdits}
+            batch={!autoCommitActive}
             onClose={() => setInsertOpen(false)}
             onInserted={refresh}
             onQueued={(values) =>

@@ -8,6 +8,7 @@ import {
 } from "../ddl";
 import { errorMessage, listColumns, runQuery } from "../ipc";
 import { quoteIdentifier } from "../sql";
+import { guardSqlExecution } from "../prodGuard";
 import type { ColumnInfo, Dialect } from "../types";
 
 interface Props {
@@ -133,6 +134,18 @@ export default function StructureDialog({
       setPending(null);
       return;
     }
+
+    const guard = await guardSqlExecution(
+      connId,
+      statements.join(";\n"),
+      database,
+      { title: "Apply table changes" },
+    );
+    if (!guard.allow) {
+      if (guard.error) setError(guard.error);
+      return;
+    }
+
     setBusy(true);
     setError(null);
     try {

@@ -1,5 +1,7 @@
 export type Dialect = "mysql" | "postgres" | "sqlite" | "mssql" | "mongodb";
 
+export type ConnectionEnvironment = "dev" | "test" | "prod";
+
 export interface ConnectionMeta {
   id: string;
   name: string;
@@ -9,6 +11,7 @@ export interface ConnectionMeta {
   username: string;
   database?: string;
   read_only?: boolean;
+  environment?: ConnectionEnvironment;
   flavor?: string;
   trust_cert?: boolean;
 }

@@ -20,6 +20,7 @@ import Sidebar from "./components/Sidebar";
 import SqlEditor from "./components/SqlEditor";
 import type { SqlEditorHandle } from "./components/SqlEditor";
 import TableDataView from "./components/TableDataView";
+import EnvironmentBadge from "./components/EnvironmentBadge";
 import WhatsNewDialog from "./components/WhatsNewDialog";
 import { compareVersions, parseVersionSection } from "./changelog";
 import {
@@ -36,6 +37,8 @@ import {
 } from "./ipc";
 import { notify } from "./notifications";
 import { formatSql, selectAllSql } from "./sql";
+import { environmentColor, isProtectedEnvironment } from "./environment";
+import { guardSqlExecution } from "./prodGuard";
 import { useAppStore } from "./store";
 import type { TableTab } from "./store";
 import type { AiActionState, AiTextTarget, ConnectionMeta } from "./types";
@@ -45,6 +48,7 @@ const AiPanel = lazy(() => import("./components/AiPanel"));
 const ConnectionDialog = lazy(() => import("./components/ConnectionDialog"));
 const FindDialog = lazy(() => import("./components/FindDialog"));
 const HistoryDialog = lazy(() => import("./components/HistoryDialog"));
+const ProdConfirmDialog = lazy(() => import("./components/ProdConfirmDialog"));
 
 const dialogFallback = (
   <div style={{ position: "fixed", inset: 0 }} aria-hidden="true" />
@@ -255,6 +259,10 @@ export default function App() {
   const activeConnection =
     connections.find((connection) => connection.id === activeConnId) ?? null;
   const activeConnected = activeConnId ? !!connected[activeConnId] : false;
+  const activeEnvironment = activeConnection?.environment;
+  const activeEnvColor = isProtectedEnvironment(activeEnvironment)
+    ? environmentColor(activeEnvironment)
+    : undefined;
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
   const dragRef = useRef<{
     kind: "side" | "split" | "ai";
@@ -522,6 +530,12 @@ export default function App() {
       const requestId = (requestIdsRef.current[target] ?? 0) + 1;
       requestIdsRef.current[target] = requestId;
       const isCurrent = () => requestIdsRef.current[target] === requestId;
+
+      const guard = await guardSqlExecution(connId, query, database);
+      if (!guard.allow) {
+        if (guard.error) store.setError(guard.error, target);
+        return;
+      }
 
       store.setRunning(true, target);
       store.setError(null, target);
@@ -1147,6 +1161,9 @@ export default function App() {
             border: 0,
             borderRadius: 4,
             cursor: "default",
+            borderLeft: activeEnvColor
+              ? `2px solid ${activeEnvColor}`
+              : "2px solid transparent",
           }}
         >
           <span
@@ -1160,6 +1177,7 @@ export default function App() {
           <span style={{ fontWeight: 500 }}>
             {activeConnection?.name ?? "No connection"}
           </span>
+          <EnvironmentBadge environment={activeEnvironment} />
           <i
             className="icon-chevron-down"
             style={{ fontSize: 12, color: "var(--fa)" }}
@@ -1346,10 +1364,21 @@ export default function App() {
           >
             {tabs.map((tab) => {
               const active = tab.id === activeTabId;
-              const tabColor =
+              const tabConnection =
                 tab.type === "table"
+                  ? connections.find(
+                      (connection) => connection.id === tab.connectionId,
+                    )
+                  : activeConnection;
+              const tabEnvironment = tabConnection?.environment;
+              const tabEnvColor = isProtectedEnvironment(tabEnvironment)
+                ? environmentColor(tabEnvironment)
+                : undefined;
+              const tabColor =
+                tabEnvColor ??
+                (tab.type === "table"
                   ? connPrefs[tab.connectionId]?.color
-                  : undefined;
+                  : undefined);
               return (
                 <div
                   key={tab.id}
@@ -1396,6 +1425,7 @@ export default function App() {
                     style={{ fontSize: 13, color: "var(--fa)" }}
                   />
                   <span>{tab.name}</span>
+                  <EnvironmentBadge environment={tabEnvironment} />
                   <span
                     onClick={(event) => {
                       event.stopPropagation();
@@ -1752,10 +1782,21 @@ export default function App() {
         <span style={{ color: "var(--tx)" }}>
           {activeConnected ? "Connected" : "Disconnected"}
         </span>
-        <span style={{ fontFamily: "var(--mono)", fontSize: 11 }}>
-          {activeConnection?.name ?? "No connection"} ·{" "}
-          {engineLabel(activeConnection?.dialect, activeConnection?.flavor)} ·{" "}
-          {activeDb ?? "no database"}
+        <span
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            fontFamily: "var(--mono)",
+            fontSize: 11,
+          }}
+        >
+          <span>{activeConnection?.name ?? "No connection"}</span>
+          <EnvironmentBadge environment={activeEnvironment} />
+          <span>
+            · {engineLabel(activeConnection?.dialect, activeConnection?.flavor)}{" "}
+            · {activeDb ?? "no database"}
+          </span>
         </span>
         <div style={{ flex: 1 }} />
         <span
@@ -2074,6 +2115,10 @@ export default function App() {
           />
         </Suspense>
       )}
+
+      <Suspense fallback={dialogFallback}>
+        <ProdConfirmDialog />
+      </Suspense>
 
       {findOpen && (
         <Suspense fallback={dialogFallback}>

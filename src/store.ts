@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { ColumnFilter } from "./gridFilter";
+import type { ClassifiedStatement } from "./sqlGuard";
 import type {
   CellRef,
   CellValue,
@@ -58,6 +59,14 @@ function loadGroupStars(): Record<string, boolean> {
   } catch {
     return {};
   }
+}
+
+export interface ProdConfirmRequest {
+  connectionName: string;
+  databaseName: string;
+  statements: ClassifiedStatement[];
+  title?: string;
+  previewSql?: string;
 }
 
 export type ViewerDock = "right" | "bottom";
@@ -270,6 +279,9 @@ interface AppStore {
   setViewerPref: (patch: Partial<ViewerPrefs>) => void;
   autoCommitEdits: boolean;
   setAutoCommitEdits: (value: boolean) => void;
+  prodConfirm: ProdConfirmRequest | null;
+  requestProdConfirm: (request: ProdConfirmRequest) => Promise<boolean>;
+  resolveProdConfirm: (confirmed: boolean) => void;
   pendingChanges: Record<string, PendingChange[]>;
   addPendingChange: (tabId: string, change: NewPendingChange) => void;
   undoPendingChange: (tabId: string) => void;
@@ -342,12 +354,15 @@ const initialTab: QueryTab = {
   dirty: false,
 };
 
+let prodConfirmResolve: ((confirmed: boolean) => void) | null = null;
+
 export const useAppStore = create<AppStore>((set, get) => ({
   connections: [],
   connected: {},
   connPrefs: loadConnPrefs(),
   viewerPrefs: loadViewerPrefs(),
   autoCommitEdits: loadAutoCommitEdits(),
+  prodConfirm: null,
   pendingChanges: {},
   favorites: loadFavorites(),
   connGroups: loadConnGroups(),
@@ -413,6 +428,19 @@ export const useAppStore = create<AppStore>((set, get) => ({
       // storage may be unavailable; the pref stays in memory for this session
     }
     set({ autoCommitEdits: value });
+  },
+  requestProdConfirm: (request) => {
+    prodConfirmResolve?.(false);
+    return new Promise<boolean>((resolve) => {
+      prodConfirmResolve = resolve;
+      set({ prodConfirm: request });
+    });
+  },
+  resolveProdConfirm: (confirmed) => {
+    const resolve = prodConfirmResolve;
+    prodConfirmResolve = null;
+    set({ prodConfirm: null });
+    resolve?.(confirmed);
   },
   addPendingChange: (tabId, change) =>
     set((state) => {

@@ -79,6 +79,7 @@ pub struct MySqlDriver {
     pool: MySqlPool,
     database: String,
     options: MySqlConnectOptions,
+    read_only: bool,
 }
 
 impl MySqlDriver {
@@ -93,8 +94,9 @@ impl MySqlDriver {
         if !database.is_empty() {
             options = options.database(&database);
         }
+        let read_only = input.read_only.unwrap_or(false);
 
-        let pool = MySqlPoolOptions::new()
+        let mut pool_options = MySqlPoolOptions::new()
             .max_connections(5)
             .acquire_timeout(Duration::from_secs(10))
             // Remote MySQL (PlanetScale, managed hosts) drops idle connections,
@@ -103,7 +105,20 @@ impl MySqlDriver {
             .test_before_acquire(true)
             .idle_timeout(Duration::from_secs(60))
             .max_lifetime(Duration::from_secs(30 * 60))
-            .min_connections(0)
+            .min_connections(0);
+
+        if read_only {
+            pool_options = pool_options.after_connect(|conn, _meta| {
+                Box::pin(async move {
+                    sqlx::query("SET SESSION TRANSACTION READ ONLY")
+                        .execute(&mut *conn)
+                        .await?;
+                    Ok(())
+                })
+            });
+        }
+
+        let pool = pool_options
             .connect_with(options.clone())
             .await
             .map_err(db_error)?;
@@ -112,6 +127,7 @@ impl MySqlDriver {
             pool,
             database,
             options,
+            read_only,
         })
     }
 
@@ -322,6 +338,12 @@ impl Driver for MySqlDriver {
                 let mut conn = MySqlConnection::connect_with(&options)
                     .await
                     .map_err(db_error)?;
+                if self.read_only {
+                    sqlx::query("SET SESSION TRANSACTION READ ONLY")
+                        .execute(&mut conn)
+                        .await
+                        .map_err(db_error)?;
+                }
                 execute_batch(&mut conn, statements, max_rows).await
             }
         })
@@ -350,6 +372,12 @@ impl Driver for MySqlDriver {
                 let mut conn = MySqlConnection::connect_with(&options)
                     .await
                     .map_err(|error| TxError::new(None, db_error(error)))?;
+                if self.read_only {
+                    sqlx::query("SET SESSION TRANSACTION READ ONLY")
+                        .execute(&mut conn)
+                        .await
+                        .map_err(|error| TxError::new(None, db_error(error)))?;
+                }
                 run_transaction(&mut conn, statements).await
             }
         })

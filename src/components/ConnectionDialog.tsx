@@ -8,10 +8,12 @@ import {
   updateConnection,
 } from "../ipc";
 import type {
+  ConnectionEnvironment,
   ConnectionInput,
   ConnectionMeta,
   Dialect,
 } from "../types";
+import { ENVIRONMENT_OPTIONS } from "../environment";
 
 interface Props {
   open: boolean;
@@ -32,6 +34,7 @@ type Status = { tone: "info" | "ok" | "error"; text: string } | null;
 
 interface FormState {
   name: string;
+  environment: ConnectionEnvironment;
   host: string;
   port: string;
   username: string;
@@ -66,6 +69,7 @@ interface ExtraState {
 
 const initialForm: FormState = {
   name: "",
+  environment: "dev",
   host: "127.0.0.1",
   port: "3306",
   username: "root",
@@ -243,6 +247,7 @@ function buildInput(
   form: FormState,
   dialect: DialectOption,
   sqliteReadOnly: boolean,
+  readOnly: boolean,
   flavor: string | null,
   trustCert: boolean,
 ): ConnectionInput {
@@ -257,6 +262,7 @@ function buildInput(
       password: undefined,
       save_password: false,
       read_only: sqliteReadOnly,
+      environment: form.environment,
     };
   }
 
@@ -277,6 +283,8 @@ function buildInput(
     database: database || undefined,
     password: form.password || undefined,
     save_password: form.savePassword,
+    read_only: readOnly,
+    environment: form.environment,
     flavor: flavor || undefined,
     trust_cert: dialect === "mssql" ? trustCert : undefined,
   };
@@ -368,6 +376,67 @@ function Check({
       </span>
       <span>{label}</span>
     </button>
+  );
+}
+
+function EnvironmentControl({
+  value,
+  onChange,
+}: {
+  value: ConnectionEnvironment;
+  onChange: (value: ConnectionEnvironment) => void;
+}) {
+  return (
+    <div
+      role="group"
+      aria-label="Environment"
+      style={{
+        display: "flex",
+        border: "1px solid var(--bd2)",
+        borderRadius: 4,
+        overflow: "hidden",
+      }}
+    >
+      {ENVIRONMENT_OPTIONS.map((option) => {
+        const active = value === option.id;
+        return (
+          <button
+            key={option.id}
+            type="button"
+            aria-pressed={active}
+            onClick={() => onChange(option.id)}
+            title={`${option.label} environment`}
+            style={{
+              height: 24,
+              display: "flex",
+              alignItems: "center",
+              gap: 5,
+              padding: "0 9px",
+              border: 0,
+              borderRight: "1px solid var(--bd)",
+              background: active ? option.background : "transparent",
+              color: active ? option.color : "var(--mu)",
+              fontWeight: active ? 600 : 400,
+              boxShadow: active
+                ? `inset 0 -2px 0 ${option.color}`
+                : undefined,
+              cursor: "default",
+              fontSize: 12,
+            }}
+          >
+            <span
+              style={{
+                width: 6,
+                height: 6,
+                borderRadius: "50%",
+                background: option.color,
+              }}
+            />
+            {option.label}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -466,6 +535,7 @@ export default function ConnectionDialog({
     setShowPassword(false);
     setExtra({
       ...initialExtra,
+      readOnly: connection?.read_only ?? false,
       sqliteReadOnly: connection?.read_only ?? false,
       trustCert: connection?.trust_cert ?? false,
     });
@@ -481,6 +551,7 @@ export default function ConnectionDialog({
       );
       setForm({
         name: connection.name,
+        environment: connection.environment ?? "dev",
         host: connection.host,
         port: connection.port
           ? String(connection.port)
@@ -502,6 +573,7 @@ export default function ConnectionDialog({
       setForm({
         ...initialForm,
         name: "staging-pg",
+        environment: "dev",
         host: "127.0.0.1",
         port: "5432",
         username: "postgres",
@@ -692,7 +764,14 @@ export default function ConnectionDialog({
 
     try {
       const result = await testConnection(
-        buildInput(form, dialect, extra.sqliteReadOnly, flavor, extra.trustCert),
+        buildInput(
+          form,
+          dialect,
+          extra.sqliteReadOnly,
+          extra.readOnly,
+          flavor,
+          extra.trustCert,
+        ),
         connection?.id,
       );
       setStatus({
@@ -723,6 +802,7 @@ export default function ConnectionDialog({
         form,
         dialect,
         extra.sqliteReadOnly,
+        extra.readOnly,
         flavor,
         extra.trustCert,
       );
@@ -911,6 +991,14 @@ export default function ConnectionDialog({
                     style={{ ...mono, height: 26, flex: 1, minWidth: 0, padding: "0 8px", background: "var(--bg)", border: "1px solid var(--bd2)", borderRadius: 4, color: "var(--tx)", fontSize: 12.5 }}
                   />
                 </Row>
+                <Row label="Environment">
+                  <EnvironmentControl
+                    value={form.environment}
+                    onChange={(environment) =>
+                      setForm((current) => ({ ...current, environment }))
+                    }
+                  />
+                </Row>
                 <Row label="Database file">
                   <input
                     value={form.database}
@@ -976,6 +1064,14 @@ export default function ConnectionDialog({
                     onChange={update("name")}
                     className={inputClass}
                     style={{ ...mono, height: 26, flex: 1, minWidth: 0, padding: "0 8px", background: "var(--bg)", border: "1px solid var(--bd2)", borderRadius: 4, color: "var(--tx)", fontSize: 12.5 }}
+                  />
+                </Row>
+                <Row label="Environment">
+                  <EnvironmentControl
+                    value={form.environment}
+                    onChange={(environment) =>
+                      setForm((current) => ({ ...current, environment }))
+                    }
                   />
                 </Row>
                 <Row label="Host">
@@ -1055,6 +1151,28 @@ export default function ConnectionDialog({
                     }
                   />
                 </Row>
+                <Row label="">
+                  <Check
+                    checked={extra.readOnly}
+                    label="Read-only connection"
+                    onChange={() =>
+                      setExtraField("readOnly", !extra.readOnly)
+                    }
+                  />
+                </Row>
+                {dialect === "mssql" && extra.readOnly && (
+                  <p
+                    style={{
+                      margin: 0,
+                      color: "var(--wn)",
+                      fontSize: 11,
+                      lineHeight: 1.45,
+                    }}
+                  >
+                    SQL Server has no server-side read-only session here; writes
+                    and DDL are blocked in the app only.
+                  </p>
+                )}
                 {dialect === "mssql" && (
                   <Row label="">
                     <Check
@@ -1109,15 +1227,6 @@ export default function ConnectionDialog({
                   label="Auto-commit"
                   onChange={() =>
                     setExtraField("autoCommit", !extra.autoCommit)
-                  }
-                />
-              </Row>
-              <Row label="">
-                <Check
-                  checked={extra.readOnly}
-                  label="Read-only session"
-                  onChange={() =>
-                    setExtraField("readOnly", !extra.readOnly)
                   }
                 />
               </Row>

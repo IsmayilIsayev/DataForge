@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { errorMessage, insertRow } from "../ipc";
 import type { CellRef } from "../ipc";
 import { sqliteBooleanLiteral } from "../sql";
+import { guardSqlExecution } from "../prodGuard";
 import type { ColumnInfo, Dialect } from "../types";
 
 interface Props {
@@ -86,6 +87,18 @@ export default function InsertRowDialog({
       onClose();
       return;
     }
+
+    const guard = await guardSqlExecution(
+      connId,
+      `INSERT INTO ${table} VALUES (...)`,
+      database,
+      { title: "Insert row" },
+    );
+    if (!guard.allow) {
+      if (guard.error) setError(guard.error);
+      return;
+    }
+
     setSaving(true);
     setError(null);
     try {

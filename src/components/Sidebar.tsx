@@ -17,6 +17,9 @@ import {
 } from "../ipc";
 import { dropTableSql } from "../ddl";
 import { selectAllSql } from "../sql";
+import { environmentColor, isProtectedEnvironment } from "../environment";
+import { guardSqlExecution } from "../prodGuard";
+import EnvironmentBadge from "./EnvironmentBadge";
 import CreateTableDialog from "./CreateTableDialog";
 import { useAppStore } from "../store";
 import type { FavoriteTable } from "../store";
@@ -1055,8 +1058,10 @@ export default function Sidebar({
           pad={6}
           guides={[]}
           bl={
-            connPrefs[connection.id]?.color ??
-            (isActive ? "var(--ac)" : "transparent")
+            isProtectedEnvironment(connection.environment)
+              ? environmentColor(connection.environment)
+              : connPrefs[connection.id]?.color ??
+                (isActive ? "var(--ac)" : "transparent")
           }
           caret={
             connectionOpen ? "icon-chevron-down" : "icon-chevron-right"
@@ -1069,6 +1074,7 @@ export default function Sidebar({
           meta={`${connPrefs[connection.id]?.starred ? "★ " : ""}${engineMeta(
             connection,
           )}`}
+          trailing={<EnvironmentBadge environment={connection.environment} />}
           onClick={() => {
             if (!connected[connection.id]) {
               void connectAndSelect(connection);
@@ -1090,7 +1096,9 @@ export default function Sidebar({
             event.dataTransfer.setData("application/df-conn", connection.id);
           }}
           onContextMenu={(event) => openContextMenu(event, connection)}
-          title={`${engineName(connection)} · ${connection.host}:${connection.port} · ${
+          title={`${engineName(connection)}${
+            connection.environment ? ` · ${connection.environment}` : ""
+          } · ${connection.host}:${connection.port} · ${
             connected[connection.id] ? "connected" : "disconnected"
           }`}
         />,
@@ -1818,14 +1826,32 @@ export default function Sidebar({
                     target.database,
                     target.table,
                   );
-                  setDropBusy(true);
-                  void runQuery(target.connection.id, sql, 0, target.database)
-                    .then(() => {
+                  void (async () => {
+                    setDropBusy(true);
+                    try {
+                      const guard = await guardSqlExecution(
+                        target.connection,
+                        sql,
+                        target.database,
+                      );
+                      if (!guard.allow) {
+                        if (guard.error) storeError(guard.error);
+                        return;
+                      }
+                      await runQuery(
+                        target.connection.id,
+                        sql,
+                        0,
+                        target.database,
+                      );
                       setDropFor(null);
                       refreshDatabase(target.connection, target.database);
-                    })
-                    .catch((dropError) => storeError(errorMessage(dropError)))
-                    .finally(() => setDropBusy(false));
+                    } catch (dropError) {
+                      storeError(errorMessage(dropError));
+                    } finally {
+                      setDropBusy(false);
+                    }
+                  })();
                 }}
                 style={{ background: "var(--er)", borderColor: "var(--er)", color: "#fff" }}
               >
