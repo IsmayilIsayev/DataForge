@@ -11,6 +11,9 @@ import type {
   ChatMessage,
   ChatResultContext,
   ColumnInfo,
+  ConnectionImportDecision,
+  ConnectionImportPreview,
+  ConnectionImportResult,
   ConnectionInput,
   ConnectionMeta,
   ConnectionState,
@@ -19,6 +22,7 @@ import type {
   ExplainPlan,
   Nl2SqlResult,
   QueryResult,
+  SavedQueriesFile,
   SchemaDiff,
   SchemaSnapshot,
   TableInfo,
@@ -39,6 +43,35 @@ export const updateConnection = (id: string, input: ConnectionInput) =>
 
 export const listConnectionStates = () =>
   invoke<ConnectionState[]>("list_connection_states");
+
+export const loadSavedQueries = () =>
+  invoke<SavedQueriesFile>("load_saved_queries");
+
+export const saveSavedQueries = (data: SavedQueriesFile) =>
+  invoke<SavedQueriesFile>("save_saved_queries", { data });
+
+export const exportConnections = (
+  ids: string[],
+  includeSavedQueries: boolean,
+) =>
+  invoke<string | null>("export_connections", {
+    ids,
+    include_saved_queries: includeSavedQueries,
+  });
+
+export const previewConnectionsImport = () =>
+  invoke<ConnectionImportPreview | null>("preview_connections_import");
+
+export const applyConnectionsImport = (
+  path: string,
+  decisions: ConnectionImportDecision[],
+  importSavedQueries: boolean,
+) =>
+  invoke<ConnectionImportResult>("apply_connections_import", {
+    path,
+    decisions,
+    import_saved_queries: importSavedQueries,
+  });
 
 export const connectConnection = (connId: string) =>
   invoke<void>("connect_connection", { conn_id: connId });

@@ -15,6 +15,7 @@ import {
   listDatabases,
   listTables,
   runQuery,
+  saveSavedQueries,
 } from "../ipc";
 import { dropTableSql } from "../ddl";
 import { selectAllSql } from "../sql";
@@ -24,7 +25,20 @@ import EnvironmentBadge from "./EnvironmentBadge";
 import CreateTableDialog from "./CreateTableDialog";
 import { useAppStore } from "../store";
 import type { FavoriteTable } from "../store";
-import type { ColumnInfo, ConnectionMeta, Dialect, TableInfo } from "../types";
+import {
+  duplicateSavedQuery,
+  moveSavedQuery,
+  removeSavedQuery,
+  savedQueryMatches,
+} from "../savedQueries";
+import type {
+  ColumnInfo,
+  ConnectionMeta,
+  Dialect,
+  SavedQueriesFile,
+  SavedQuery,
+  TableInfo,
+} from "../types";
 
 const StructureDialog = lazy(() => import("./StructureDialog"));
 const ImportCsvDialog = lazy(() => import("./ImportCsvDialog"));
@@ -44,6 +58,11 @@ interface Props {
   ) => void;
   onOpenErd: (connection: ConnectionMeta, database: string) => void;
   onCompareSchemas: (connection: ConnectionMeta, database: string) => void;
+  onSaveCurrentQuery: () => void;
+  onOpenSavedQuery: (query: SavedQuery) => void;
+  onEditSavedQuery: (query: SavedQuery) => void;
+  onExportConnections: () => void;
+  onImportConnections: () => void;
   width: number;
 }
 
@@ -383,6 +402,11 @@ export default function Sidebar({
   onOpenTable,
   onOpenErd,
   onCompareSchemas,
+  onSaveCurrentQuery,
+  onOpenSavedQuery,
+  onEditSavedQuery,
+  onExportConnections,
+  onImportConnections,
   width,
 }: Props) {
   const connections = useAppStore((state) => state.connections);
@@ -402,6 +426,8 @@ export default function Sidebar({
   const setConnGroup = useAppStore((state) => state.setConnGroup);
   const groupStars = useAppStore((state) => state.groupStars);
   const toggleGroupStar = useAppStore((state) => state.toggleGroupStar);
+  const savedQueries = useAppStore((state) => state.savedQueries);
+  const setSavedQueries = useAppStore((state) => state.setSavedQueries);
 
   const [localDatabases, setLocalDatabases] = useState<
     Record<string, string[]>
@@ -444,6 +470,11 @@ export default function Sidebar({
   >({});
   const [groupEditFor, setGroupEditFor] = useState<string | null>(null);
   const [groupEditValue, setGroupEditValue] = useState("");
+  const [savedMenu, setSavedMenu] = useState<{
+    x: number;
+    y: number;
+    queryId: string;
+  } | null>(null);
   const inFlight = useRef(new Set<string>());
   const activeConnected = activeConnId ? !!connected[activeConnId] : false;
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
@@ -671,7 +702,9 @@ export default function Sidebar({
       current.setError(null);
       void loadDatabasesFor(connection.id);
     } catch (error) {
-      useAppStore.getState().setError(errorMessage(error));
+      const message = errorMessage(error);
+      useAppStore.getState().setError(message);
+      if (needsPassword(message)) onEditConnection(connection);
     }
   }
 
@@ -762,6 +795,26 @@ export default function Sidebar({
     useAppStore.getState().setError(errorMessage(error));
   }
 
+  async function persistSavedQueries(next: SavedQueriesFile) {
+    try {
+      const saved = await saveSavedQueries(next);
+      setSavedQueries(saved);
+    } catch (error) {
+      storeError(error);
+    }
+  }
+
+  function dropSavedQuery(event: DragEvent<HTMLDivElement>, folderId?: string) {
+    event.preventDefault();
+    const id = event.dataTransfer.getData("application/df-saved-query");
+    if (!id) return;
+    const query = savedQueries.queries.find((item) => item.id === id);
+    if (!query) return;
+    void persistSavedQueries(
+      moveSavedQuery(savedQueries, id, folderId),
+    );
+  }
+
   function refreshConnection(connection: ConnectionMeta) {
     if (!connected[connection.id]) {
       storeError("Connect to the database before refreshing its schema.");
@@ -811,7 +864,9 @@ export default function Sidebar({
         await connectConnection(connection.id);
         useAppStore.getState().setConnected(connection.id, true);
       } catch (error) {
-        storeError(error);
+        const message = errorMessage(error);
+        storeError(message);
+        if (needsPassword(message)) onEditConnection(connection);
         return;
       }
     }
@@ -1295,6 +1350,180 @@ export default function Sidebar({
       }
     }
 
+    const savedExpanded = expanded["__saved"] !== false;
+    const savedFolderNames = new Map(
+      savedQueries.folders.map((folder) => [folder.id, folder.name]),
+    );
+    const matchingSaved = savedQueries.queries
+      .filter((item) => savedQueryMatches(item, query))
+      .slice()
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const unfiledSaved = matchingSaved.filter(
+      (item) => !item.folder_id || !savedFolderNames.has(item.folder_id),
+    );
+
+    const pushSavedQuery = (item: SavedQuery, pad: number) => {
+      const connection = connections.find(
+        (candidate) => candidate.id === item.conn_id,
+      );
+      const linked = connection
+        ? `${connection.name}${item.database ? `·${item.database}` : ""}`
+        : item.database ?? "unlinked";
+      const rowId = `saved:${item.id}`;
+      rows.push(
+        <TreeRow
+          key={rowId}
+          pad={pad}
+          guides={guides(pad >= 34 ? 2 : 1)}
+          bg={selected === rowId ? "var(--sel)" : "transparent"}
+          icon="icon-code"
+          ic={connection ? "var(--ac)" : "var(--mu)"}
+          label={item.name}
+          color="var(--tx)"
+          fs={12.5}
+          meta={linked}
+          title={item.description || item.sql}
+          draggable
+          onDragStart={(event) => {
+            event.dataTransfer.effectAllowed = "move";
+            event.dataTransfer.setData("application/df-saved-query", item.id);
+          }}
+          onClick={() => setSelected(rowId)}
+          onDoubleClick={() => onOpenSavedQuery(item)}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            setSelected(rowId);
+            setSavedMenu({
+              x: Math.min(event.clientX, window.innerWidth - 240),
+              y: Math.min(event.clientY, window.innerHeight - 260),
+              queryId: item.id,
+            });
+          }}
+        />,
+      );
+    };
+
+    rows.push(
+      <TreeRow
+        key="__saved"
+        pad={6}
+        guides={[]}
+        caret={savedExpanded ? "icon-chevron-down" : "icon-chevron-right"}
+        icon="icon-bookmark"
+        ic="var(--ac)"
+        label="Saved"
+        color="var(--tx)"
+        fs={11.5}
+        meta={String(savedQueries.queries.length)}
+        onClick={() =>
+          setExpanded((current) => ({
+            ...current,
+            __saved: current.__saved === false,
+          }))
+        }
+        onDragOver={(event) => event.preventDefault()}
+        onDrop={(event) => dropSavedQuery(event)}
+        trailing={
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onSaveCurrentQuery();
+            }}
+            title="Save current query (Ctrl+Shift+S)"
+            style={{
+              width: 20,
+              height: 20,
+              flex: "none",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              border: 0,
+              borderRadius: 4,
+              background: "transparent",
+              color: "var(--mu)",
+              cursor: "default",
+              padding: 0,
+            }}
+          >
+            <i className="icon-plus" style={{ fontSize: 13 }} />
+          </button>
+        }
+      />,
+    );
+
+    if (savedExpanded) {
+      for (const folder of savedQueries.folders
+        .slice()
+        .sort((a, b) => a.name.localeCompare(b.name))) {
+        const items = matchingSaved.filter(
+          (item) => item.folder_id === folder.id,
+        );
+        if (query && items.length === 0) continue;
+        const folderKey = `saved-folder:${folder.id}`;
+        const folderOpen = query ? true : expanded[folderKey] !== false;
+
+        rows.push(
+          <TreeRow
+            key={folderKey}
+            pad={20}
+            guides={guides(1)}
+            caret={folderOpen ? "icon-chevron-down" : "icon-chevron-right"}
+            icon="icon-folder"
+            ic="var(--mu)"
+            label={folder.name}
+            color="var(--mu)"
+            fs={11.5}
+            meta={String(items.length)}
+            onClick={() =>
+              setExpanded((current) => ({
+                ...current,
+                [folderKey]: current[folderKey] === false,
+              }))
+            }
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => dropSavedQuery(event, folder.id)}
+          />,
+        );
+
+        if (!folderOpen) continue;
+        for (const item of items) pushSavedQuery(item, 34);
+      }
+
+      if (unfiledSaved.length > 0) {
+        rows.push(
+          <TreeRow
+            key="__saved_unfiled"
+            pad={20}
+            guides={guides(1)}
+            icon="icon-file"
+            ic="var(--fa)"
+            label="Unfiled"
+            color="var(--fa)"
+            fs={11.5}
+            meta={String(unfiledSaved.length)}
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => dropSavedQuery(event)}
+          />,
+        );
+        for (const item of unfiledSaved) pushSavedQuery(item, 34);
+      }
+
+      if (savedQueries.queries.length === 0) {
+        rows.push(
+          <TreeRow
+            key="__saved_empty"
+            pad={20}
+            guides={guides(1)}
+            label="No saved queries yet"
+            color="var(--fa)"
+            fs={11.5}
+            onClick={onSaveCurrentQuery}
+          />,
+        );
+      }
+    }
+
     if (hiddenCount > 0 && !query) {
       rows.push(
         <TreeRow
@@ -1321,6 +1550,10 @@ export default function Sidebar({
     ? (connections.find(
         (connection) => connection.id === contextMenu.connectionId,
       ) ?? null)
+    : null;
+  const savedMenuQuery = savedMenu
+    ? (savedQueries.queries.find((item) => item.id === savedMenu.queryId) ??
+      null)
     : null;
 
   return (
@@ -1428,7 +1661,7 @@ export default function Sidebar({
       </div>
 
       <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "4px 0" }}>
-        {connections.length === 0 ? (
+        {connections.length === 0 && (
           <TreeNotice>
             No connections yet.{" "}
             <button
@@ -1445,7 +1678,8 @@ export default function Sidebar({
               Add one
             </button>
           </TreeNotice>
-        ) : rows.length === 0 && query ? (
+        )}
+        {rows.length === 0 && connections.length > 0 && query ? (
           <TreeNotice>
             No tables or columns match “{filter}”.
           </TreeNotice>
@@ -1596,6 +1830,24 @@ export default function Sidebar({
                     }}
                   />
                 )}
+                <MenuSeparator />
+                <MenuSeparator />
+                <MenuItem
+                  icon="icon-download"
+                  label="Export connections…"
+                  onClick={() => {
+                    setContextMenu(null);
+                    onExportConnections();
+                  }}
+                />
+                <MenuItem
+                  icon="icon-upload"
+                  label="Import connections…"
+                  onClick={() => {
+                    setContextMenu(null);
+                    onImportConnections();
+                  }}
+                />
                 <MenuSeparator />
                 <MenuItem
                   icon="icon-trash-2"
@@ -1795,6 +2047,118 @@ export default function Sidebar({
                 />
               </>
             )}
+          </div>
+        </>
+      )}
+
+      {savedMenu && savedMenuQuery && (
+        <>
+          <div
+            onMouseDown={() => setSavedMenu(null)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setSavedMenu(null);
+            }}
+            style={{ position: "fixed", inset: 0, zIndex: 50 }}
+          />
+          <div
+            style={{
+              position: "fixed",
+              left: savedMenu.x,
+              top: savedMenu.y,
+              zIndex: 51,
+              minWidth: 210,
+              maxHeight: "min(70vh, 420px)",
+              overflowY: "auto",
+              padding: 4,
+              background: "var(--sf)",
+              border: "1px solid var(--bd2)",
+              borderRadius: 6,
+              boxShadow: "var(--sh)",
+            }}
+          >
+            <MenuItem
+              icon="icon-code"
+              label="Open in new tab"
+              onClick={() => {
+                setSavedMenu(null);
+                onOpenSavedQuery(savedMenuQuery);
+              }}
+            />
+            <MenuItem
+              icon="icon-pencil"
+              label="Rename / edit…"
+              onClick={() => {
+                setSavedMenu(null);
+                onEditSavedQuery(savedMenuQuery);
+              }}
+            />
+            <MenuItem
+              icon="icon-copy"
+              label="Duplicate"
+              onClick={() => {
+                setSavedMenu(null);
+                const result = duplicateSavedQuery(
+                  savedQueries,
+                  savedMenuQuery.id,
+                );
+                if (result.query) void persistSavedQueries(result.document);
+              }}
+            />
+            <MenuSeparator />
+            {savedQueries.folders
+              .slice()
+              .sort((a, b) => a.name.localeCompare(b.name))
+              .filter((folder) => folder.id !== savedMenuQuery.folder_id)
+              .map((folder) => (
+                <MenuItem
+                  key={folder.id}
+                  icon="icon-folder"
+                  label={`Move to ${folder.name}`}
+                  onClick={() => {
+                    setSavedMenu(null);
+                    void persistSavedQueries(
+                      moveSavedQuery(
+                        savedQueries,
+                        savedMenuQuery.id,
+                        folder.id,
+                      ),
+                    );
+                  }}
+                />
+              ))}
+            {savedMenuQuery.folder_id && (
+              <MenuItem
+                icon="icon-file"
+                label="Move to Unfiled"
+                onClick={() => {
+                  setSavedMenu(null);
+                  void persistSavedQueries(
+                    moveSavedQuery(savedQueries, savedMenuQuery.id, undefined),
+                  );
+                }}
+              />
+            )}
+            <MenuSeparator />
+            <MenuItem
+              icon="icon-trash-2"
+              label="Delete saved query"
+              danger
+              onClick={() => {
+                const target = savedMenuQuery;
+                setSavedMenu(null);
+                if (
+                  !window.confirm(
+                    `Delete saved query "${target.name}"? This cannot be undone.`,
+                  )
+                ) {
+                  return;
+                }
+                void persistSavedQueries(
+                  removeSavedQuery(savedQueries, target.id),
+                );
+              }}
+            />
           </div>
         </>
       )}
@@ -2019,6 +2383,14 @@ export default function Sidebar({
         </>
       )}
     </aside>
+  );
+}
+
+/** A failed login usually means the imported connection has no stored password
+ * yet. Reuse the existing connection dialog so the user can enter it. */
+function needsPassword(message: string) {
+  return /password|authentication|access denied|login failed|credentials/i.test(
+    message,
   );
 }
 

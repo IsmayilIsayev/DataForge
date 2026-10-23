@@ -316,3 +316,77 @@ export interface TestConnectionResult {
   message: string;
   ssh_host_key?: string;
 }
+
+export interface SavedQueryFolder {
+  id: string;
+  name: string;
+  created_at: number;
+}
+
+export interface SavedQuery {
+  id: string;
+  name: string;
+  description?: string;
+  folder_id?: string;
+  sql: string;
+  conn_id?: string;
+  database?: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface SavedQueriesFile {
+  version: number;
+  folders: SavedQueryFolder[];
+  queries: SavedQuery[];
+}
+
+export interface PortableSshConfig {
+  host: string;
+  port: number;
+  username: string;
+  auth: SshAuth;
+  key_path?: string;
+}
+
+/** Metadata-only connection representation used by .dataforge.json files. */
+export interface PortableConnection {
+  name: string;
+  dialect: Dialect;
+  host: string;
+  port: number;
+  username: string;
+  database?: string;
+  environment?: ConnectionEnvironment;
+  flavor?: string;
+  ssl_mode?: SslMode;
+  ssl_ca_path?: string;
+  ssh?: PortableSshConfig;
+  read_only?: boolean;
+}
+
+export interface ConnectionImportPreviewItem {
+  index: number;
+  connection: PortableConnection;
+  conflict: "name" | "endpoint" | "both" | null;
+  conflict_with: string | null;
+}
+
+export interface ConnectionImportPreview {
+  path: string;
+  header: string;
+  connections: ConnectionImportPreviewItem[];
+  saved_query_count: number;
+}
+
+export interface ConnectionImportDecision {
+  index: number;
+  action: "new" | "skip" | "replace";
+}
+
+export interface ConnectionImportResult {
+  imported: number;
+  replaced: number;
+  skipped: number;
+  saved_queries: number;
+}

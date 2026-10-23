@@ -34,7 +34,9 @@ import {
   exportResultXlsx,
   listConnectionStates,
   listConnections,
+  loadSavedQueries,
   runQuery,
+  saveSavedQueries,
 } from "./ipc";
 import { notify } from "./notifications";
 import { formatSql, selectAllSql } from "./sql";
@@ -42,12 +44,15 @@ import { environmentColor, isProtectedEnvironment } from "./environment";
 import { guardSqlExecution } from "./prodGuard";
 import { useAppStore } from "./store";
 import type { TableTab } from "./store";
+import { upsertSavedQuery } from "./savedQueries";
 import type {
   AiActionState,
   AiTextTarget,
   ChatRequest,
   ChatResultContext,
   ConnectionMeta,
+  SavedQuery,
+  SavedQueryFolder,
 } from "./types";
 
 const AiActionPanel = lazy(() => import("./components/AiActionPanel"));
@@ -57,6 +62,10 @@ const PlanView = lazy(() => import("./components/PlanView"));
 const ConnectionDialog = lazy(() => import("./components/ConnectionDialog"));
 const FindDialog = lazy(() => import("./components/FindDialog"));
 const HistoryDialog = lazy(() => import("./components/HistoryDialog"));
+const SavedQueryDialog = lazy(() => import("./components/SavedQueryDialog"));
+const PortableConnectionsDialog = lazy(
+  () => import("./components/PortableConnectionsDialog"),
+);
 const ProdConfirmDialog = lazy(() => import("./components/ProdConfirmDialog"));
 const SchemaCompareDialog = lazy(
   () => import("./components/SchemaCompareDialog"),
@@ -126,6 +135,27 @@ function engineLabel(dialect: string | undefined, flavor?: string) {
   return "—";
 }
 
+const connectionMenuButtonStyle = {
+  width: "100%",
+  height: 26,
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  padding: "0 8px",
+  border: 0,
+  borderRadius: 4,
+  color: "var(--tx)",
+  textAlign: "left" as const,
+  cursor: "default" as const,
+};
+
+const connectionMenuIconStyle = {
+  width: 14,
+  flex: "none" as const,
+  fontSize: 13,
+  color: "var(--mu)",
+};
+
 export default function App() {
   const connections = useAppStore((state) => state.connections);
   const connected = useAppStore((state) => state.connected);
@@ -174,6 +204,13 @@ export default function App() {
     table?: string;
   } | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [savedQueryDialog, setSavedQueryDialog] = useState<{
+    query: SavedQuery | null;
+    sql: string;
+  } | null>(null);
+  const [connectionsTransfer, setConnectionsTransfer] = useState<
+    "export" | "import" | null
+  >(null);
   const [compareOpen, setCompareOpen] = useState<{
     connId: string | null;
     database: string | null;
@@ -351,6 +388,22 @@ export default function App() {
         }
       });
 
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadSavedQueries()
+      .then((document) => {
+        if (!cancelled) useAppStore.getState().setSavedQueries(document);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          useAppStore.getState().setError(errorMessage(error));
+        }
+      });
     return () => {
       cancelled = true;
     };
@@ -1117,6 +1170,102 @@ export default function App() {
     useAppStore.getState().addQueryTab("");
   }, []);
 
+  const openSaveCurrentQuery = useCallback(() => {
+    const store = useAppStore.getState();
+    const tab = store.tabs.find((item) => item.id === store.activeTabId);
+    if (!tab || tab.type !== "query") {
+      store.setError("Open a query tab to save it.");
+      return;
+    }
+    if (!tab.sql.trim()) {
+      store.setError("The SQL editor is empty.");
+      return;
+    }
+    setSavedQueryDialog({ query: null, sql: tab.sql });
+  }, []);
+
+  const handleSavedQuery = useCallback(
+    (query: SavedQuery, newFolder?: SavedQueryFolder) => {
+      const store = useAppStore.getState();
+      const current = store.savedQueries;
+      const withFolder: typeof current = newFolder
+        ? { ...current, folders: [...current.folders, newFolder] }
+        : current;
+      const next = upsertSavedQuery(withFolder, query);
+      saveSavedQueries(next)
+        .then((saved) => {
+          useAppStore.getState().setSavedQueries(saved);
+          setSavedQueryDialog(null);
+          void notify("DataForge", "Saved query stored.");
+        })
+        .catch((error) =>
+          useAppStore.getState().setError(errorMessage(error)),
+        );
+    },
+    [],
+  );
+
+  const openSavedQuery = useCallback(async (query: SavedQuery) => {
+    const store = useAppStore.getState();
+    const connection = query.conn_id
+      ? store.connections.find((item) => item.id === query.conn_id)
+      : null;
+
+    if (connection) {
+      if (
+        store.activeConnId !== connection.id &&
+        !store.setActiveConn(connection.id)
+      ) {
+        return;
+      }
+      if (query.database) store.setActiveDb(query.database);
+      if (!store.connected[connection.id]) {
+        try {
+          await connectConnection(connection.id);
+          useAppStore.getState().setConnected(connection.id, true);
+        } catch (error) {
+          useAppStore.getState().setError(errorMessage(error));
+        }
+      }
+    }
+
+    useAppStore.getState().addQueryTab(query.sql, query.name);
+  }, []);
+
+  const reloadAfterConnectionsImport = useCallback(async () => {
+    const store = useAppStore.getState();
+    try {
+      const items = await listConnections();
+      store.setConnections(items);
+      if (
+        store.activeConnId &&
+        !items.some((item) => item.id === store.activeConnId)
+      ) {
+        store.setActiveConn(items[0]?.id ?? null);
+      }
+      const states = await listConnectionStates();
+      useAppStore.getState().setConnectionStates(states);
+      const saved = await loadSavedQueries();
+      useAppStore.getState().setSavedQueries(saved);
+    } catch (error) {
+      useAppStore.getState().setError(errorMessage(error));
+    }
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const mod = event.metaKey || event.ctrlKey;
+      if (!mod || !event.shiftKey) return;
+      if (event.key.toLowerCase() !== "s") return;
+      event.preventDefault();
+      event.stopPropagation();
+      openSaveCurrentQuery();
+    };
+
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [openSaveCurrentQuery]);
+
   const handleSaved = useCallback((meta: ConnectionMeta) => {
     const store = useAppStore.getState();
     store.setConnections([
@@ -1155,9 +1304,20 @@ export default function App() {
       await connectConnection(id);
       useAppStore.getState().setConnected(id, true);
     } catch (error) {
-      useAppStore.getState().setError(errorMessage(error));
+      const message = errorMessage(error);
+      useAppStore.getState().setError(message);
+      if (
+        /password|authentication|access denied|login failed|credentials/i.test(
+          message,
+        )
+      ) {
+        const failed = useAppStore
+          .getState()
+          .connections.find((item) => item.id === id);
+        if (failed) openEditConnection(failed);
+      }
     }
-  }, []);
+  }, [openEditConnection]);
 
   const openCompareSchemas = useCallback(
     (connection: ConnectionMeta | null, database: string | null) => {
@@ -1342,6 +1502,28 @@ export default function App() {
       label: "Add connection…",
       group: "Connections",
       run: openNewConnection,
+    },
+    {
+      id: "save-query",
+      icon: "icon-bookmark",
+      label: "Save current query…",
+      group: "Query",
+      kb: "Ctrl ⇧ S",
+      run: openSaveCurrentQuery,
+    },
+    {
+      id: "export-connections",
+      icon: "icon-download",
+      label: "Export connections…",
+      group: "Connections",
+      run: () => setConnectionsTransfer("export"),
+    },
+    {
+      id: "import-connections",
+      icon: "icon-upload",
+      label: "Import connections…",
+      group: "Connections",
+      run: () => setConnectionsTransfer("import"),
     },
     ...connections
       .filter((connection) => connection.id !== activeConnId)
@@ -1572,6 +1754,13 @@ export default function App() {
           onCompareSchemas={(connection, database) =>
             openCompareSchemas(connection, database)
           }
+          onSaveCurrentQuery={openSaveCurrentQuery}
+          onOpenSavedQuery={(query) => void openSavedQuery(query)}
+          onEditSavedQuery={(query) =>
+            setSavedQueryDialog({ query, sql: query.sql })
+          }
+          onExportConnections={() => setConnectionsTransfer("export")}
+          onImportConnections={() => setConnectionsTransfer("import")}
           width={sideOpen ? sideW : 0}
         />
 
@@ -2312,6 +2501,44 @@ export default function App() {
                     New connection…
                   </span>
                 </button>
+                <div
+                  style={{
+                    height: 1,
+                    background: "var(--bd)",
+                    margin: "4px -4px",
+                  }}
+                />
+                <button
+                  type="button"
+                  className="df2-menu-item"
+                  onClick={() => {
+                    setMenu(null);
+                    setConnectionsTransfer("export");
+                  }}
+                  style={connectionMenuButtonStyle}
+                >
+                  <i
+                    className="icon-download"
+                    style={connectionMenuIconStyle}
+                  />
+                  <span style={{ flex: 1, whiteSpace: "nowrap" }}>
+                    Export connections…
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  className="df2-menu-item"
+                  onClick={() => {
+                    setMenu(null);
+                    setConnectionsTransfer("import");
+                  }}
+                  style={connectionMenuButtonStyle}
+                >
+                  <i className="icon-upload" style={connectionMenuIconStyle} />
+                  <span style={{ flex: 1, whiteSpace: "nowrap" }}>
+                    Import connections…
+                  </span>
+                </button>
               </>
             ) : databases.length === 0 ? (
               <div style={{ padding: "6px 8px", color: "var(--fa)", fontSize: 11.5 }}>
@@ -2577,6 +2804,29 @@ export default function App() {
                 store.addQueryTab(entry.sql);
               }
             }}
+          />
+        </Suspense>
+      )}
+
+      {savedQueryDialog && (
+        <Suspense fallback={dialogFallback}>
+          <SavedQueryDialog
+            query={savedQueryDialog.query}
+            sql={savedQueryDialog.sql}
+            defaultConnId={activeConnId}
+            defaultDatabase={activeDb}
+            onClose={() => setSavedQueryDialog(null)}
+            onSaved={handleSavedQuery}
+          />
+        </Suspense>
+      )}
+
+      {connectionsTransfer && (
+        <Suspense fallback={dialogFallback}>
+          <PortableConnectionsDialog
+            mode={connectionsTransfer}
+            onClose={() => setConnectionsTransfer(null)}
+            onImported={reloadAfterConnectionsImport}
           />
         </Suspense>
       )}

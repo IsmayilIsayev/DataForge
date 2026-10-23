@@ -112,6 +112,7 @@ impl ConnectionStore {
 pub struct AppState {
     pub ai: RwLock<AiSettings>,
     ai_path: PathBuf,
+    pub config_dir: PathBuf,
     pub pool: PoolRegistry,
     pub connections: RwLock<ConnectionStore>,
     /// Operation ids (export/import) the user asked to cancel.
@@ -132,6 +133,7 @@ impl AppState {
         Ok(Self {
             ai: RwLock::new(ai),
             ai_path,
+            config_dir: config_dir.clone(),
             pool: PoolRegistry::default(),
             connections: RwLock::new(ConnectionStore::load(config_dir.join("connections.json"))),
             cancelled: RwLock::new(HashSet::new()),

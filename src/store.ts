@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { ChartConfig } from "./chartData";
 import type { ColumnFilter } from "./gridFilter";
 import type { ClassifiedStatement } from "./sqlGuard";
+import { emptySavedQueries } from "./savedQueries";
 import type {
   CellRef,
   CellValue,
@@ -10,6 +11,7 @@ import type {
   ConnectionState,
   ExplainPlan,
   QueryResult,
+  SavedQueriesFile,
 } from "./types";
 
 export interface ConnPref {
@@ -370,6 +372,8 @@ interface AppStore {
   queryHistory: QueryHistoryEntry[];
   pushQueryHistory: (sql: string, connId?: string, database?: string) => void;
   clearQueryHistory: () => void;
+  savedQueries: SavedQueriesFile;
+  setSavedQueries: (document: SavedQueriesFile) => void;
   chatThreads: Record<string, ChatMessage[]>;
   appendChatMessage: (
     connId: string,
@@ -469,6 +473,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   connGroups: loadConnGroups(),
   groupStars: loadGroupStars(),
   queryHistory: loadQueryHistory(),
+  savedQueries: emptySavedQueries(),
   chatThreads: loadChatThreads(),
   explainResultConsent: false,
   activeConnId: null,
@@ -659,6 +664,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
     set({ queryHistory: [] });
   },
+  setSavedQueries: (savedQueries) => set({ savedQueries }),
   appendChatMessage: (connId, database, message) =>
     set((state) => {
       const key = chatThreadKey(connId, database);

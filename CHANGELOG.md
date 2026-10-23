@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Saved queries in folders (sidebar "Saved", Ctrl/Cmd+Shift+S), stored in a file in the app config folder.
+- Export and import connections between computers (.dataforge.json, never includes passwords or SSH secrets; import shows conflicts and validates the file).
+
 - Charts from query results (Chart button on the result grid): bar, horizontal bar, line, area, pie/donut and scatter, picked automatically from the columns; grouping and aggregation, top N, stacking, tooltips, PNG/SVG export and copy as image.
 
 ## [0.4.4] - 2026-10-23
