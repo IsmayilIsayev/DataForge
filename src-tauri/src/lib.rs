@@ -272,6 +272,7 @@ pub fn run() {
             commands::connection::test_connection,
             commands::connection::pick_sqlite_file,
             commands::connection::pick_ssh_key_file,
+            commands::connection::pick_ca_certificate_file,
             commands::query::run_query,
             commands::query::list_databases,
             commands::query::list_tables,

@@ -307,6 +307,16 @@ pub async fn pick_ssh_key_file(app: tauri::AppHandle) -> AppResult<Option<String
 }
 
 #[tauri::command(rename_all = "snake_case")]
+pub async fn pick_ca_certificate_file(app: tauri::AppHandle) -> AppResult<Option<String>> {
+    pick_file(
+        app,
+        "CA certificates",
+        &["pem", "crt", "cer", "ca", "der"],
+    )
+    .await
+}
+
+#[tauri::command(rename_all = "snake_case")]
 pub async fn test_connection(
     state: State<'_, AppState>,
     input: ConnectionInput,
@@ -397,6 +407,8 @@ mod tests {
             environment: None,
             flavor: None,
             trust_cert: None,
+            ssl_mode: None,
+            ssl_ca_path: None,
             ssh: None,
             ssh_secret: None,
         }
@@ -415,6 +427,8 @@ mod tests {
             environment: None,
             flavor: None,
             trust_cert: None,
+            ssl_mode: None,
+            ssl_ca_path: None,
             ssh: None,
         }
     }

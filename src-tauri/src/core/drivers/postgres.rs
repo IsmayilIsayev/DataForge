@@ -2,19 +2,47 @@ use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use serde_json::{Number, Value};
-use sqlx::postgres::{PgConnectOptions, PgConnection, PgPool, PgPoolOptions, PgRow, PgValueFormat};
+use sqlx::postgres::{
+    PgConnectOptions, PgConnection, PgPool, PgPoolOptions, PgRow, PgSslMode, PgValueFormat,
+};
 use sqlx::types::chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use sqlx::{Column, Connection, Executor, Row, Statement, TypeInfo, ValueRef};
 use uuid::Uuid;
 
 use crate::core::drivers::{
     int_json, BoxFuture, ColumnInfo, ConnectionInput, Dialect, Driver, QueryResult, SchemaSnapshot,
-    SchemaTable, TableInfo, TableKind, TxError, TxInput, TxRowError, TxStreamOutcome,
+    SchemaTable, SslMode, TableInfo, TableKind, TxError, TxInput, TxRowError, TxStreamOutcome,
 };
 use crate::error::{AppError, AppResult};
 
 const DEFAULT_MAX_ROWS: i64 = 1000;
 const MAX_ROWS: i64 = 100_000;
+
+fn map_ssl_mode(mode: SslMode) -> PgSslMode {
+    match mode {
+        SslMode::Disable => PgSslMode::Disable,
+        SslMode::Prefer => PgSslMode::Prefer,
+        SslMode::Require => PgSslMode::Require,
+        SslMode::VerifyCa => PgSslMode::VerifyCa,
+        SslMode::VerifyFull => PgSslMode::VerifyFull,
+    }
+}
+
+fn apply_ssl_options(
+    mut options: PgConnectOptions,
+    ssl_mode: Option<SslMode>,
+    ssl_ca_path: Option<&str>,
+) -> PgConnectOptions {
+    if let Some(mode) = ssl_mode {
+        options = options.ssl_mode(map_ssl_mode(mode));
+    }
+
+    if let Some(path) = ssl_ca_path.map(str::trim).filter(|path| !path.is_empty()) {
+        options = options.ssl_root_cert(path);
+    }
+
+    options
+}
 
 fn trim_statement(sql: &str) -> &str {
     sql.trim().trim_end_matches(';').trim_end()
@@ -99,6 +127,7 @@ impl PostgresDriver {
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "postgres".to_string());
         options = options.database(&database);
+        options = apply_ssl_options(options, input.ssl_mode, input.ssl_ca_path.as_deref());
         let read_only = input.read_only.unwrap_or(false);
 
         let mut pool_options = PgPoolOptions::new()
@@ -936,4 +965,50 @@ fn cell_to_json(row: &PgRow, index: usize) -> Value {
     }
 
     Value::Null
+}
+
+#[cfg(test)]
+mod ssl_tests {
+    use super::{apply_ssl_options, map_ssl_mode};
+    use crate::core::drivers::SslMode;
+    use sqlx::postgres::{PgConnectOptions, PgSslMode};
+
+    #[test]
+    fn maps_every_ssl_mode_to_the_postgres_option() {
+        assert!(matches!(map_ssl_mode(SslMode::Disable), PgSslMode::Disable));
+        assert!(matches!(map_ssl_mode(SslMode::Prefer), PgSslMode::Prefer));
+        assert!(matches!(map_ssl_mode(SslMode::Require), PgSslMode::Require));
+        assert!(matches!(
+            map_ssl_mode(SslMode::VerifyCa),
+            PgSslMode::VerifyCa
+        ));
+        assert!(matches!(
+            map_ssl_mode(SslMode::VerifyFull),
+            PgSslMode::VerifyFull
+        ));
+    }
+
+    #[test]
+    fn leaves_options_unchanged_when_ssl_is_not_configured() {
+        let base = PgConnectOptions::new_without_pgpass();
+        let expected = format!("{base:?}");
+        let options = apply_ssl_options(base, None, None);
+
+        assert_eq!(format!("{options:?}"), expected);
+    }
+
+    #[test]
+    fn applies_the_requested_mode_and_root_certificate() {
+        let options = apply_ssl_options(
+            PgConnectOptions::new_without_pgpass(),
+            Some(SslMode::VerifyFull),
+            Some(" certs/root.pem "),
+        );
+
+        assert!(matches!(
+            options.get_ssl_mode(),
+            PgSslMode::VerifyFull
+        ));
+        assert!(format!("{options:?}").contains("certs/root.pem"));
+    }
 }

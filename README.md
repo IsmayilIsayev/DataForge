@@ -19,7 +19,7 @@ copy data, and generate SQL from plain language with the AI provider of your cho
 - **AI → SQL:** describe a query in plain language (incl. Azerbaijani) and get SQL.
   Bring your own provider — **OpenAI, OpenRouter, Google Gemini, Groq, or a local
   model (Ollama / LM Studio)**. API keys are stored in the OS keychain, never in the app.
-- **Connection management:** connect / disconnect / edit / delete, SSH & SSL tabs (planned)
+- **Connection management:** connect / disconnect / edit / delete, SSH tunnels and SSL/TLS settings
 - **Native feel:** menu bar, system tray, notifications, no browser chrome
 
 ## Install (users)

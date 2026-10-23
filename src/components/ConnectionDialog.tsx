@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { ChangeEvent, FormEvent, ReactNode } from "react";
 import {
   errorMessage,
+  pickCaCertificateFile,
   pickSqliteFile,
   pickSshKeyFile,
   saveConnection,
@@ -14,6 +15,7 @@ import type {
   ConnectionMeta,
   Dialect,
   SshAuth,
+  SslMode,
 } from "../types";
 import { ENVIRONMENT_OPTIONS } from "../environment";
 
@@ -53,10 +55,8 @@ interface ExtraState {
   readOnly: boolean;
   showAllDbs: boolean;
   dbList: string;
-  sslMode: string;
+  sslMode: SslMode;
   sslCa: string;
-  sslCert: string;
-  sslKey: string;
   sshUse: boolean;
   sshHost: string;
   sshPort: string;
@@ -92,8 +92,6 @@ const initialExtra: ExtraState = {
   dbList: "",
   sslMode: "prefer",
   sslCa: "",
-  sslCert: "",
-  sslKey: "",
   sshUse: false,
   sshHost: "",
   sshPort: "22",
@@ -163,6 +161,37 @@ const SSH_AUTH_LABELS: Record<SshAuth, string> = {
   password: "Password",
 };
 
+const SSL_MODES: SslMode[] = [
+  "disable",
+  "prefer",
+  "require",
+  "verify_ca",
+  "verify_full",
+];
+
+const SSL_MODE_LABELS: Record<SslMode, string> = {
+  disable: "Disable",
+  prefer: "Prefer",
+  require: "Require",
+  verify_ca: "Verify CA",
+  verify_full: "Verify full",
+};
+
+/** Accept URL values from PostgreSQL (verify-full) and MySQL (verify_identity). */
+function normalizeSslMode(value: string | null | undefined): SslMode | undefined {
+  const normalized = value?.trim().toLowerCase().replace(/-/g, "_");
+  if (!normalized) return undefined;
+  if (normalized === "disabled") return "disable";
+  if (normalized === "allow" || normalized === "preferred") return "prefer";
+  if (normalized === "required") return "require";
+  if (normalized === "verify_ca") return "verify_ca";
+  if (normalized === "verify_full" || normalized === "verify_identity") {
+    return "verify_full";
+  }
+  if (SSL_MODES.includes(normalized as SslMode)) return normalized as SslMode;
+  return undefined;
+}
+
 function isSupportedDialect(dialect: Dialect): dialect is DialectOption {
   return (
     dialect === "mysql" ||
@@ -197,7 +226,7 @@ function parseConnectionUrl(raw: string): {
   username: string;
   password: string;
   database: string;
-  sslMode?: string;
+  sslMode?: SslMode;
   flavor?: string;
 } | null {
   const text = raw.trim();
@@ -249,7 +278,9 @@ function parseConnectionUrl(raw: string): {
     username: decode(url.username),
     password: decode(url.password),
     database: decode(url.pathname.replace(/^\//, "")),
-    sslMode: url.searchParams.get("sslmode") ?? undefined,
+    sslMode:
+      normalizeSslMode(url.searchParams.get("sslmode")) ??
+      normalizeSslMode(url.searchParams.get("ssl-mode")),
     flavor,
   };
 }
@@ -283,6 +314,7 @@ function buildInput(
         ? requestedDatabase || "master"
         : requestedDatabase;
 
+  const supportsSsl = dialect === "mysql" || dialect === "postgres";
   const ssh = extra.sshUse
     ? {
         host: extra.sshHost.trim(),
@@ -310,6 +342,8 @@ function buildInput(
     environment: form.environment,
     flavor: flavor || undefined,
     trust_cert: dialect === "mssql" ? extra.trustCert : undefined,
+    ssl_mode: supportsSsl ? extra.sslMode : undefined,
+    ssl_ca_path: supportsSsl ? extra.sslCa.trim() || undefined : undefined,
     ssh,
     ssh_secret: ssh ? extra.sshSecret || undefined : undefined,
   };
@@ -561,8 +595,9 @@ export default function ConnectionDialog({
             : current.database),
       name: current.name.trim() || parsed.database || parsed.host,
     }));
-    if (parsed.sslMode) {
-      setExtra((current) => ({ ...current, sslMode: parsed.sslMode as string }));
+    const sslMode = parsed.sslMode;
+    if (sslMode) {
+      setExtra((current) => ({ ...current, sslMode }));
     }
   };
   const [status, setStatus] = useState<Status>(null);
@@ -583,6 +618,8 @@ export default function ConnectionDialog({
       readOnly: connection?.read_only ?? false,
       sqliteReadOnly: connection?.read_only ?? false,
       trustCert: connection?.trust_cert ?? false,
+      sslMode: connection?.ssl_mode ?? initialExtra.sslMode,
+      sslCa: connection?.ssl_ca_path ?? "",
       sshUse: Boolean(connection?.ssh),
       sshHost: connection?.ssh?.host ?? "",
       sshPort: connection?.ssh?.port ? String(connection.ssh.port) : "22",
@@ -817,6 +854,22 @@ export default function ConnectionDialog({
     }
   };
 
+  const handleBrowseCa = async () => {
+    setBrowsing(true);
+    setStatus(null);
+
+    try {
+      const path = await pickCaCertificateFile();
+      if (path) {
+        setExtraField("sslCa", path);
+      }
+    } catch (error) {
+      setStatus({ tone: "error", text: errorMessage(error) });
+    } finally {
+      setBrowsing(false);
+    }
+  };
+
   const handleTest = async () => {
     const problem = validate(form, dialect, extra);
     if (problem) {
@@ -875,7 +928,12 @@ export default function ConnectionDialog({
     }
   };
 
-  const tabs = dialect === "sqlite" ? MAIN_TABS.slice(0, 2) : MAIN_TABS;
+  const tabs =
+    dialect === "sqlite"
+      ? MAIN_TABS.slice(0, 2)
+      : dialect === "mssql"
+        ? MAIN_TABS.filter((tab) => tab !== "ssl")
+        : MAIN_TABS;
   const currentPreset = PRESETS.find((preset) => preset.id === presetId);
   const inputClass = "v2-input";
   const mono = {
@@ -899,9 +957,8 @@ export default function ConnectionDialog({
         : "var(--wn)";
 
   const nextSslMode = () => {
-    const modes = ["disable", "prefer", "require", "verify-ca", "verify-full"];
-    const index = modes.indexOf(extra.sslMode);
-    setExtraField("sslMode", modes[(index + 1) % modes.length]);
+    const index = SSL_MODES.indexOf(extra.sslMode);
+    setExtraField("sslMode", SSL_MODES[(index + 1) % SSL_MODES.length]);
   };
 
   const nextSshAuth = () => {
@@ -1318,10 +1375,11 @@ export default function ConnectionDialog({
 
           {activeTab === "ssl" && (
             <>
-              <ComingSoonNote />
-              <fieldset disabled style={disabledGroup}>
-                <Row label="Mode">
-                <CycleButton value={extra.sslMode} onClick={nextSslMode} />
+              <Row label="Mode">
+                <CycleButton
+                  value={SSL_MODE_LABELS[extra.sslMode]}
+                  onClick={nextSslMode}
+                />
               </Row>
               <Row label="CA certificate">
                 <input
@@ -1333,39 +1391,27 @@ export default function ConnectionDialog({
                   className={inputClass}
                   style={{ ...mono, height: 26, flex: 1, minWidth: 0, padding: "0 8px", background: "var(--bg)", border: "1px solid var(--bd2)", borderRadius: 4, color: "var(--tx)", fontSize: 12.5 }}
                 />
-                <button type="button" className="v2-btn" style={{ height: 26 }}>
-                  Browse…
+                <button
+                  type="button"
+                  className="v2-btn"
+                  onClick={() => void handleBrowseCa()}
+                  disabled={busy !== null || browsing}
+                  style={{ height: 26, whiteSpace: "nowrap" }}
+                >
+                  {browsing ? "…" : "Browse…"}
                 </button>
               </Row>
-              <Row label="Client certificate">
-                <input
-                  value={extra.sslCert}
-                  onChange={(event) =>
-                    setExtraField("sslCert", event.target.value)
-                  }
-                  placeholder="client.crt"
-                  className={inputClass}
-                  style={{ ...mono, height: 26, flex: 1, minWidth: 0, padding: "0 8px", background: "var(--bg)", border: "1px solid var(--bd2)", borderRadius: 4, color: "var(--tx)", fontSize: 12.5 }}
-                />
-                <button type="button" className="v2-btn" style={{ height: 26 }}>
-                  Browse…
-                </button>
-              </Row>
-              <Row label="Client key">
-                <input
-                  value={extra.sslKey}
-                  onChange={(event) =>
-                    setExtraField("sslKey", event.target.value)
-                  }
-                  placeholder="client.key"
-                  className={inputClass}
-                  style={{ ...mono, height: 26, flex: 1, minWidth: 0, padding: "0 8px", background: "var(--bg)", border: "1px solid var(--bd2)", borderRadius: 4, color: "var(--tx)", fontSize: 12.5 }}
-                />
-                <button type="button" className="v2-btn" style={{ height: 26 }}>
-                  Browse…
-                </button>
-              </Row>
-              </fieldset>
+              <p
+                style={{
+                  margin: 0,
+                  color: "var(--fa)",
+                  fontSize: 11,
+                  lineHeight: 1.45,
+                }}
+              >
+                Verify CA and Verify full check the server certificate. Without
+                a CA file, the system / webpki root certificates are used.
+              </p>
             </>
           )}
 

@@ -109,6 +109,50 @@ pub enum ConnectionEnvironment {
     Prod,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SslMode {
+    Disable,
+    Prefer,
+    Require,
+    VerifyCa,
+    VerifyFull,
+}
+
+impl SslMode {
+    /// Parse the value of an `sslmode` / `ssl-mode` URL parameter. Both the
+    /// PostgreSQL spellings (`verify-ca`) and the MySQL spellings
+    /// (`verify_identity`) are accepted.
+    pub fn from_url_value(value: &str) -> Option<Self> {
+        let normalized = value.trim().to_ascii_lowercase().replace('_', "-");
+
+        match normalized.as_str() {
+            "disable" | "disabled" => Some(Self::Disable),
+            "allow" | "prefer" | "preferred" => Some(Self::Prefer),
+            "require" | "required" => Some(Self::Require),
+            "verify-ca" => Some(Self::VerifyCa),
+            "verify-full" | "verify-identity" => Some(Self::VerifyFull),
+            _ => None,
+        }
+    }
+
+    /// Read `sslmode` / `ssl-mode` from a connection URL.
+    pub fn from_url(url: &str) -> Option<Self> {
+        let query = url.split_once('?')?.1.split('#').next().unwrap_or("");
+
+        query.split('&').find_map(|pair| {
+            let (key, value) = pair.split_once('=')?;
+            if key.trim().eq_ignore_ascii_case("sslmode")
+                || key.trim().eq_ignore_ascii_case("ssl-mode")
+            {
+                Self::from_url_value(value)
+            } else {
+                None
+            }
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionMeta {
     pub id: String,
@@ -128,6 +172,10 @@ pub struct ConnectionMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trust_cert: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssl_mode: Option<SslMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssl_ca_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh: Option<SshConfig>,
 }
 
@@ -145,6 +193,8 @@ impl ConnectionMeta {
             environment: input.environment,
             flavor: input.flavor.clone(),
             trust_cert: input.trust_cert,
+            ssl_mode: input.ssl_mode,
+            ssl_ca_path: input.ssl_ca_path.clone(),
             ssh: input.ssh.clone(),
         }
     }
@@ -163,6 +213,8 @@ impl ConnectionMeta {
             environment: self.environment,
             flavor: self.flavor.clone(),
             trust_cert: self.trust_cert,
+            ssl_mode: self.ssl_mode,
+            ssl_ca_path: self.ssl_ca_path.clone(),
             ssh: self.ssh.clone(),
             ssh_secret: None,
         }
@@ -190,6 +242,10 @@ pub struct ConnectionInput {
     pub flavor: Option<String>,
     #[serde(default)]
     pub trust_cert: Option<bool>,
+    #[serde(default)]
+    pub ssl_mode: Option<SslMode>,
+    #[serde(default)]
+    pub ssl_ca_path: Option<String>,
     #[serde(default)]
     pub ssh: Option<SshConfig>,
     /// Transient SSH password or key passphrase. Never persisted in
@@ -359,7 +415,7 @@ pub async fn connect(
 
 #[cfg(test)]
 mod tests {
-    use super::{int_json, uint_json, MAX_SAFE_JSON_INT};
+    use super::{int_json, uint_json, SslMode, MAX_SAFE_JSON_INT};
     use serde_json::Value;
 
     #[test]
@@ -417,6 +473,82 @@ mod tests {
         .expect("valid connection meta");
 
         assert!(meta.ssh.is_none());
+    }
+
+    #[test]
+    fn parses_ssl_mode_values_from_urls() {
+        assert_eq!(SslMode::from_url_value("disable"), Some(SslMode::Disable));
+        assert_eq!(SslMode::from_url_value("prefer"), Some(SslMode::Prefer));
+        assert_eq!(SslMode::from_url_value("REQUIRED"), Some(SslMode::Require));
+        assert_eq!(
+            SslMode::from_url_value("verify_ca"),
+            Some(SslMode::VerifyCa)
+        );
+        assert_eq!(
+            SslMode::from_url_value("verify-full"),
+            Some(SslMode::VerifyFull)
+        );
+        assert_eq!(
+            SslMode::from_url_value("verify_identity"),
+            Some(SslMode::VerifyFull)
+        );
+        assert_eq!(SslMode::from_url_value("allow"), Some(SslMode::Prefer));
+        assert_eq!(SslMode::from_url_value("bogus"), None);
+    }
+
+    #[test]
+    fn reads_ssl_mode_from_connection_urls() {
+        assert_eq!(
+            SslMode::from_url("postgresql://app@db/shop?sslmode=verify-full"),
+            Some(SslMode::VerifyFull)
+        );
+        assert_eq!(
+            SslMode::from_url("mysql://app@db/shop?ssl-mode=REQUIRED"),
+            Some(SslMode::Require)
+        );
+        assert_eq!(
+            SslMode::from_url(
+                "postgresql://app@db/shop?application_name=DataForge&sslmode=verify-ca#ignored"
+            ),
+            Some(SslMode::VerifyCa)
+        );
+        assert_eq!(
+            SslMode::from_url("postgresql://app@db/shop?other=1"),
+            None
+        );
+        assert_eq!(SslMode::from_url("postgresql://app@db/shop"), None);
+    }
+
+    #[test]
+    fn old_connections_without_ssl_fields_still_deserialize() {
+        let input: super::ConnectionInput = serde_json::from_str(
+            r#"{
+                "name": "shop",
+                "dialect": "mysql",
+                "host": "db.example",
+                "port": 3306,
+                "username": "app"
+            }"#,
+        )
+        .expect("valid connection input");
+
+        assert!(input.ssl_mode.is_none());
+        assert!(input.ssl_ca_path.is_none());
+
+        let meta: super::ConnectionMeta = serde_json::from_str(
+            r#"{
+                "id": "id",
+                "name": "shop",
+                "dialect": "mysql",
+                "host": "db.example",
+                "port": 3306,
+                "username": "app"
+            }"#,
+        )
+        .expect("valid connection meta");
+
+        assert!(meta.ssl_mode.is_none());
+        assert!(meta.ssl_ca_path.is_none());
     }
 
     #[test]

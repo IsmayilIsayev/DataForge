@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- SSL/TLS settings for MySQL and PostgreSQL: disable, prefer, require, verify CA or verify full, with an optional CA certificate. `sslmode` / `ssl-mode` from a connection URL is applied to the dialog.
+
 ## [0.4.2] - 2026-10-23
 
 ### Added

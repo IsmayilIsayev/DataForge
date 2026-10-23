@@ -2,19 +2,47 @@ use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use serde_json::{Number, Value};
-use sqlx::mysql::{MySqlConnectOptions, MySqlConnection, MySqlPool, MySqlPoolOptions, MySqlRow};
+use sqlx::mysql::{
+    MySqlConnectOptions, MySqlConnection, MySqlPool, MySqlPoolOptions, MySqlRow, MySqlSslMode,
+};
 use sqlx::types::chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use sqlx::{Column, Connection, Executor, Row, Statement, TypeInfo, ValueRef};
 
 use crate::core::drivers::{
     int_json, uint_json, BoxFuture, ColumnInfo, ConnectionInput, Dialect, Driver, QueryResult,
-    SchemaSnapshot, SchemaTable, TableInfo, TableKind, TxError, TxInput, TxRowError,
+    SchemaSnapshot, SchemaTable, SslMode, TableInfo, TableKind, TxError, TxInput, TxRowError,
     TxStreamOutcome,
 };
 use crate::error::{AppError, AppResult};
 
 const DEFAULT_MAX_ROWS: i64 = 1000;
 const MAX_ROWS: i64 = 100_000;
+
+fn map_ssl_mode(mode: SslMode) -> MySqlSslMode {
+    match mode {
+        SslMode::Disable => MySqlSslMode::Disabled,
+        SslMode::Prefer => MySqlSslMode::Preferred,
+        SslMode::Require => MySqlSslMode::Required,
+        SslMode::VerifyCa => MySqlSslMode::VerifyCa,
+        SslMode::VerifyFull => MySqlSslMode::VerifyIdentity,
+    }
+}
+
+fn apply_ssl_options(
+    mut options: MySqlConnectOptions,
+    ssl_mode: Option<SslMode>,
+    ssl_ca_path: Option<&str>,
+) -> MySqlConnectOptions {
+    if let Some(mode) = ssl_mode {
+        options = options.ssl_mode(map_ssl_mode(mode));
+    }
+
+    if let Some(path) = ssl_ca_path.map(str::trim).filter(|path| !path.is_empty()) {
+        options = options.ssl_ca(path);
+    }
+
+    options
+}
 
 fn trim_statement(sql: &str) -> &str {
     sql.trim().trim_end_matches(';').trim_end()
@@ -95,6 +123,7 @@ impl MySqlDriver {
         if !database.is_empty() {
             options = options.database(&database);
         }
+        options = apply_ssl_options(options, input.ssl_mode, input.ssl_ca_path.as_deref());
         let read_only = input.read_only.unwrap_or(false);
 
         let mut pool_options = MySqlPoolOptions::new()
@@ -669,4 +698,76 @@ fn cell_to_json(row: &MySqlRow, index: usize) -> Value {
     }
 
     Value::Null
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{apply_ssl_options, map_ssl_mode};
+    use crate::core::drivers::SslMode;
+    use sqlx::mysql::{MySqlConnectOptions, MySqlSslMode};
+
+    #[test]
+    fn maps_every_ssl_mode_to_the_mysql_option() {
+        assert!(matches!(
+            map_ssl_mode(SslMode::Disable),
+            MySqlSslMode::Disabled
+        ));
+        assert!(matches!(
+            map_ssl_mode(SslMode::Prefer),
+            MySqlSslMode::Preferred
+        ));
+        assert!(matches!(
+            map_ssl_mode(SslMode::Require),
+            MySqlSslMode::Required
+        ));
+        assert!(matches!(
+            map_ssl_mode(SslMode::VerifyCa),
+            MySqlSslMode::VerifyCa
+        ));
+        assert!(matches!(
+            map_ssl_mode(SslMode::VerifyFull),
+            MySqlSslMode::VerifyIdentity
+        ));
+    }
+
+    #[test]
+    fn leaves_the_default_mode_when_ssl_is_not_configured() {
+        let options = apply_ssl_options(MySqlConnectOptions::new(), None, None);
+
+        assert!(matches!(
+            options.get_ssl_mode(),
+            MySqlSslMode::Preferred
+        ));
+        assert!(!format!("{options:?}").contains("ssl_ca: Some"));
+    }
+
+    #[test]
+    fn applies_the_requested_mode_and_ca_file() {
+        let options = apply_ssl_options(
+            MySqlConnectOptions::new(),
+            Some(SslMode::VerifyCa),
+            Some(" certs/ca.pem "),
+        );
+
+        assert!(matches!(
+            options.get_ssl_mode(),
+            MySqlSslMode::VerifyCa
+        ));
+        assert!(format!("{options:?}").contains("certs/ca.pem"));
+    }
+
+    #[test]
+    fn ignores_an_empty_ca_file() {
+        let options = apply_ssl_options(
+            MySqlConnectOptions::new(),
+            Some(SslMode::VerifyFull),
+            Some("   "),
+        );
+
+        assert!(matches!(
+            options.get_ssl_mode(),
+            MySqlSslMode::VerifyIdentity
+        ));
+        assert!(!format!("{options:?}").contains("ssl_ca: Some"));
+    }
 }

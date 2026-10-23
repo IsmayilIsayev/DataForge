@@ -49,6 +49,9 @@ export const pickSqliteFile = () =>
 export const pickSshKeyFile = () =>
   invoke<string | null>("pick_ssh_key_file");
 
+export const pickCaCertificateFile = () =>
+  invoke<string | null>("pick_ca_certificate_file");
+
 export const runQuery = (
   connId: string,
   sql: string,

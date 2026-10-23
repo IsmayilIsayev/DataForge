@@ -2,6 +2,13 @@ export type Dialect = "mysql" | "postgres" | "sqlite" | "mssql" | "mongodb";
 
 export type ConnectionEnvironment = "dev" | "test" | "prod";
 
+export type SslMode =
+  | "disable"
+  | "prefer"
+  | "require"
+  | "verify_ca"
+  | "verify_full";
+
 export type SshAuth = "password" | "key";
 
 export interface SshConfig {
@@ -26,6 +33,8 @@ export interface ConnectionMeta {
   environment?: ConnectionEnvironment;
   flavor?: string;
   trust_cert?: boolean;
+  ssl_mode?: SslMode;
+  ssl_ca_path?: string;
   ssh?: SshConfig;
 }
 
