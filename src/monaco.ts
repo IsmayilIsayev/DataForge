@@ -5,6 +5,8 @@ import "monaco-editor/languages/definitions/sql/register";
 import "monaco-editor/features/find/register";
 import "monaco-editor/features/folding/register";
 import "monaco-editor/features/suggest/register";
+// features/suggest only adds inline suggestions; the suggest widget itself lives in the controller.
+import "monaco-editor/editor/contrib/suggest/browser/suggestController";
 import "monaco-editor/features/bracketMatching/register";
 import "monaco-editor/features/multicursor/register";
 import "monaco-editor/features/contextmenu/register";

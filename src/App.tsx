@@ -238,11 +238,14 @@ export default function App() {
       .then((version) => {
         if (cancelled) return;
         const lastSeen = localStorage.getItem("df-last-seen-version");
-        if (!lastSeen) {
-          localStorage.setItem("df-last-seen-version", version);
-          return;
-        }
-        if (compareVersions(version, lastSeen) > 0) {
+        // Builds before 0.4.0 never stored a version; any other df-* key means this
+        // is an update from one of them, not a fresh install.
+        const updatedFromOld =
+          !lastSeen &&
+          Object.keys(localStorage).some(
+            (key) => key.startsWith("df-") && key !== "df-last-seen-version",
+          );
+        if (updatedFromOld || (lastSeen && compareVersions(version, lastSeen) > 0)) {
           const notes =
             parseVersionSection(changelogRaw, version) || "See CHANGELOG.md";
           setWhatsNew({ version, notes });
