@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-10-23
+
 ### Added
 
 - Go to… (Ctrl/Cmd+P or the search icon in the sidebar): find any connection, database, table or view across all connected databases — including ones never expanded — with fuzzy, Azerbaijani-aware matching. The sidebar Filter now also matches database names and opens databases that contain matching tables.
