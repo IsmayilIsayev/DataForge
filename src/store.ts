@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { ColumnFilter } from "./gridFilter";
 import type { ConnectionMeta, ConnectionState, QueryResult } from "./types";
 
 export interface ConnPref {
@@ -174,6 +175,7 @@ export interface TableTab {
   table: string;
   limit: number;
   where: string;
+  orderBy: string;
 }
 
 export type AppTab = QueryTab | TableTab;
@@ -188,6 +190,7 @@ interface AppStore {
   activeTabId: string;
   nextTab: number;
   tabStates: Record<string, TabViewState>;
+  clientFilters: Record<string, ColumnFilter[]>;
   sql: string;
   selection: string | null;
   result: QueryResult | null;
@@ -227,6 +230,8 @@ interface AppStore {
   setActiveTab: (id: string) => void;
   setTableLimit: (id: string, limit: number) => void;
   setTableWhere: (id: string, where: string) => void;
+  setTableOrderBy: (id: string, orderBy: string) => void;
+  setClientFilters: (id: string, filters: ColumnFilter[]) => void;
   setSql: (sql: string) => void;
   setSelection: (selection: string | null) => void;
   setResult: (
@@ -283,6 +288,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   activeTabId: initialTab.id,
   nextTab: 2,
   tabStates: { [initialTab.id]: emptyView() },
+  clientFilters: {},
   sql: initialTab.sql,
   selection: null,
   result: null,
@@ -448,6 +454,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       table,
       limit,
       where,
+      orderBy: "",
     };
 
     set({
@@ -472,6 +479,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
     let tabs = state.tabs.filter((tab) => tab.id !== id);
     const tabStates = { ...state.tabStates };
     delete tabStates[id];
+    const clientFilters = { ...state.clientFilters };
+    delete clientFilters[id];
     let nextTab = state.nextTab;
 
     if (tabs.length === 0) {
@@ -489,7 +498,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
 
     if (state.activeTabId !== id) {
-      set({ tabs, tabStates, nextTab });
+      set({ tabs, tabStates, clientFilters, nextTab });
       return;
     }
 
@@ -499,6 +508,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({
       tabs,
       tabStates,
+      clientFilters,
       nextTab,
       activeTabId: activeTab.id,
       sql: activeTab.type === "query" ? activeTab.sql : "",
@@ -521,6 +531,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       return {
         tabs: [tab],
         tabStates: { [id]: emptyView() },
+        clientFilters: {},
         activeTabId: id,
         nextTab: state.nextTab + 1,
         sql: "",
@@ -571,6 +582,18 @@ export const useAppStore = create<AppStore>((set, get) => ({
           ? { ...tab, where }
           : tab,
       ),
+    })),
+  setTableOrderBy: (id, orderBy) =>
+    set((state) => ({
+      tabs: state.tabs.map((tab) =>
+        tab.id === id && tab.type === "table"
+          ? { ...tab, orderBy }
+          : tab,
+      ),
+    })),
+  setClientFilters: (id, filters) =>
+    set((state) => ({
+      clientFilters: { ...state.clientFilters, [id]: filters },
     })),
   setSql: (sql) => {
     const state = get();

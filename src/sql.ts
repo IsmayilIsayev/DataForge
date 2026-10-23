@@ -44,6 +44,23 @@ export function quoteIdentifier(dialect: Dialect, value: string): string {
   return `"${value.replace(/"/g, '""')}"`;
 }
 
+export function escapeLikePattern(value: string): string {
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/%/g, "\\%")
+    .replace(/_/g, "\\_");
+}
+
+export function stringLiteral(dialect: Dialect, value: string): string {
+  const escaped =
+    dialect === "mysql" || dialect === "postgres"
+      ? value.replace(/\\/g, "\\\\").replace(/'/g, "''")
+      : value.replace(/'/g, "''");
+  if (dialect === "postgres") return `E'${escaped}'`;
+  if (dialect === "mssql") return `N'${escaped}'`;
+  return `'${escaped}'`;
+}
+
 export function sqliteBooleanLiteral(value: string): string | null {
   const normalized = value.trim().toLowerCase();
   if (["1", "true", "t", "yes", "y"].includes(normalized)) return "1";

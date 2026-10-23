@@ -10,6 +10,15 @@ import {
   updateCell,
 } from "../ipc";
 import type { CellRef } from "../ipc";
+import {
+  buildOrderBy,
+  buildWhere,
+  FILTER_OPERATORS,
+  filterNeedsValue,
+  describeFilter,
+  rowMatchesFilters,
+} from "../gridFilter";
+import type { ColumnFilter, FilterOperator } from "../gridFilter";
 import { quoteIdentifier, sqliteBooleanLiteral } from "../sql";
 import { useAppStore } from "../store";
 import type { CellValue, Dialect } from "../types";
@@ -26,6 +35,7 @@ const VIEWER_RESIZE_STEP = 16;
 
 interface Props {
   viewKey: string;
+  tabId?: string;
   dialect: Dialect;
   database?: string | null;
   table?: string | null;
@@ -35,6 +45,9 @@ interface Props {
   connId?: string;
   editable?: boolean;
   pkColumns?: string[];
+  serverSide?: boolean;
+  where?: string;
+  onServerQuery?: (where: string, orderBy: string) => void;
 }
 
 interface Position {
@@ -47,6 +60,14 @@ interface ViewerState extends Position {}
 interface GridMenu {
   x: number;
   y: number;
+}
+
+interface HeaderMenu extends GridMenu {
+  column: number;
+}
+
+interface FilterMenu extends GridMenu {
+  column: number;
 }
 
 type CopyFormat = "tsv" | "headers" | "csv" | "json" | "insert";
@@ -86,6 +107,8 @@ function cellType(value: CellValue): string {
   }
   return "text";
 }
+
+const EMPTY_FILTERS: ColumnFilter[] = [];
 
 const MONO_FONT =
   '12px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace';
@@ -199,6 +222,7 @@ function normalizeRange(a: Position, b: Position) {
 
 export default function DataGrid({
   viewKey,
+  tabId,
   dialect,
   database,
   table,
@@ -208,6 +232,9 @@ export default function DataGrid({
   connId,
   editable,
   pkColumns,
+  serverSide,
+  where,
+  onServerQuery,
 }: Props) {
   const result = useAppStore((state) => state.result);
   const running = useAppStore((state) => state.running);
@@ -227,6 +254,19 @@ export default function DataGrid({
   const [sort, setSort] = useState<{ col: number; dir: "asc" | "desc" } | null>(
     null,
   );
+  const storedFilters = useAppStore((state) =>
+    tabId ? state.clientFilters[tabId] : undefined,
+  );
+  const setClientFilters = useAppStore((state) => state.setClientFilters);
+  const [localFilters, setLocalFilters] = useState<ColumnFilter[]>([]);
+  const filters = tabId
+    ? (storedFilters ?? EMPTY_FILTERS)
+    : localFilters;
+  const [hoverHeader, setHoverHeader] = useState<number | null>(null);
+  const [headerMenu, setHeaderMenu] = useState<HeaderMenu | null>(null);
+  const [filterMenu, setFilterMenu] = useState<FilterMenu | null>(null);
+  const [draftOp, setDraftOp] = useState<FilterOperator>("contains");
+  const [draftValue, setDraftValue] = useState("");
   const [order, setOrder] = useState<number[]>([]);
   const [widths, setWidths] = useState<Record<number, number>>({});
   const [dragCol, setDragCol] = useState<number | null>(null);
@@ -248,15 +288,19 @@ export default function DataGrid({
     const columns = result?.columns.length ?? 0;
     setOrder(Array.from({ length: columns }, (_, index) => index));
     setWidths({});
-    setSort(null);
+    if (!serverSide) {
+      setSort(null);
+    }
     setAnchor(null);
     setFocus(null);
     setViewer(null);
     setGridMenu(null);
+    setHeaderMenu(null);
+    setFilterMenu(null);
     setCopied(null);
     setDragging(false);
     setConfirmDelete(null);
-  }, [viewKey]);
+  }, [viewKey, serverSide]);
 
   useEffect(() => {
     if (!dragging) return;
@@ -280,24 +324,33 @@ export default function DataGrid({
   }, [viewerPrefs.dock, viewerPrefs.rightWidth, viewerPrefs.bottomHeight]);
 
   useEffect(() => {
-    if (!viewer && !gridMenu) return;
+    if (!viewer && !gridMenu && !headerMenu && !filterMenu) return;
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key === "Escape") {
         setViewer(null);
         setGridMenu(null);
+        setHeaderMenu(null);
+        setFilterMenu(null);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [viewer, gridMenu]);
+  }, [viewer, gridMenu, headerMenu, filterMenu]);
 
   const columns = result?.columns ?? [];
   const rows = result?.rows ?? [];
 
-  const sortedRows = useMemo(() => {
+  const sourceRows = useMemo(() => {
     const indexed = rows.map((row, index) => ({ row, index }));
-    if (!sort) return indexed;
-    return [...indexed].sort((a, b) => {
+    if (serverSide || filters.length === 0) return indexed;
+    return indexed.filter((item) =>
+      rowMatchesFilters(columns, item.row, filters),
+    );
+  }, [rows, columns, filters, serverSide]);
+
+  const sortedRows = useMemo(() => {
+    if (!sort) return sourceRows;
+    return [...sourceRows].sort((a, b) => {
       const left = a.row[sort.col];
       const right = b.row[sort.col];
       if (left === null && right === null) return 0;
@@ -312,7 +365,7 @@ export default function DataGrid({
       });
       return compared * (sort.dir === "asc" ? 1 : -1);
     });
-  }, [rows, sort]);
+  }, [sourceRows, sort]);
 
   const numericColumns = useMemo(() => {
     return columns.map((_, index) => {
@@ -799,18 +852,94 @@ export default function DataGrid({
     setViewerPref({ dock: viewerPrefs.dock === "right" ? "bottom" : "right" });
   }
 
+  function applyServerQuery(
+    nextFilters: ColumnFilter[],
+    nextSort: { col: number; dir: "asc" | "desc" } | null,
+    clearWhere = false,
+  ) {
+    if (!serverSide || !onServerQuery) return;
+    const spec = nextSort
+      ? { column: columns[nextSort.col] ?? "", dir: nextSort.dir }
+      : null;
+    const generated = buildWhere(dialect, columns, nextFilters);
+    const nextWhere =
+      nextFilters.length > 0 ? generated : clearWhere ? "" : (where ?? "");
+    onServerQuery(
+      nextWhere,
+      buildOrderBy(dialect, columns, spec),
+    );
+  }
+
+  function changeFilters(next: ColumnFilter[]) {
+    if (tabId) {
+      setClientFilters(tabId, next);
+    } else {
+      setLocalFilters(next);
+    }
+    applyServerQuery(next, sort, next.length === 0 && filters.length > 0);
+  }
+
+  function applySort(next: { col: number; dir: "asc" | "desc" } | null) {
+    setSort(next);
+    applyServerQuery(filters, next);
+  }
+
   function cycleSort(column: number) {
     if (resizingRef.current) return;
     setViewer(null);
     setAnchor(null);
     setFocus(null);
-    setSort((current) => {
-      if (!current || current.col !== column) {
-        return { col: column, dir: "asc" };
-      }
-      if (current.dir === "asc") return { col: column, dir: "desc" };
-      return null;
+    const next =
+      !sort || sort.col !== column
+        ? { col: column, dir: "asc" as const }
+        : sort.dir === "asc"
+          ? { col: column, dir: "desc" as const }
+          : null;
+    applySort(next);
+  }
+
+  function openHeaderMenu(
+    event: MouseEvent<HTMLDivElement>,
+    column: number,
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+    setGridMenu(null);
+    setFilterMenu(null);
+    setHeaderMenu({
+      column,
+      x: Math.min(event.clientX, window.innerWidth - 190),
+      y: Math.min(event.clientY, window.innerHeight - 160),
     });
+  }
+
+  function openFilterMenu(column: number, x: number, y: number) {
+    const name = columns[column] ?? "";
+    const existing = filters.find((filter) => filter.column === name);
+    setDraftOp(existing?.op ?? "contains");
+    setDraftValue(existing?.value ?? "");
+    setHeaderMenu(null);
+    setGridMenu(null);
+    setFilterMenu({
+      column,
+      x: Math.min(x, window.innerWidth - 280),
+      y: Math.min(y, window.innerHeight - 150),
+    });
+  }
+
+  function applyDraftFilter() {
+    const menu = filterMenu;
+    if (!menu) return;
+    const name = columns[menu.column];
+    if (!name) return;
+    const next = filters.filter((filter) => filter.column !== name);
+    next.push({ column: name, op: draftOp, value: draftValue });
+    setFilterMenu(null);
+    changeFilters(next);
+  }
+
+  function removeFilter(filter: ColumnFilter) {
+    changeFilters(filters.filter((item) => item.column !== filter.column));
   }
 
   function handleDrop(target: number) {
@@ -845,6 +974,81 @@ export default function DataGrid({
         background: "var(--bg)",
       }}
     >
+      {filters.length > 0 && (
+        <div
+          style={{
+            flex: "none",
+            display: "flex",
+            flexWrap: "wrap",
+            alignItems: "center",
+            gap: 6,
+            padding: "4px 8px",
+            borderBottom: "1px solid var(--bd)",
+            background: "var(--sf)",
+          }}
+        >
+          {filters.map((filter) => (
+            <span
+              key={filter.column}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 4,
+                height: 20,
+                padding: "0 4px 0 7px",
+                border: "1px solid var(--bd2)",
+                borderRadius: 10,
+                background: "var(--bg)",
+                color: "var(--tx)",
+                fontFamily: "var(--mono)",
+                fontSize: 11,
+                whiteSpace: "nowrap",
+              }}
+            >
+              <span>{describeFilter(filter)}</span>
+              <button
+                type="button"
+                onClick={() => removeFilter(filter)}
+                title="Remove filter"
+                aria-label={`Remove filter ${describeFilter(filter)}`}
+                style={{
+                  width: 16,
+                  height: 16,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  padding: 0,
+                  border: 0,
+                  borderRadius: "50%",
+                  background: "transparent",
+                  color: "var(--mu)",
+                  cursor: "default",
+                }}
+              >
+                <i className="icon-x" style={{ fontSize: 10 }} />
+              </button>
+            </span>
+          ))}
+          <button
+            type="button"
+            className="v2-icon-btn"
+            onClick={() => changeFilters([])}
+            style={{
+              height: 20,
+              padding: "0 6px",
+              border: 0,
+              borderRadius: 4,
+              background: "transparent",
+              color: "var(--mu)",
+              fontSize: 11,
+              cursor: "default",
+            }}
+          >
+            Clear all
+          </button>
+        </div>
+      )}
+
       <div
         style={{
           flex: 1,
@@ -913,11 +1117,21 @@ export default function DataGrid({
                   const label = columns[column] ?? "";
                   const width = widths[column] ?? DEFAULT_COL_WIDTH;
                   const activeSort = sort?.col === column ? sort.dir : null;
+                  const activeFilter = filters.find(
+                    (filter) => filter.column === label,
+                  );
                   const numeric = numericColumns[column];
                   return (
                     <div
                       key={column}
                       draggable
+                      onMouseEnter={() => setHoverHeader(column)}
+                      onMouseLeave={() =>
+                        setHoverHeader((current) =>
+                          current === column ? null : current,
+                        )
+                      }
+                      onContextMenu={(event) => openHeaderMenu(event, column)}
                       onDragStart={(event) => {
                         if (resizingRef.current) {
                           event.preventDefault();
@@ -985,6 +1199,65 @@ export default function DataGrid({
                           style={{ fontSize: 11, color: "var(--ac)" }}
                         />
                       )}
+                      {activeFilter && (
+                        <span
+                          title="Filtered"
+                          style={{
+                            width: 5,
+                            height: 5,
+                            flex: "none",
+                            borderRadius: "50%",
+                            background: "var(--ac)",
+                          }}
+                        />
+                      )}
+                      <button
+                        type="button"
+                        onMouseDown={(event) => event.stopPropagation()}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          const rect =
+                            event.currentTarget.getBoundingClientRect();
+                          setFilterMenu(null);
+                          setGridMenu(null);
+                          setHeaderMenu({
+                            column,
+                            x: Math.min(rect.right - 190, window.innerWidth - 190),
+                            y: Math.min(rect.bottom + 2, window.innerHeight - 160),
+                          });
+                        }}
+                        title="Column menu"
+                        aria-label={`Column menu for ${label}`}
+                        style={{
+                          width: 16,
+                          height: 16,
+                          flex: "none",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          padding: 0,
+                          border: 0,
+                          borderRadius: 3,
+                          background:
+                            headerMenu?.column === column
+                              ? "var(--hv)"
+                              : "transparent",
+                          color: "var(--mu)",
+                          cursor: "default",
+                          opacity:
+                            hoverHeader === column ||
+                            activeFilter ||
+                            activeSort ||
+                            headerMenu?.column === column
+                              ? 1
+                              : 0,
+                        }}
+                      >
+                        <i
+                          className="icon-chevron-down"
+                          style={{ fontSize: 10 }}
+                        />
+                      </button>
                       <span
                         onMouseDown={(event) => startResize(event, column)}
                         onClick={(event) => event.stopPropagation()}
@@ -1532,6 +1805,202 @@ export default function DataGrid({
             : ""}
         </span>
       </div>
+
+      {headerMenu && (
+        <>
+          <div
+            onMouseDown={() => setHeaderMenu(null)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setHeaderMenu(null);
+            }}
+            style={{ position: "fixed", inset: 0, zIndex: 60 }}
+          />
+          <div
+            style={{
+              position: "fixed",
+              left: headerMenu.x,
+              top: headerMenu.y,
+              zIndex: 61,
+              minWidth: 180,
+              padding: 4,
+              background: "var(--sf)",
+              border: "1px solid var(--bd2)",
+              borderRadius: 6,
+              boxShadow: "var(--sh)",
+            }}
+          >
+            <GridMenuItem
+              icon="icon-arrow-up"
+              label="Sort ascending"
+              onClick={() => {
+                setHeaderMenu(null);
+                applySort({ col: headerMenu.column, dir: "asc" });
+              }}
+            />
+            <GridMenuItem
+              icon="icon-arrow-down"
+              label="Sort descending"
+              onClick={() => {
+                setHeaderMenu(null);
+                applySort({ col: headerMenu.column, dir: "desc" });
+              }}
+            />
+            <GridMenuItem
+              icon="icon-x"
+              label="Clear sort"
+              onClick={() => {
+                setHeaderMenu(null);
+                applySort(null);
+              }}
+            />
+            <div
+              style={{
+                height: 1,
+                background: "var(--bd)",
+                margin: "4px -4px",
+              }}
+            />
+            <GridMenuItem
+              icon="icon-filter"
+              label="Filter…"
+              onClick={() =>
+                openFilterMenu(headerMenu.column, headerMenu.x, headerMenu.y)
+              }
+            />
+          </div>
+        </>
+      )}
+
+      {filterMenu && (
+        <>
+          <div
+            onMouseDown={() => setFilterMenu(null)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setFilterMenu(null);
+            }}
+            style={{ position: "fixed", inset: 0, zIndex: 62 }}
+          />
+          <div
+            style={{
+              position: "fixed",
+              left: filterMenu.x,
+              top: filterMenu.y,
+              zIndex: 63,
+              width: 260,
+              padding: 10,
+              background: "var(--sf)",
+              border: "1px solid var(--bd2)",
+              borderRadius: 6,
+              boxShadow: "var(--sh)",
+              display: "flex",
+              flexDirection: "column",
+              gap: 8,
+            }}
+          >
+            <div
+              style={{
+                fontFamily: "var(--mono)",
+                fontSize: 11,
+                color: "var(--mu)",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              Filter · {columns[filterMenu.column]}
+            </div>
+            <select
+              value={draftOp}
+              onChange={(event) =>
+                setDraftOp(event.target.value as FilterOperator)
+              }
+              style={{
+                height: 26,
+                border: "1px solid var(--bd2)",
+                borderRadius: 4,
+                background: "var(--bg)",
+                color: "var(--tx)",
+                fontSize: 12,
+                padding: "0 6px",
+              }}
+            >
+              {FILTER_OPERATORS.map((operator) => (
+                <option key={operator.value} value={operator.value}>
+                  {operator.label}
+                </option>
+              ))}
+            </select>
+            {filterNeedsValue(draftOp) && (
+              <input
+                autoFocus
+                value={draftValue}
+                onChange={(event) => setDraftValue(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    applyDraftFilter();
+                  }
+                }}
+                placeholder={
+                  draftOp === "inList"
+                    ? "a, b, c"
+                    : draftOp === "contains"
+                      ? "value"
+                      : "value"
+                }
+                spellCheck={false}
+                style={{
+                  height: 26,
+                  border: "1px solid var(--bd2)",
+                  borderRadius: 4,
+                  background: "var(--bg)",
+                  color: "var(--tx)",
+                  padding: "0 6px",
+                  fontFamily: "var(--mono)",
+                  fontSize: 12,
+                }}
+              />
+            )}
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              {filters.some(
+                (filter) => filter.column === columns[filterMenu.column],
+              ) && (
+                <button
+                  type="button"
+                  className="v2-btn"
+                  onClick={() => {
+                    const filter = filters.find(
+                      (item) =>
+                        item.column === columns[filterMenu.column],
+                    );
+                    setFilterMenu(null);
+                    if (filter) removeFilter(filter);
+                  }}
+                >
+                  Remove
+                </button>
+              )}
+              <div style={{ flex: 1 }} />
+              <button
+                type="button"
+                className="v2-btn"
+                onClick={() => setFilterMenu(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="v2-btn v2-btn-primary"
+                onClick={applyDraftFilter}
+              >
+                Apply
+              </button>
+            </div>
+          </div>
+        </>
+      )}
 
       {gridMenu && (
         <>

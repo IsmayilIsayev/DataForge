@@ -14,7 +14,7 @@ const dialogFallback = (
 
 interface Props {
   tab: TableTab;
-  onRefresh: (where: string) => void;
+  onRefresh: (where: string, orderBy?: string) => void;
   theme: "dark" | "light";
 }
 
@@ -23,6 +23,7 @@ export default function TableDataView({ tab, onRefresh, theme }: Props) {
   const connections = useAppStore((state) => state.connections);
   const setTableWhere = useAppStore((state) => state.setTableWhere);
   const [where, setWhere] = useState(tab.where);
+  const [orderBy, setOrderBy] = useState(tab.orderBy);
   const [columns, setColumns] = useState<ColumnInfo[]>([]);
   const [insertOpen, setInsertOpen] = useState(false);
   const resultVersion = useAppStore(
@@ -33,7 +34,8 @@ export default function TableDataView({ tab, onRefresh, theme }: Props) {
 
   useEffect(() => {
     setWhere(tab.where);
-  }, [tab.id, tab.where]);
+    setOrderBy(tab.orderBy);
+  }, [tab.id, tab.where, tab.orderBy]);
 
   useEffect(() => {
     let cancelled = false;
@@ -55,7 +57,14 @@ export default function TableDataView({ tab, onRefresh, theme }: Props) {
 
   const refresh = () => {
     setTableWhere(tab.id, where);
-    onRefresh(where);
+    onRefresh(where, orderBy);
+  };
+
+  const applyServerQuery = (nextWhere: string, nextOrderBy: string) => {
+    setWhere(nextWhere);
+    setOrderBy(nextOrderBy);
+    setTableWhere(tab.id, nextWhere);
+    onRefresh(nextWhere, nextOrderBy);
   };
 
   const onWhereKey = (event: KeyboardEvent<HTMLInputElement>) => {
@@ -219,6 +228,7 @@ export default function TableDataView({ tab, onRefresh, theme }: Props) {
 
       <DataGrid
         key={tab.id}
+        tabId={tab.id}
         viewKey={`${tab.id}:${resultVersion}`}
         dialect={dialect}
         database={tab.database}
@@ -228,6 +238,9 @@ export default function TableDataView({ tab, onRefresh, theme }: Props) {
         pkColumns={pkColumns}
         emptyText="No table data loaded"
         theme={theme}
+        serverSide
+        where={where}
+        onServerQuery={applyServerQuery}
       />
     </>
   );

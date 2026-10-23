@@ -49,12 +49,14 @@ export const runQuery = (
   sql: string,
   maxRows = 1000,
   database?: string,
+  orderBy = "",
 ) =>
   invoke<QueryResult>("run_query", {
     conn_id: connId,
     sql,
     max_rows: maxRows,
     database: database ?? null,
+    order_by: orderBy.trim() ? orderBy : null,
   });
 
 export const listDatabases = (connId: string) =>

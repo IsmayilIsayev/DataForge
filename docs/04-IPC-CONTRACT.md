@@ -68,7 +68,7 @@ export interface AiOptimizeResult { suggestions: string[]; rewritten_sql?: strin
 ### Sorğu
 | Komanda | Arqumentlər | Qaytarır |
 |---|---|---|
-| `run_query` | `{ conn_id, sql, max_rows?: number }` | `QueryResult` |
+| `run_query` | `{ conn_id, sql, max_rows?: number, database?: string, order_by?: string }` | `QueryResult` |
 | `cancel_query` | `{ conn_id }` | `void` |
 
 ### Sxem

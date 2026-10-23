@@ -513,6 +513,7 @@ export default function App() {
       database: string | undefined,
       tabId: string | undefined,
       maxRows = 1000,
+      orderBy = "",
     ) => {
       const store = useAppStore.getState();
       const target = tabId ?? store.activeTabId;
@@ -527,7 +528,13 @@ export default function App() {
       store.setExecutedSql(query, target);
 
       try {
-        const result = await runQuery(connId, query, maxRows, database);
+        const result = await runQuery(
+          connId,
+          query,
+          maxRows,
+          database,
+          orderBy,
+        );
         if (!isCurrent()) return;
         useAppStore
           .getState()
@@ -557,7 +564,7 @@ export default function App() {
   );
 
   const loadTableData = useCallback(
-    async (tab: TableTab, whereOverride?: string) => {
+    async (tab: TableTab, whereOverride?: string, orderByOverride?: string) => {
       const state = useAppStore.getState();
       const connection = state.connections.find(
         (item) => item.id === tab.connectionId,
@@ -597,6 +604,7 @@ export default function App() {
         tab.database,
         tab.id,
         tab.limit,
+        orderByOverride ?? tab.orderBy,
       );
     },
     [executeSql],
@@ -676,12 +684,13 @@ export default function App() {
   );
 
   const handleTableRefresh = useCallback(
-    async (tab: TableTab, where: string) => {
+    async (tab: TableTab, where: string, orderBy = "") => {
       const store = useAppStore.getState();
       store.setTableWhere(tab.id, where);
+      store.setTableOrderBy(tab.id, orderBy);
       const latest = store.tabs.find((item) => item.id === tab.id);
       if (latest?.type === "table") {
-        await loadTableData(latest, where);
+        await loadTableData(latest, where, orderBy);
       }
     },
     [loadTableData],
@@ -692,7 +701,7 @@ export default function App() {
     const tab = store.tabs.find((item) => item.id === store.activeTabId);
     if (tab && store.tabStates[tab.id]?.running) return;
     if (tab?.type === "table") {
-      void handleTableRefresh(tab, tab.where);
+      void handleTableRefresh(tab, tab.where, tab.orderBy);
       return;
     }
     void handleRun();
@@ -1591,8 +1600,8 @@ export default function App() {
             <TableDataView
               tab={activeTab}
               theme={theme}
-              onRefresh={(where) =>
-                void handleTableRefresh(activeTab, where)
+              onRefresh={(where, orderBy) =>
+                void handleTableRefresh(activeTab, where, orderBy)
               }
             />
           ) : activeTab?.type === "query" ? (
@@ -1652,6 +1661,7 @@ export default function App() {
               )}
               <DataGrid
                 key={activeTab.id}
+                tabId={activeTab.id}
                 viewKey={`${activeTab.id}:${activeView?.resultVersion ?? 0}`}
                 dialect={activeConnection?.dialect ?? "mysql"}
                 database={activeDb}

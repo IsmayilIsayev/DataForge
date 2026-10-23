@@ -11,6 +11,7 @@ pub async fn run_query(
     sql: String,
     max_rows: Option<i64>,
     database: Option<String>,
+    order_by: Option<String>,
 ) -> AppResult<QueryResult> {
     let sql = trim_sql(&sql);
     if sql.is_empty() {
@@ -18,9 +19,18 @@ pub async fn run_query(
     }
 
     let driver = state.pool.get(&conn_id).await?;
-    let statements = split_statements(sql, driver.dialect());
+    let mut statements = split_statements(sql, driver.dialect());
     if statements.is_empty() {
         return Err(AppError::Config("SQL boşdur".to_string()));
+    }
+    if let Some(order_by) = order_by
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if let Some(last) = statements.last_mut() {
+            *last = with_order_by(last, order_by);
+        }
     }
 
     let limit = max_rows.unwrap_or(1000).clamp(1, 100_000);
@@ -29,6 +39,22 @@ pub async fn run_query(
 
 fn trim_sql(sql: &str) -> &str {
     sql.trim().trim_end_matches(';').trim_end()
+}
+
+fn with_order_by(sql: &str, order_by: &str) -> String {
+    let body = sql.trim().trim_end_matches(';').trim_end();
+    // ASCII-only uppercasing keeps byte offsets identical to `body` (to_uppercase can change lengths, e.g. ß → SS).
+    let upper = body.to_ascii_uppercase();
+    let limit_at = upper.rfind("\nLIMIT ");
+    match limit_at {
+        Some(index) => format!(
+            "{}\nORDER BY {}{}",
+            &body[..index],
+            order_by,
+            &body[index..]
+        ),
+        None => format!("{body}\nORDER BY {order_by}"),
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - SQL autocomplete: keywords ("sel" → SELECT, "fr" → FROM), "SELECT " → "* FROM", table and column names (with aliases), and 30+ templates (sf, ins, upd, cte, upsert, ct, idx, tx, thismonth, dup...).
 - AI actions: "Fix with AI" on query errors (preview + Apply), Explain, and Optimize with the real EXPLAIN plan (Ctrl/Cmd+Shift+E / O).
+- Filter and sort from the grid column headers (=, contains, starts with, is NULL, in list…); table tabs filter in the database, query results in memory.
 - Connection presets for MariaDB, TiDB, CockroachDB, Supabase, Neon, Amazon RDS and PlanetScale, and a new SQL Server driver.
 
 ### Changed

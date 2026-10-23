@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent, ReactNode } from "react";
 import { aiNl2Sql, errorMessage, findInDatabase } from "../ipc";
 import type { SearchHit } from "../ipc";
-import { quoteIdentifier } from "../sql";
+import { escapeLikePattern, quoteIdentifier, stringLiteral } from "../sql";
 import type { Dialect } from "../types";
 
 interface Props {
@@ -33,16 +33,14 @@ function filterFor(
   caseInsensitive: boolean,
 ): string | undefined {
   if (hit.kind !== "data" || !hit.column) return undefined;
-  const escaped = term
-    .replace(/\\/g, "\\\\")
-    .replace(/%/g, "\\%")
-    .replace(/_/g, "\\_")
-    .replace(/'/g, "''");
+  const pattern = `%${escapeLikePattern(term)}%`;
   const op = caseInsensitive && dialect === "postgres" ? "ILIKE" : "LIKE";
   const escape =
     dialect === "sqlite" || dialect === "mssql" ? " ESCAPE '\\'" : "";
-  const literal = dialect === "mssql" ? `N'%${escaped}%'` : `'%${escaped}%'`;
-  return `${quoteIdentifier(dialect, hit.column)} ${op} ${literal}${escape}`;
+  return `${quoteIdentifier(dialect, hit.column)} ${op} ${stringLiteral(
+    dialect,
+    pattern,
+  )}${escape}`;
 }
 
 export default function FindDialog({
