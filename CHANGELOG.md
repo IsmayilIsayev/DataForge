@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-23
+
 ### Added
 
 - Protected connections: dev/test/prod labels (PROD always spelled out), confirmation before any write on prod (type the database name for DROP/TRUNCATE and DELETE/UPDATE without WHERE), optional read-only mode.
