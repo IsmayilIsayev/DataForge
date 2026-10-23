@@ -284,13 +284,19 @@ impl Driver for PostgresDriver {
             };
 
             let requested = database.filter(|value| !value.trim().is_empty());
-            let mut conn = if requested.is_none()
+            // A pooled connection and a one-off connection differ in type; borrow either as PgConnection.
+            let mut pooled;
+            let mut direct;
+            let conn: &mut PgConnection = if requested.is_none()
                 || requested.as_deref() == Some(self.database.as_str())
             {
-                self.pool.acquire().await.map_err(db_error)?
+                pooled = self.pool.acquire().await.map_err(db_error)?;
+                &mut pooled
             } else {
-                self.connect_to(requested.as_deref().unwrap_or_default())
-                    .await?
+                direct = self
+                    .connect_to(requested.as_deref().unwrap_or_default())
+                    .await?;
+                &mut direct
             };
 
             let mut tx = conn.begin().await.map_err(db_error)?;
