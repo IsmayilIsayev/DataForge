@@ -54,13 +54,15 @@ tauri-plugin-process = "2"
 tiberius = { version = "0.12", default-features = false, features = ["rustls", "tds73", "chrono"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 
+# SSH tunnel
+russh = "0.45"
+
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.39"
 windows = "0.62"
 
 # --- v1/v2 (lazım olanda aç) ---
 # mongodb = "3.1"
-# russh = "0.45"
 
 [profile.release]
 lto = true

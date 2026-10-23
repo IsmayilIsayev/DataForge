@@ -3,6 +3,7 @@ import type { ChangeEvent, FormEvent, ReactNode } from "react";
 import {
   errorMessage,
   pickSqliteFile,
+  pickSshKeyFile,
   saveConnection,
   testConnection,
   updateConnection,
@@ -12,6 +13,7 @@ import type {
   ConnectionInput,
   ConnectionMeta,
   Dialect,
+  SshAuth,
 } from "../types";
 import { ENVIRONMENT_OPTIONS } from "../environment";
 
@@ -59,8 +61,10 @@ interface ExtraState {
   sshHost: string;
   sshPort: string;
   sshUser: string;
-  sshAuth: string;
+  sshAuth: SshAuth;
   sshKey: string;
+  sshSecret: string;
+  sshHostKey: string;
   httpUse: boolean;
   httpUrl: string;
   sqliteReadOnly: boolean;
@@ -94,8 +98,10 @@ const initialExtra: ExtraState = {
   sshHost: "",
   sshPort: "22",
   sshUser: "",
-  sshAuth: "Private key",
+  sshAuth: "key",
   sshKey: "~/.ssh/id_ed25519",
+  sshSecret: "",
+  sshHostKey: "",
   httpUse: false,
   httpUrl: "",
   sqliteReadOnly: false,
@@ -150,6 +156,11 @@ const TAB_LABELS: Record<ActiveTab, string> = {
   ssl: "SSL",
   ssh: "SSH",
   http: "HTTP",
+};
+
+const SSH_AUTH_LABELS: Record<SshAuth, string> = {
+  key: "Private key",
+  password: "Password",
 };
 
 function isSupportedDialect(dialect: Dialect): dialect is DialectOption {
@@ -246,10 +257,8 @@ function parseConnectionUrl(raw: string): {
 function buildInput(
   form: FormState,
   dialect: DialectOption,
-  sqliteReadOnly: boolean,
-  readOnly: boolean,
+  extra: ExtraState,
   flavor: string | null,
-  trustCert: boolean,
 ): ConnectionInput {
   if (dialect === "sqlite") {
     return {
@@ -261,7 +270,7 @@ function buildInput(
       database: form.database.trim() || undefined,
       password: undefined,
       save_password: false,
-      read_only: sqliteReadOnly,
+      read_only: extra.sqliteReadOnly,
       environment: form.environment,
     };
   }
@@ -274,6 +283,20 @@ function buildInput(
         ? requestedDatabase || "master"
         : requestedDatabase;
 
+  const ssh = extra.sshUse
+    ? {
+        host: extra.sshHost.trim(),
+        port: Number(extra.sshPort) || 22,
+        username: extra.sshUser.trim(),
+        auth: extra.sshAuth,
+        key_path:
+          extra.sshAuth === "key"
+            ? extra.sshKey.trim() || undefined
+            : undefined,
+        host_key: extra.sshHostKey || undefined,
+      }
+    : undefined;
+
   return {
     name: form.name.trim(),
     dialect,
@@ -283,14 +306,20 @@ function buildInput(
     database: database || undefined,
     password: form.password || undefined,
     save_password: form.savePassword,
-    read_only: readOnly,
+    read_only: extra.readOnly,
     environment: form.environment,
     flavor: flavor || undefined,
-    trust_cert: dialect === "mssql" ? trustCert : undefined,
+    trust_cert: dialect === "mssql" ? extra.trustCert : undefined,
+    ssh,
+    ssh_secret: ssh ? extra.sshSecret || undefined : undefined,
   };
 }
 
-function validate(form: FormState, dialect: DialectOption): string | null {
+function validate(
+  form: FormState,
+  dialect: DialectOption,
+  extra: ExtraState,
+): string | null {
   if (!form.name.trim()) return "Connection name is required.";
 
   if (dialect === "sqlite") {
@@ -304,6 +333,20 @@ function validate(form: FormState, dialect: DialectOption): string | null {
   const port = Number(form.port);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     return "Port must be between 1 and 65535.";
+  }
+
+  if (extra.sshUse) {
+    if (!extra.sshHost.trim()) return "SSH host is required.";
+    if (!extra.sshUser.trim()) return "SSH user is required.";
+
+    const sshPort = Number(extra.sshPort);
+    if (!Number.isInteger(sshPort) || sshPort < 1 || sshPort > 65535) {
+      return "SSH port must be between 1 and 65535.";
+    }
+
+    if (extra.sshAuth === "key" && !extra.sshKey.trim()) {
+      return "SSH private key file is required.";
+    }
   }
 
   return null;
@@ -526,6 +569,7 @@ export default function ConnectionDialog({
   const [busy, setBusy] = useState<"test" | "save" | null>(null);
   const [browsing, setBrowsing] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const [showSshSecret, setShowSshSecret] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -533,11 +577,19 @@ export default function ConnectionDialog({
     setActiveTab("general");
     setStatus(null);
     setShowPassword(false);
+    setShowSshSecret(false);
     setExtra({
       ...initialExtra,
       readOnly: connection?.read_only ?? false,
       sqliteReadOnly: connection?.read_only ?? false,
       trustCert: connection?.trust_cert ?? false,
+      sshUse: Boolean(connection?.ssh),
+      sshHost: connection?.ssh?.host ?? "",
+      sshPort: connection?.ssh?.port ? String(connection.ssh.port) : "22",
+      sshUser: connection?.ssh?.username ?? "",
+      sshAuth: connection?.ssh?.auth ?? "key",
+      sshKey: connection?.ssh?.key_path ?? initialExtra.sshKey,
+      sshHostKey: connection?.ssh?.host_key ?? "",
     });
 
     if (connection) {
@@ -749,8 +801,24 @@ export default function ConnectionDialog({
     }
   };
 
+  const handleBrowseSshKey = async () => {
+    setBrowsing(true);
+    setStatus(null);
+
+    try {
+      const path = await pickSshKeyFile();
+      if (path) {
+        setExtraField("sshKey", path);
+      }
+    } catch (error) {
+      setStatus({ tone: "error", text: errorMessage(error) });
+    } finally {
+      setBrowsing(false);
+    }
+  };
+
   const handleTest = async () => {
-    const problem = validate(form, dialect);
+    const problem = validate(form, dialect, extra);
     if (problem) {
       setStatus({ tone: "error", text: problem });
       return;
@@ -764,16 +832,12 @@ export default function ConnectionDialog({
 
     try {
       const result = await testConnection(
-        buildInput(
-          form,
-          dialect,
-          extra.sqliteReadOnly,
-          extra.readOnly,
-          flavor,
-          extra.trustCert,
-        ),
+        buildInput(form, dialect, extra, flavor),
         connection?.id,
       );
+      if (result.ssh_host_key) {
+        setExtraField("sshHostKey", result.ssh_host_key);
+      }
       setStatus({
         tone: result.ok ? "ok" : "error",
         text: result.message,
@@ -788,7 +852,7 @@ export default function ConnectionDialog({
   const handleSave = async (event: FormEvent) => {
     event.preventDefault();
 
-    const problem = validate(form, dialect);
+    const problem = validate(form, dialect, extra);
     if (problem) {
       setStatus({ tone: "error", text: problem });
       return;
@@ -798,14 +862,7 @@ export default function ConnectionDialog({
     setStatus({ tone: "info", text: "Connecting and saving…" });
 
     try {
-      const input = buildInput(
-        form,
-        dialect,
-        extra.sqliteReadOnly,
-        extra.readOnly,
-        flavor,
-        extra.trustCert,
-      );
+      const input = buildInput(form, dialect, extra, flavor);
       const meta = connection
         ? await updateConnection(connection.id, input)
         : await saveConnection(input);
@@ -848,7 +905,7 @@ export default function ConnectionDialog({
   };
 
   const nextSshAuth = () => {
-    const modes = ["Private key", "Password", "Agent"];
+    const modes: SshAuth[] = ["key", "password"];
     const index = modes.indexOf(extra.sshAuth);
     setExtraField("sshAuth", modes[(index + 1) % modes.length]);
   };
@@ -1314,67 +1371,180 @@ export default function ConnectionDialog({
 
           {activeTab === "ssh" && (
             <>
-              <ComingSoonNote />
-              <fieldset disabled style={disabledGroup}>
-                <Row label="">
-                  <Check
-                    checked={extra.sshUse}
+              <Row label="">
+                <Check
+                  checked={extra.sshUse}
                   label="Use SSH tunnel"
                   onChange={() => setExtraField("sshUse", !extra.sshUse)}
                 />
               </Row>
-              <Row label="SSH host">
-                <input
-                  value={extra.sshHost}
-                  onChange={(event) =>
-                    setExtraField("sshHost", event.target.value)
-                  }
-                  placeholder="bastion.example.com"
-                  className={inputClass}
-                  style={{ ...mono, height: 26, flex: 1, minWidth: 0, padding: "0 8px", background: "var(--bg)", border: "1px solid var(--bd2)", borderRadius: 4, color: "var(--tx)", fontSize: 12.5 }}
-                />
-              </Row>
-              <Row label="Port">
-                <input
-                  value={extra.sshPort}
-                  onChange={(event) =>
-                    setExtraField("sshPort", event.target.value)
-                  }
-                  className={inputClass}
-                  style={{ ...mono, height: 26, width: 96, padding: "0 8px", background: "var(--bg)", border: "1px solid var(--bd2)", borderRadius: 4, color: "var(--tx)", fontSize: 12.5 }}
-                />
-              </Row>
-              <Row label="User">
-                <input
-                  value={extra.sshUser}
-                  onChange={(event) =>
-                    setExtraField("sshUser", event.target.value)
-                  }
-                  placeholder="deploy"
-                  className={inputClass}
-                  style={{ ...mono, height: 26, flex: 1, minWidth: 0, padding: "0 8px", background: "var(--bg)", border: "1px solid var(--bd2)", borderRadius: 4, color: "var(--tx)", fontSize: 12.5 }}
-                />
-              </Row>
-              <Row label="Authentication">
-                <CycleButton
-                  value={extra.sshAuth}
-                  onClick={nextSshAuth}
-                  width={160}
-                />
-              </Row>
-              <Row label="Private key">
-                <input
-                  value={extra.sshKey}
-                  onChange={(event) =>
-                    setExtraField("sshKey", event.target.value)
-                  }
-                  className={inputClass}
-                  style={{ ...mono, height: 26, flex: 1, minWidth: 0, padding: "0 8px", background: "var(--bg)", border: "1px solid var(--bd2)", borderRadius: 4, color: "var(--tx)", fontSize: 12.5 }}
-                />
-                <button type="button" className="v2-btn" style={{ height: 26 }}>
-                  Browse…
-                </button>
-              </Row>
+              <fieldset
+                disabled={!extra.sshUse}
+                style={{ ...disabledGroup, opacity: extra.sshUse ? 1 : 0.55 }}
+              >
+                <Row label="SSH host">
+                  <input
+                    value={extra.sshHost}
+                    onChange={(event) =>
+                      setExtra((current) => ({
+                        ...current,
+                        sshHost: event.target.value,
+                        sshHostKey: "",
+                      }))
+                    }
+                    placeholder="bastion.example.com"
+                    className={inputClass}
+                    style={{ ...mono, height: 26, flex: 1, minWidth: 0, padding: "0 8px", background: "var(--bg)", border: "1px solid var(--bd2)", borderRadius: 4, color: "var(--tx)", fontSize: 12.5 }}
+                  />
+                </Row>
+                <Row label="Port">
+                  <input
+                    value={extra.sshPort}
+                    onChange={(event) =>
+                      setExtra((current) => ({
+                        ...current,
+                        sshPort: event.target.value,
+                        sshHostKey: "",
+                      }))
+                    }
+                    inputMode="numeric"
+                    className={inputClass}
+                    style={{ ...mono, height: 26, width: 96, padding: "0 8px", background: "var(--bg)", border: "1px solid var(--bd2)", borderRadius: 4, color: "var(--tx)", fontSize: 12.5 }}
+                  />
+                </Row>
+                <Row label="User">
+                  <input
+                    value={extra.sshUser}
+                    onChange={(event) =>
+                      setExtraField("sshUser", event.target.value)
+                    }
+                    placeholder="deploy"
+                    className={inputClass}
+                    style={{ ...mono, height: 26, flex: 1, minWidth: 0, padding: "0 8px", background: "var(--bg)", border: "1px solid var(--bd2)", borderRadius: 4, color: "var(--tx)", fontSize: 12.5 }}
+                  />
+                </Row>
+                <Row label="Authentication">
+                  <CycleButton
+                    value={SSH_AUTH_LABELS[extra.sshAuth]}
+                    onClick={nextSshAuth}
+                    width={160}
+                  />
+                </Row>
+                {extra.sshAuth === "key" ? (
+                  <>
+                    <Row label="Private key">
+                      <input
+                        value={extra.sshKey}
+                        onChange={(event) =>
+                          setExtraField("sshKey", event.target.value)
+                        }
+                        placeholder="~/.ssh/id_ed25519"
+                        className={inputClass}
+                        style={{ ...mono, height: 26, flex: 1, minWidth: 0, padding: "0 8px", background: "var(--bg)", border: "1px solid var(--bd2)", borderRadius: 4, color: "var(--tx)", fontSize: 12.5 }}
+                      />
+                      <button
+                        type="button"
+                        className="v2-btn"
+                        onClick={() => void handleBrowseSshKey()}
+                        disabled={busy !== null || browsing}
+                        style={{ height: 26, whiteSpace: "nowrap" }}
+                      >
+                        {browsing ? "…" : "Browse…"}
+                      </button>
+                    </Row>
+                    <Row label="Passphrase">
+                      <input
+                        type={showSshSecret ? "text" : "password"}
+                        value={extra.sshSecret}
+                        onChange={(event) =>
+                          setExtraField("sshSecret", event.target.value)
+                        }
+                        placeholder={
+                          connection
+                            ? "Leave blank to keep saved passphrase"
+                            : "Optional for unencrypted keys"
+                        }
+                        autoComplete="new-password"
+                        className={inputClass}
+                        style={{ ...mono, height: 26, flex: 1, minWidth: 0, padding: "0 8px", background: "var(--bg)", border: "1px solid var(--bd2)", borderRadius: 4, color: "var(--tx)", fontSize: 12.5 }}
+                      />
+                      <button
+                        type="button"
+                        className="v2-btn"
+                        onClick={() => setShowSshSecret((value) => !value)}
+                        title="Show passphrase"
+                        style={{
+                          width: 26,
+                          height: 26,
+                          padding: 0,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                        }}
+                      >
+                        <i
+                          className={showSshSecret ? "icon-eye-off" : "icon-eye"}
+                          style={{ fontSize: 13 }}
+                        />
+                      </button>
+                    </Row>
+                  </>
+                ) : (
+                  <Row label="SSH password">
+                    <input
+                      type={showSshSecret ? "text" : "password"}
+                      value={extra.sshSecret}
+                      onChange={(event) =>
+                        setExtraField("sshSecret", event.target.value)
+                      }
+                      placeholder={
+                        connection
+                          ? "Leave blank to keep saved SSH password"
+                          : ""
+                      }
+                      autoComplete="new-password"
+                      className={inputClass}
+                      style={{ ...mono, height: 26, flex: 1, minWidth: 0, padding: "0 8px", background: "var(--bg)", border: "1px solid var(--bd2)", borderRadius: 4, color: "var(--tx)", fontSize: 12.5 }}
+                    />
+                    <button
+                      type="button"
+                      className="v2-btn"
+                      onClick={() => setShowSshSecret((value) => !value)}
+                      title="Show password"
+                      style={{
+                        width: 26,
+                        height: 26,
+                        padding: 0,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                      }}
+                    >
+                      <i
+                        className={showSshSecret ? "icon-eye-off" : "icon-eye"}
+                        style={{ fontSize: 13 }}
+                      />
+                    </button>
+                  </Row>
+                )}
+                {extra.sshHostKey && (
+                  <Row label="Host key">
+                    <span
+                      title={extra.sshHostKey}
+                      style={{
+                        minWidth: 0,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                        color: "var(--fa)",
+                        fontFamily: "var(--mono)",
+                        fontSize: 11,
+                      }}
+                    >
+                      {extra.sshHostKey}
+                    </span>
+                  </Row>
+                )}
               </fieldset>
             </>
           )}

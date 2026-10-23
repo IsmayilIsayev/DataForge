@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::core::ssh::{self, SshConfig, SshTunnel};
 use crate::error::{AppError, AppResult};
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -126,6 +127,8 @@ pub struct ConnectionMeta {
     pub flavor: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trust_cert: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh: Option<SshConfig>,
 }
 
 impl ConnectionMeta {
@@ -142,6 +145,7 @@ impl ConnectionMeta {
             environment: input.environment,
             flavor: input.flavor.clone(),
             trust_cert: input.trust_cert,
+            ssh: input.ssh.clone(),
         }
     }
 
@@ -159,6 +163,8 @@ impl ConnectionMeta {
             environment: self.environment,
             flavor: self.flavor.clone(),
             trust_cert: self.trust_cert,
+            ssh: self.ssh.clone(),
+            ssh_secret: None,
         }
     }
 }
@@ -184,6 +190,12 @@ pub struct ConnectionInput {
     pub flavor: Option<String>,
     #[serde(default)]
     pub trust_cert: Option<bool>,
+    #[serde(default)]
+    pub ssh: Option<SshConfig>,
+    /// Transient SSH password or key passphrase. Never persisted in
+    /// connections.json; the commands layer moves it to the OS keychain.
+    #[serde(default)]
+    pub ssh_secret: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -271,28 +283,63 @@ pub trait Driver: Send + Sync {
     ) -> BoxFuture<'a, AppResult<Vec<ColumnInfo>>>;
 }
 
+pub struct ConnectedDriver {
+    pub driver: Arc<dyn Driver>,
+    /// Kept alive for as long as the driver/pool entry lives.
+    pub tunnel: Option<SshTunnel>,
+}
+
+fn default_port(dialect: Dialect) -> u16 {
+    match dialect {
+        Dialect::Mysql => 3306,
+        Dialect::Postgres => 5432,
+        Dialect::Mssql => 1433,
+        Dialect::Sqlite | Dialect::Mongodb => 0,
+    }
+}
+
 pub async fn connect(
     input: &ConnectionInput,
     password: Option<&str>,
-) -> AppResult<Arc<dyn Driver>> {
-    match input.dialect {
-        Dialect::Mysql => Ok(Arc::new(
-            mysql::MySqlDriver::connect(input, password).await?,
-        )),
-        Dialect::Postgres => Ok(Arc::new(
-            postgres::PostgresDriver::connect(input, password).await?,
-        )),
-        Dialect::Sqlite => Ok(Arc::new(
-            sqlite::SqliteDriver::connect(input, password).await?,
-        )),
-        Dialect::Mssql => Ok(Arc::new(
-            mssql::MssqlDriver::connect(input, password).await?,
-        )),
-        other => Err(AppError::Config(format!(
-            "{} dialekti MVP-də dəstəklənmir",
-            other
-        ))),
-    }
+) -> AppResult<ConnectedDriver> {
+    let mut endpoint = input.clone();
+    let tunnel = match &input.ssh {
+        Some(ssh_config) if input.dialect != Dialect::Sqlite => {
+            let target_port = if input.port == 0 {
+                default_port(input.dialect)
+            } else {
+                input.port
+            };
+            let tunnel = ssh::open_tunnel(
+                ssh_config,
+                &input.host,
+                target_port,
+                input.ssh_secret.as_deref(),
+            )
+            .await?;
+            endpoint.host = "127.0.0.1".to_string();
+            endpoint.port = tunnel.local_port();
+            Some(tunnel)
+        }
+        _ => None,
+    };
+
+    let driver: Arc<dyn Driver> = match endpoint.dialect {
+        Dialect::Mysql => Arc::new(mysql::MySqlDriver::connect(&endpoint, password).await?),
+        Dialect::Postgres => {
+            Arc::new(postgres::PostgresDriver::connect(&endpoint, password).await?)
+        }
+        Dialect::Sqlite => Arc::new(sqlite::SqliteDriver::connect(&endpoint, password).await?),
+        Dialect::Mssql => Arc::new(mssql::MssqlDriver::connect(&endpoint, password).await?),
+        other => {
+            return Err(AppError::Config(format!(
+                "{} dialekti MVP-də dəstəklənmir",
+                other
+            )))
+        }
+    };
+
+    Ok(ConnectedDriver { driver, tunnel })
 }
 
 #[cfg(test)]
@@ -324,5 +371,60 @@ mod tests {
             uint_json(MAX_SAFE_JSON_INT as u64 + 1),
             Value::String((MAX_SAFE_JSON_INT as u64 + 1).to_string())
         );
+    }
+
+    #[test]
+    fn old_connections_without_ssh_still_deserialize() {
+        let input: super::ConnectionInput = serde_json::from_str(
+            r#"{
+                "name": "shop",
+                "dialect": "postgres",
+                "host": "db.example",
+                "port": 5432,
+                "username": "app"
+            }"#,
+        )
+        .expect("valid connection input");
+
+        assert!(input.ssh.is_none());
+        assert!(input.ssh_secret.is_none());
+
+        let meta: super::ConnectionMeta = serde_json::from_str(
+            r#"{
+                "id": "id",
+                "name": "shop",
+                "dialect": "postgres",
+                "host": "db.example",
+                "port": 5432,
+                "username": "app"
+            }"#,
+        )
+        .expect("valid connection meta");
+
+        assert!(meta.ssh.is_none());
+    }
+
+    #[test]
+    fn ssh_config_defaults_to_port_22_in_a_connection() {
+        let input: super::ConnectionInput = serde_json::from_str(
+            r#"{
+                "name": "shop",
+                "dialect": "mysql",
+                "host": "db.example",
+                "port": 3306,
+                "username": "app",
+                "ssh": {
+                    "host": "bastion.example",
+                    "username": "deploy",
+                    "auth": "key",
+                    "key_path": "~/.ssh/id_ed25519"
+                }
+            }"#,
+        )
+        .expect("valid connection input");
+
+        let ssh = input.ssh.expect("ssh config");
+        assert_eq!(ssh.port, 22);
+        assert_eq!(ssh.auth, crate::core::ssh::SshAuth::Key);
     }
 }

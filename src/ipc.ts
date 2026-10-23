@@ -46,6 +46,9 @@ export const testConnection = (input: ConnectionInput, id?: string) =>
 export const pickSqliteFile = () =>
   invoke<string | null>("pick_sqlite_file");
 
+export const pickSshKeyFile = () =>
+  invoke<string | null>("pick_ssh_key_file");
+
 export const runQuery = (
   connId: string,
   sql: string,

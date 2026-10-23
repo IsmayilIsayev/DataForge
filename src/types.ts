@@ -2,6 +2,18 @@ export type Dialect = "mysql" | "postgres" | "sqlite" | "mssql" | "mongodb";
 
 export type ConnectionEnvironment = "dev" | "test" | "prod";
 
+export type SshAuth = "password" | "key";
+
+export interface SshConfig {
+  host: string;
+  port: number;
+  username: string;
+  auth: SshAuth;
+  key_path?: string;
+  /** SHA256 fingerprint learned on the first successful connection. */
+  host_key?: string;
+}
+
 export interface ConnectionMeta {
   id: string;
   name: string;
@@ -14,11 +26,14 @@ export interface ConnectionMeta {
   environment?: ConnectionEnvironment;
   flavor?: string;
   trust_cert?: boolean;
+  ssh?: SshConfig;
 }
 
 export interface ConnectionInput extends Omit<ConnectionMeta, "id"> {
   password?: string;
   save_password?: boolean;
+  /** Transient SSH password or key passphrase; stored in the OS keychain. */
+  ssh_secret?: string;
 }
 
 export interface ConnectionState {
@@ -129,4 +144,5 @@ export type AiActionState =
 export interface TestConnectionResult {
   ok: boolean;
   message: string;
+  ssh_host_key?: string;
 }

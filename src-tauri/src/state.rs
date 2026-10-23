@@ -162,14 +162,19 @@ impl AppState {
             return Ok(driver);
         }
 
-        let (input, password) = {
+        let (mut input, password) = {
             let store = self.connections.read().await;
             let meta = store.find(conn_id).ok_or(AppError::NoConnection)?;
             (meta.to_input(), secrets::get_connection_password(conn_id)?)
         };
 
-        let driver = drivers::connect(&input, password.as_deref()).await?;
-        self.pool.insert(conn_id.to_string(), driver.clone()).await;
+        if input.ssh.is_some() {
+            input.ssh_secret = secrets::get_connection_ssh_secret(conn_id)?;
+        }
+
+        let connected = drivers::connect(&input, password.as_deref()).await?;
+        let driver = connected.driver.clone();
+        self.pool.insert(conn_id.to_string(), connected).await;
         Ok(driver)
     }
 }
