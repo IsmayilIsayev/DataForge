@@ -93,6 +93,33 @@ export interface SchemaSnapshot {
   tables: Array<{ name: string; columns: ColumnInfo[] }>;
 }
 
+export interface ErColumn {
+  name: string;
+  data_type: string;
+  nullable: boolean;
+  pk: boolean;
+}
+
+export interface ErTable {
+  name: string;
+  columns: ErColumn[];
+}
+
+export interface ErForeignKey {
+  name: string;
+  from_table: string;
+  from_columns: string[];
+  to_table: string;
+  to_columns: string[];
+}
+
+export interface ErSchema {
+  database: string;
+  tables: ErTable[];
+  foreign_keys: ErForeignKey[];
+  truncated: boolean;
+}
+
 export interface Nl2SqlResult {
   sql: string;
   explanation: string;

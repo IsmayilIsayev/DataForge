@@ -10,8 +10,9 @@ use sqlx::{Column, Connection, Executor, Row, Statement, TypeInfo, ValueRef};
 use uuid::Uuid;
 
 use crate::core::drivers::{
-    int_json, BoxFuture, ColumnInfo, ConnectionInput, Dialect, Driver, QueryResult, SchemaSnapshot,
-    SchemaTable, SslMode, TableInfo, TableKind, TxError, TxInput, TxRowError, TxStreamOutcome,
+    er, group_foreign_keys, int_json, BoxFuture, ColumnInfo, ConnectionInput, Dialect, Driver,
+    ErColumn, ErSchema, ErTable, ForeignKeyRow, QueryResult, SchemaSnapshot, SchemaTable, SslMode,
+    TableInfo, TableKind, TxError, TxInput, TxRowError, TxStreamOutcome, ER_TABLE_LIMIT,
 };
 use crate::error::{AppError, AppResult};
 
@@ -424,6 +425,100 @@ impl Driver for PostgresDriver {
             Ok(SchemaSnapshot {
                 database,
                 tables: snapshot,
+            })
+        })
+    }
+
+    fn get_er_schema<'a>(
+        &'a self,
+        database: Option<&'a str>,
+    ) -> BoxFuture<'a, AppResult<ErSchema>> {
+        Box::pin(async move {
+            let database = database
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(&self.database)
+                .to_string();
+            if database.is_empty() {
+                return Err(AppError::Config("sxem üçün baza seçilməyib".to_string()));
+            }
+
+            let mut conn = self.connect_to(&database).await?;
+            let rows = sqlx::query(er::postgres_tables_sql())
+                .fetch_all(&mut conn)
+                .await
+                .map_err(db_error)?;
+            let mut names: Vec<String> = rows
+                .iter()
+                .map(|row| row.try_get::<String, _>(0).unwrap_or_default())
+                .filter(|name| !name.is_empty())
+                .collect();
+            names.sort();
+            names.dedup();
+
+            let truncated = names.len() > ER_TABLE_LIMIT;
+            names.truncate(ER_TABLE_LIMIT);
+            let included: std::collections::HashSet<String> =
+                names.iter().cloned().collect();
+            let mut tables: Vec<ErTable> = names
+                .into_iter()
+                .map(|name| ErTable {
+                    name,
+                    columns: Vec::new(),
+                })
+                .collect();
+            let index: std::collections::HashMap<String, usize> = tables
+                .iter()
+                .enumerate()
+                .map(|(index, table)| (table.name.clone(), index))
+                .collect();
+
+            let column_rows = sqlx::query(er::postgres_columns_sql())
+                .fetch_all(&mut conn)
+                .await
+                .map_err(db_error)?;
+            for row in column_rows {
+                let table = row.try_get::<String, _>(0).unwrap_or_default();
+                let Some(&position) = index.get(&table) else {
+                    continue;
+                };
+                tables[position].columns.push(ErColumn {
+                    name: row.try_get::<String, _>(1).unwrap_or_default(),
+                    data_type: row.try_get::<String, _>(2).unwrap_or_default(),
+                    nullable: row
+                        .try_get::<String, _>(3)
+                        .map(|value| value.eq_ignore_ascii_case("YES"))
+                        .unwrap_or(true),
+                    pk: row.try_get::<bool, _>(4).unwrap_or(false),
+                });
+            }
+
+            let fk_rows = sqlx::query(er::postgres_foreign_keys_sql())
+                .fetch_all(&mut conn)
+                .await
+                .map_err(db_error)?;
+            let mut foreign_key_rows = Vec::new();
+            for row in fk_rows {
+                let from_table = row.try_get::<String, _>(1).unwrap_or_default();
+                let to_table = row.try_get::<String, _>(4).unwrap_or_default();
+                if !included.contains(&from_table) || !included.contains(&to_table) {
+                    continue;
+                }
+                foreign_key_rows.push(ForeignKeyRow {
+                    constraint_name: row.try_get::<String, _>(0).unwrap_or_default(),
+                    from_table,
+                    from_column: row.try_get::<String, _>(2).unwrap_or_default(),
+                    from_position: row.try_get::<i64, _>(3).unwrap_or(0),
+                    to_table,
+                    to_column: row.try_get::<String, _>(5).unwrap_or_default(),
+                    to_position: row.try_get::<i64, _>(6).unwrap_or(0),
+                });
+            }
+
+            Ok(ErSchema {
+                database,
+                tables,
+                foreign_keys: group_foreign_keys(foreign_key_rows),
+                truncated,
             })
         })
     }

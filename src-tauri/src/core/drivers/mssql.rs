@@ -7,9 +7,9 @@ use tokio::net::TcpStream;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
 use crate::core::drivers::{
-    int_json, BoxFuture, ColumnInfo, ConnectionInput, Dialect, Driver, QueryResult,
-    SchemaSnapshot, SchemaTable, TableInfo, TableKind, TxError, TxInput, TxRowError,
-    TxStreamOutcome,
+    er, group_foreign_keys, int_json, BoxFuture, ColumnInfo, ConnectionInput, Dialect, Driver,
+    ErColumn, ErSchema, ErTable, ForeignKeyRow, QueryResult, SchemaSnapshot, SchemaTable, TableInfo,
+    TableKind, TxError, TxInput, TxRowError, TxStreamOutcome, ER_TABLE_LIMIT,
 };
 use crate::error::{AppError, AppResult};
 
@@ -491,6 +491,110 @@ impl Driver for MssqlDriver {
             Ok(SchemaSnapshot {
                 database,
                 tables: snapshot,
+            })
+        })
+    }
+
+    fn get_er_schema<'a>(
+        &'a self,
+        database: Option<&'a str>,
+    ) -> BoxFuture<'a, AppResult<ErSchema>> {
+        Box::pin(async move {
+            let database = database
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(&self.database)
+                .to_string();
+            if database.is_empty() {
+                return Err(AppError::Config("sxem üçün baza seçilməyib".to_string()));
+            }
+
+            let text = |row: &Row, index: usize| -> String {
+                row.try_get::<&str, _>(index)
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default()
+                    .to_string()
+            };
+
+            let mut client = self.client_for(&database).await?;
+            let rows = client
+                .simple_query(er::mssql_tables_sql())
+                .await
+                .map_err(db_error)?
+                .into_first_result()
+                .await
+                .map_err(db_error)?;
+            let mut names: Vec<String> = rows.iter().map(|row| text(row, 0)).collect();
+            names.sort();
+            names.dedup();
+
+            let truncated = names.len() > ER_TABLE_LIMIT;
+            names.truncate(ER_TABLE_LIMIT);
+            let included: std::collections::HashSet<String> =
+                names.iter().cloned().collect();
+            let mut tables: Vec<ErTable> = names
+                .into_iter()
+                .map(|name| ErTable {
+                    name,
+                    columns: Vec::new(),
+                })
+                .collect();
+            let index: std::collections::HashMap<String, usize> = tables
+                .iter()
+                .enumerate()
+                .map(|(index, table)| (table.name.clone(), index))
+                .collect();
+
+            let column_rows = client
+                .simple_query(er::mssql_columns_sql())
+                .await
+                .map_err(db_error)?
+                .into_first_result()
+                .await
+                .map_err(db_error)?;
+            for row in column_rows.iter() {
+                let table = text(row, 0);
+                let Some(&position) = index.get(&table) else {
+                    continue;
+                };
+                tables[position].columns.push(ErColumn {
+                    name: text(row, 1),
+                    data_type: text(row, 2),
+                    nullable: row.try_get::<bool, _>(3).unwrap_or(true),
+                    pk: row.try_get::<i32, _>(4).unwrap_or(0) != 0,
+                });
+            }
+
+            let fk_rows = client
+                .simple_query(er::mssql_foreign_keys_sql())
+                .await
+                .map_err(db_error)?
+                .into_first_result()
+                .await
+                .map_err(db_error)?;
+            let mut foreign_key_rows = Vec::new();
+            for row in fk_rows.iter() {
+                let from_table = text(row, 1);
+                let to_table = text(row, 4);
+                if !included.contains(&from_table) || !included.contains(&to_table) {
+                    continue;
+                }
+                foreign_key_rows.push(ForeignKeyRow {
+                    constraint_name: text(row, 0),
+                    from_table,
+                    from_column: text(row, 2),
+                    from_position: row.try_get::<i32, _>(3).unwrap_or(0) as i64,
+                    to_table,
+                    to_column: text(row, 5),
+                    to_position: row.try_get::<i32, _>(6).unwrap_or(0) as i64,
+                });
+            }
+
+            Ok(ErSchema {
+                database,
+                tables,
+                foreign_keys: group_foreign_keys(foreign_key_rows),
+                truncated,
             })
         })
     }

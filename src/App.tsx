@@ -52,6 +52,7 @@ import type {
 
 const AiActionPanel = lazy(() => import("./components/AiActionPanel"));
 const AiPanel = lazy(() => import("./components/AiPanel"));
+const ErDiagram = lazy(() => import("./components/ErDiagram"));
 const PlanView = lazy(() => import("./components/PlanView"));
 const ConnectionDialog = lazy(() => import("./components/ConnectionDialog"));
 const FindDialog = lazy(() => import("./components/FindDialog"));
@@ -766,6 +767,32 @@ export default function App() {
       }
     },
     [loadTableData],
+  );
+
+  const handleOpenErd = useCallback(
+    async (connection: ConnectionMeta, database: string) => {
+      const store = useAppStore.getState();
+      if (
+        store.activeConnId !== connection.id &&
+        !store.setActiveConn(connection.id)
+      ) {
+        return;
+      }
+      store.setActiveDb(database);
+
+      if (!store.connected[connection.id]) {
+        try {
+          await connectConnection(connection.id);
+          useAppStore.getState().setConnected(connection.id, true);
+        } catch (connectError) {
+          useAppStore.getState().setError(errorMessage(connectError));
+          return;
+        }
+      }
+
+      useAppStore.getState().addErdTab(connection.id, database);
+    },
+    [],
   );
 
   const handleTableRefresh = useCallback(
@@ -1490,6 +1517,7 @@ export default function App() {
           onNewConnection={openNewConnection}
           onEditConnection={openEditConnection}
           onOpenTable={handleOpenTable}
+          onOpenErd={handleOpenErd}
           onFindInTable={(connId, database, table) =>
             setFindOpen({ connId, database, table })
           }
@@ -1536,7 +1564,7 @@ export default function App() {
             {tabs.map((tab) => {
               const active = tab.id === activeTabId;
               const tabConnection =
-                tab.type === "table"
+                tab.type === "table" || tab.type === "erd"
                   ? connections.find(
                       (connection) => connection.id === tab.connectionId,
                     )
@@ -1547,7 +1575,7 @@ export default function App() {
                 : undefined;
               const tabColor =
                 tabEnvColor ??
-                (tab.type === "table"
+                (tab.type === "table" || tab.type === "erd"
                   ? connPrefs[tab.connectionId]?.color
                   : undefined);
               return (
@@ -1591,7 +1619,11 @@ export default function App() {
                 >
                   <i
                     className={
-                      tab.type === "query" ? "icon-code" : "icon-table"
+                      tab.type === "query"
+                        ? "icon-code"
+                        : tab.type === "erd"
+                          ? "icon-network"
+                          : "icon-table"
                     }
                     style={{ fontSize: 13, color: "var(--fa)" }}
                   />
@@ -1828,7 +1860,28 @@ export default function App() {
             </>
           )}
 
-          {activeTab?.type === "table" ? (
+          {activeTab?.type === "erd" ? (
+            <Suspense fallback={<div style={{ flex: 1 }} />}>
+              <ErDiagram
+                connId={activeTab.connectionId}
+                database={activeTab.database}
+                theme={theme}
+                onOpenTable={(table) => {
+                  if (activeTab.type !== "erd") return;
+                  const connection = connections.find(
+                    (item) => item.id === activeTab.connectionId,
+                  );
+                  if (connection) {
+                    void handleOpenTable(
+                      connection,
+                      activeTab.database,
+                      table,
+                    );
+                  }
+                }}
+              />
+            </Suspense>
+          ) : activeTab?.type === "table" ? (
             <TableDataView
               tab={activeTab}
               theme={theme}

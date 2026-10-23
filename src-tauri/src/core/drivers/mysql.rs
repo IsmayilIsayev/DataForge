@@ -9,9 +9,9 @@ use sqlx::types::chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use sqlx::{Column, Connection, Executor, Row, Statement, TypeInfo, ValueRef};
 
 use crate::core::drivers::{
-    int_json, uint_json, BoxFuture, ColumnInfo, ConnectionInput, Dialect, Driver, QueryResult,
-    SchemaSnapshot, SchemaTable, SslMode, TableInfo, TableKind, TxError, TxInput, TxRowError,
-    TxStreamOutcome,
+    er, group_foreign_keys, int_json, uint_json, BoxFuture, ColumnInfo, ConnectionInput, Dialect,
+    Driver, ErColumn, ErSchema, ErTable, ForeignKeyRow, QueryResult, SchemaSnapshot, SchemaTable,
+    SslMode, TableInfo, TableKind, TxError, TxInput, TxRowError, TxStreamOutcome, ER_TABLE_LIMIT,
 };
 use crate::error::{AppError, AppResult};
 
@@ -537,6 +537,96 @@ impl Driver for MySqlDriver {
             Ok(SchemaSnapshot {
                 database,
                 tables: snapshot,
+            })
+        })
+    }
+
+    fn get_er_schema<'a>(
+        &'a self,
+        database: Option<&'a str>,
+    ) -> BoxFuture<'a, AppResult<ErSchema>> {
+        Box::pin(async move {
+            let database = database
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(&self.database)
+                .to_string();
+            if database.is_empty() {
+                return Err(AppError::Config("sxem üçün baza seçilməyib".to_string()));
+            }
+
+            let rows = sqlx::query(er::mysql_tables_sql())
+                .bind(&database)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(db_error)?;
+            let mut names: Vec<String> = rows.iter().map(|row| cell_to_text(row, 0)).collect();
+            names.sort();
+            names.dedup();
+
+            let truncated = names.len() > ER_TABLE_LIMIT;
+            names.truncate(ER_TABLE_LIMIT);
+            let included: std::collections::HashSet<String> =
+                names.iter().cloned().collect();
+            let mut tables: Vec<ErTable> = names
+                .into_iter()
+                .map(|name| ErTable {
+                    name,
+                    columns: Vec::new(),
+                })
+                .collect();
+            let index: std::collections::HashMap<String, usize> = tables
+                .iter()
+                .enumerate()
+                .map(|(index, table)| (table.name.clone(), index))
+                .collect();
+
+            let column_rows = sqlx::query(er::mysql_columns_sql())
+                .bind(&database)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(db_error)?;
+            for row in column_rows {
+                let table = cell_to_text(&row, 0);
+                let Some(&position) = index.get(&table) else {
+                    continue;
+                };
+                let pk = cell_to_text(&row, 4);
+                tables[position].columns.push(ErColumn {
+                    name: cell_to_text(&row, 1),
+                    data_type: cell_to_text(&row, 2),
+                    nullable: cell_to_text(&row, 3).eq_ignore_ascii_case("YES"),
+                    pk: pk == "1" || pk.eq_ignore_ascii_case("true"),
+                });
+            }
+
+            let fk_rows = sqlx::query(er::mysql_foreign_keys_sql())
+                .bind(&database)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(db_error)?;
+            let mut foreign_key_rows = Vec::new();
+            for row in fk_rows {
+                let from_table = cell_to_text(&row, 1);
+                let to_table = cell_to_text(&row, 4);
+                if !included.contains(&from_table) || !included.contains(&to_table) {
+                    continue;
+                }
+                foreign_key_rows.push(ForeignKeyRow {
+                    constraint_name: cell_to_text(&row, 0),
+                    from_table,
+                    from_column: cell_to_text(&row, 2),
+                    from_position: row.try_get::<u64, _>(3).unwrap_or(0) as i64,
+                    to_table,
+                    to_column: cell_to_text(&row, 5),
+                    to_position: row.try_get::<u64, _>(6).unwrap_or(0) as i64,
+                });
+            }
+
+            Ok(ErSchema {
+                database,
+                tables,
+                foreign_keys: group_foreign_keys(foreign_key_rows),
+                truncated,
             })
         })
     }

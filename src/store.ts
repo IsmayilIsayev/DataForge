@@ -313,7 +313,15 @@ export interface TableTab {
   orderBy: string;
 }
 
-export type AppTab = QueryTab | TableTab;
+export interface ErdTab {
+  id: string;
+  type: "erd";
+  name: string;
+  connectionId: string;
+  database: string;
+}
+
+export type AppTab = QueryTab | TableTab | ErdTab;
 
 interface AppStore {
   connections: ConnectionMeta[];
@@ -380,6 +388,7 @@ interface AppStore {
     limit?: number,
     where?: string,
   ) => string;
+  addErdTab: (connectionId: string, database: string) => string;
   closeTab: (id: string) => void;
   closeAllTabs: () => void;
   reorderTabs: (fromId: string, toId: string) => void;
@@ -719,6 +728,42 @@ export const useAppStore = create<AppStore>((set, get) => ({
       limit,
       where,
       orderBy: "",
+    };
+
+    set({
+      tabs: [...state.tabs, tab],
+      tabStates: { ...state.tabStates, [id]: emptyView() },
+      activeTabId: id,
+      nextTab: state.nextTab + 1,
+      sql: "",
+      selection: null,
+      result: null,
+      error: null,
+      running: false,
+    });
+
+    return id;
+  },
+  addErdTab: (connectionId, database) => {
+    const state = get();
+    const existing = state.tabs.find(
+      (tab) =>
+        tab.type === "erd" &&
+        tab.connectionId === connectionId &&
+        tab.database === database,
+    );
+    if (existing) {
+      set({ activeTabId: existing.id, sql: "", selection: null });
+      return existing.id;
+    }
+
+    const id = `tab-${state.nextTab}`;
+    const tab: ErdTab = {
+      id,
+      type: "erd",
+      name: `${database} ERD`,
+      connectionId,
+      database,
     };
 
     set({

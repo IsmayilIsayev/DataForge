@@ -92,16 +92,17 @@ fn ensure_extension(path: String, extension: &str) -> String {
 
 /// Native "Save As" dialog with the filter for the chosen format. Returns None
 /// when the user cancels.
-async fn save_file_dialog(
+async fn save_file_dialog_with(
     app: &tauri::AppHandle,
     default_name: String,
-    format: ExportFormat,
+    filter_label: &'static str,
+    filter_extensions: &'static [&'static str],
 ) -> AppResult<Option<String>> {
     let app = app.clone();
     let path = tauri::async_runtime::spawn_blocking(move || {
         app.dialog()
             .file()
-            .add_filter(format.filter_label(), format.filter_extensions())
+            .add_filter(filter_label, filter_extensions)
             .set_file_name(default_name)
             .blocking_save_file()
     })
@@ -117,6 +118,89 @@ async fn save_file_dialog(
         )),
         None => Ok(None),
     }
+}
+
+async fn save_file_dialog(
+    app: &tauri::AppHandle,
+    default_name: String,
+    format: ExportFormat,
+) -> AppResult<Option<String>> {
+    save_file_dialog_with(
+        app,
+        default_name,
+        format.filter_label(),
+        format.filter_extensions(),
+    )
+    .await
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ErdFormat {
+    Png,
+    Svg,
+}
+
+impl ErdFormat {
+    fn parse(value: &str) -> AppResult<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "png" => Ok(Self::Png),
+            "svg" => Ok(Self::Svg),
+            other => Err(AppError::Config(format!("unsupported ERD format: {other}"))),
+        }
+    }
+
+    fn extension(self) -> &'static str {
+        match self {
+            Self::Png => "png",
+            Self::Svg => "svg",
+        }
+    }
+
+    fn filter_label(self) -> &'static str {
+        match self {
+            Self::Png => "PNG image",
+            Self::Svg => "SVG image",
+        }
+    }
+
+    fn filter_extensions(self) -> &'static [&'static str] {
+        match self {
+            Self::Png => &["png"],
+            Self::Svg => &["svg"],
+        }
+    }
+}
+
+fn decode_base64(input: &str) -> AppResult<Vec<u8>> {
+    let payload = input
+        .split_once(',')
+        .filter(|(head, _)| head.contains(";base64"))
+        .map(|(_, tail)| tail)
+        .unwrap_or(input);
+    let mut out = Vec::with_capacity(payload.len() * 3 / 4);
+    let mut buffer: u32 = 0;
+    let mut bits = 0u32;
+
+    for byte in payload.bytes() {
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' | b'\r' | b'\n' | b' ' | b'\t' => continue,
+            _ => return Err(AppError::Config("invalid base64 image data".into())),
+        };
+        buffer = (buffer << 6) | value as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buffer >> bits) as u8);
+            buffer &= (1 << bits) - 1;
+        }
+    }
+
+    Ok(out)
 }
 
 /// Truncate to Excel's per-cell character limit.
@@ -601,6 +685,40 @@ pub async fn export_result_xlsx(
         None,
     )
     .await
+}
+
+/// Save an ER diagram rendered by the frontend. `data` is SVG text or a
+/// base64-encoded PNG (a data URL prefix is accepted as well).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn save_erd(
+    app: tauri::AppHandle,
+    format: String,
+    data: String,
+    default_name: String,
+) -> AppResult<Option<String>> {
+    let format = ErdFormat::parse(&format)?;
+    let path = match save_file_dialog_with(
+        &app,
+        default_name,
+        format.filter_label(),
+        format.filter_extensions(),
+    )
+    .await?
+    {
+        Some(path) => path,
+        None => return Ok(None),
+    };
+    let path = ensure_extension(path, format.extension());
+    let bytes = match format {
+        ErdFormat::Svg => data.into_bytes(),
+        ErdFormat::Png => decode_base64(&data)?,
+    };
+
+    tokio::task::spawn_blocking(move || std::fs::write(&path, bytes).map(|_| path))
+        .await
+        .map_err(|error| AppError::Config(format!("save ERD: {error}")))?
+        .map_err(io_err)
+        .map(Some)
 }
 
 /// Export every row of a table in 5000-row pages, writing straight to disk.

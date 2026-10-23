@@ -14,6 +14,7 @@ import type {
   ConnectionMeta,
   ConnectionState,
   Dialect,
+  ErSchema,
   ExplainPlan,
   Nl2SqlResult,
   QueryResult,
@@ -107,6 +108,23 @@ export const getSchema = (connId: string, database: string) =>
   invoke<SchemaSnapshot>("get_schema", {
     conn_id: connId,
     database,
+  });
+
+export const getErSchema = (connId: string, database: string) =>
+  invoke<ErSchema>("get_er_schema", {
+    conn_id: connId,
+    database,
+  });
+
+export const saveErd = (
+  format: "png" | "svg",
+  data: string,
+  defaultName: string,
+) =>
+  invoke<string | null>("save_erd", {
+    format,
+    data,
+    default_name: defaultName,
   });
 
 export interface SearchHit {

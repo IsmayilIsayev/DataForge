@@ -42,6 +42,7 @@ interface Props {
     database: string,
     table: string,
   ) => void;
+  onOpenErd: (connection: ConnectionMeta, database: string) => void;
   width: number;
 }
 
@@ -379,6 +380,7 @@ export default function Sidebar({
   onEditConnection,
   onFindInTable,
   onOpenTable,
+  onOpenErd,
   width,
 }: Props) {
   const connections = useAppStore((state) => state.connections);
@@ -1613,6 +1615,15 @@ export default function Sidebar({
                       contextConnection,
                       contextMenu.database,
                     );
+                  }}
+                />
+                <MenuItem
+                  icon="icon-network"
+                  label="ER diagram"
+                  onClick={() => {
+                    const menu = contextMenu;
+                    setContextMenu(null);
+                    onOpenErd(contextConnection, menu.database);
                   }}
                 />
                 <MenuItem

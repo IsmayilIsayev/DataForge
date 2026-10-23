@@ -8,9 +8,9 @@ use sqlx::sqlite::{
 use sqlx::{Column, Connection, Executor, Row, Statement, TypeInfo, ValueRef};
 
 use crate::core::drivers::{
-    int_json, BoxFuture, ColumnInfo, ConnectionInput, Dialect, Driver, QueryResult,
-    SchemaSnapshot, SchemaTable, TableInfo, TableKind, TxError, TxInput, TxRowError,
-    TxStreamOutcome,
+    er, group_foreign_keys, int_json, BoxFuture, ColumnInfo, ConnectionInput, Dialect, Driver,
+    ErColumn, ErSchema, ErTable, ForeignKeyRow, QueryResult, SchemaSnapshot, SchemaTable, TableInfo,
+    TableKind, TxError, TxInput, TxRowError, TxStreamOutcome, ER_TABLE_LIMIT,
 };
 use crate::error::{AppError, AppResult};
 
@@ -268,6 +268,141 @@ impl Driver for SqliteDriver {
             Ok(SchemaSnapshot {
                 database,
                 tables: snapshot,
+            })
+        })
+    }
+
+    fn get_er_schema<'a>(
+        &'a self,
+        database: Option<&'a str>,
+    ) -> BoxFuture<'a, AppResult<ErSchema>> {
+        Box::pin(async move {
+            let database = database
+                .filter(|value| !value.is_empty())
+                .unwrap_or("main")
+                .to_string();
+
+            let all_tables = self.tables(&database).await?;
+            let mut names: Vec<String> = all_tables
+                .into_iter()
+                .filter(|table| matches!(table.kind, TableKind::Table))
+                .map(|table| table.name)
+                .collect();
+            names.sort();
+            names.dedup();
+
+            let truncated = names.len() > ER_TABLE_LIMIT;
+            names.truncate(ER_TABLE_LIMIT);
+            let included: std::collections::HashSet<String> =
+                names.iter().cloned().collect();
+            let mut tables: Vec<ErTable> = names
+                .iter()
+                .cloned()
+                .map(|name| ErTable {
+                    name,
+                    columns: Vec::new(),
+                })
+                .collect();
+            let index: std::collections::HashMap<String, usize> = tables
+                .iter()
+                .enumerate()
+                .map(|(index, table)| (table.name.clone(), index))
+                .collect();
+            // SQLite primary keys are positional (needed when a foreign key
+            // omits the referenced column and implicitly targets the PK).
+            let mut pk_columns: std::collections::HashMap<String, Vec<(i64, String)>> =
+                std::collections::HashMap::new();
+
+            if database == "main" {
+                let column_rows = sqlx::query(er::sqlite_columns_sql())
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(db_error)?;
+                for row in column_rows {
+                    let table = row.try_get::<String, _>(0).unwrap_or_default();
+                    let Some(&position) = index.get(&table) else {
+                        continue;
+                    };
+                    let name = row.try_get::<String, _>(1).unwrap_or_default();
+                    let not_null = row.try_get::<i64, _>(3).unwrap_or(0);
+                    let pk = row.try_get::<i64, _>(4).unwrap_or(0);
+                    tables[position].columns.push(ErColumn {
+                        name: name.clone(),
+                        data_type: row.try_get::<String, _>(2).unwrap_or_default(),
+                        nullable: not_null == 0 && pk == 0,
+                        pk: pk > 0,
+                    });
+                    if pk > 0 {
+                        pk_columns
+                            .entry(table)
+                            .or_default()
+                            .push((pk, name.clone()));
+                    }
+                }
+            } else {
+                for table in &names {
+                    let columns = self.columns(&database, table).await?;
+                    if let Some(&position) = index.get(table) {
+                        tables[position].columns = columns
+                            .into_iter()
+                            .map(|column| ErColumn {
+                                pk: column.key.as_deref() == Some("PRI"),
+                                name: column.name,
+                                data_type: column.data_type,
+                                nullable: column.nullable,
+                            })
+                            .collect();
+                    }
+                }
+            }
+
+            for pk in pk_columns.values_mut() {
+                pk.sort_by_key(|(position, _)| *position);
+            }
+
+            let mut foreign_key_rows = Vec::new();
+            for table in &names {
+                let sql = er::sqlite_foreign_keys_sql(&database, table);
+                let rows = sqlx::query(&sql)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(db_error)?;
+                for row in rows {
+                    let id = row.try_get::<i64, _>(0).unwrap_or(0);
+                    let seq = row.try_get::<i64, _>(1).unwrap_or(0);
+                    let to_table = row.try_get::<String, _>(2).unwrap_or_default();
+                    if !included.contains(&to_table) {
+                        continue;
+                    }
+                    let from_column = row.try_get::<String, _>(3).unwrap_or_default();
+                    let mut to_column = row
+                        .try_get::<Option<String>, _>(4)
+                        .unwrap_or(None)
+                        .unwrap_or_default();
+                    if to_column.is_empty() {
+                        to_column = pk_columns
+                            .get(&to_table)
+                            .and_then(|columns| columns.get(seq as usize))
+                            .map(|(_, name)| name.clone())
+                            .unwrap_or_default();
+                    }
+                    foreign_key_rows.push(ForeignKeyRow {
+                        constraint_name: format!("fk_{table}_{id}"),
+                        from_table: table.clone(),
+                        from_column,
+                        from_position: seq,
+                        to_table,
+                        to_column,
+                        to_position: seq,
+                    });
+                }
+            }
+
+            Ok(ErSchema {
+                database,
+                tables,
+                foreign_keys: group_foreign_keys(foreign_key_rows),
+                truncated,
             })
         })
     }

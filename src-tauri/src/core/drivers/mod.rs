@@ -1,7 +1,12 @@
+pub mod er;
 pub mod mssql;
 pub mod mysql;
 pub mod postgres;
 pub mod sqlite;
+
+pub use er::{
+    group_foreign_keys, ErColumn, ErForeignKey, ErSchema, ErTable, ForeignKeyRow, ER_TABLE_LIMIT,
+};
 
 use std::fmt;
 use std::future::Future;
@@ -345,6 +350,10 @@ pub trait Driver: Send + Sync {
         &'a self,
         database: Option<&'a str>,
     ) -> BoxFuture<'a, AppResult<SchemaSnapshot>>;
+    fn get_er_schema<'a>(
+        &'a self,
+        database: Option<&'a str>,
+    ) -> BoxFuture<'a, AppResult<ErSchema>>;
     fn list_databases<'a>(&'a self) -> BoxFuture<'a, AppResult<Vec<String>>>;
     fn list_tables<'a>(&'a self, database: &'a str) -> BoxFuture<'a, AppResult<Vec<TableInfo>>>;
     fn list_columns<'a>(

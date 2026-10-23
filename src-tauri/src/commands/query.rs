@@ -1,6 +1,8 @@
 use tauri::State;
 
-use crate::core::drivers::{ColumnInfo, Dialect, QueryResult, SchemaSnapshot, TableInfo};
+use crate::core::drivers::{
+    ColumnInfo, Dialect, ErSchema, QueryResult, SchemaSnapshot, TableInfo,
+};
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
@@ -228,6 +230,16 @@ pub async fn get_schema(
 ) -> AppResult<SchemaSnapshot> {
     let driver = state.pool.get(&conn_id).await?;
     driver.get_schema(Some(&database)).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn get_er_schema(
+    state: State<'_, AppState>,
+    conn_id: String,
+    database: String,
+) -> AppResult<ErSchema> {
+    let driver = state.pool.get(&conn_id).await?;
+    driver.get_er_schema(Some(&database)).await
 }
 
 #[cfg(test)]

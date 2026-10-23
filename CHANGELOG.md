@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- ER diagram (database right-click → ER diagram): tables with keys and foreign-key relations, automatic layout, pan/zoom/fit, drag tables (positions remembered), search, keys-only mode, PNG/SVG export.
+
+### Added
+
 - AI Chat: a conversation about the active database in the AI panel; suggested SQL can be inserted or run (prod connections still ask first), and "Explain this result" summarizes a result grid (sends up to 50 rows; asks first on prod).
 - Visual query plan (Plan button, Ctrl/Cmd+Shift+P): EXPLAIN as a tree with cost bars, the costliest step highlighted, warnings (full scans, filesort, bad estimates), optional ANALYZE (asks first on prod), and "Ask AI for indexes" that only suggests CREATE INDEX statements.
 - SSL/TLS settings for MySQL and PostgreSQL: disable, prefer, require, verify CA or verify full, with an optional CA certificate. `sslmode` / `ssl-mode` from a connection URL is applied to the dialog.
