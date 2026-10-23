@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-10-23
+
 ### Added
 
 - AI Chat: a conversation about the active database in the AI panel; suggested SQL can be inserted or run (prod connections still ask first), and "Explain this result" summarizes a result grid (sends up to 50 rows; asks first on prod).
