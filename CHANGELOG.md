@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Export results or whole tables to CSV, JSON and SQL INSERT (large tables stream page by page, with progress and cancel), next to Excel.
+- SSH tunnel for MySQL and PostgreSQL: password or private key, secrets in the OS keychain, server key trusted on first use and checked afterwards.
 - Import CSV into a table: preview, delimiter detection, column mapping, empty-as-NULL, one transaction with progress, cancel and an error summary.
 
 ## [0.4.1] - 2026-10-23
