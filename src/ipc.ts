@@ -3,6 +3,7 @@ import type {
   AiConfig,
   AiExplainResult,
   AiFixResult,
+  AiModelList,
   AiOptimizeResult,
   AiProvider,
   CellRef,
@@ -460,6 +461,9 @@ export const aiSetConfig = (
     base_url: baseUrl ?? null,
     api_key: apiKey ?? null,
   });
+
+export const aiListModels = (refresh = false) =>
+  invoke<AiModelList>("ai_list_models", { refresh });
 
 export const aiHasKey = () => invoke<boolean>("ai_has_key");
 

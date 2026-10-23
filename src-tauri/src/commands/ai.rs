@@ -1,3 +1,7 @@
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -279,6 +283,301 @@ pub async fn ai_set_config(
     })
 }
 
+const MODELS_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
+const MODEL_LIST_TIMEOUT: Duration = Duration::from_secs(15);
+
+const GROQ_MODELS: &[&str] = &[
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "qwen/qwen3.8-27b",
+];
+const OPENAI_MODELS: &[&str] = &["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "o3-mini"];
+const OPENROUTER_MODELS: &[&str] = &[
+    "openai/gpt-4o-mini",
+    "anthropic/claude-3.5-sonnet",
+    "google/gemini-2.0-flash-001",
+    "meta-llama/llama-3.3-70b-instruct",
+];
+const OLLAMA_MODELS: &[&str] = &["llama3.1", "qwen2.5", "mistral", "deepseek-r1"];
+const LMSTUDIO_MODELS: &[&str] = &["local-model", "qwen2.5", "mistral", "llama3.1"];
+const LOCAL_MODELS: &[&str] = &["gpt-4o-mini", "gpt-4o", "anthropic/claude-3.5-sonnet"];
+const GOOGLE_MODELS: &[&str] = &[
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
+    "gemini-1.5-pro",
+    "gemini-1.5-flash",
+];
+
+const NON_CHAT_MODEL_MARKERS: &[&str] = &[
+    "whisper",
+    "tts",
+    "orpheus",
+    "embed",
+    "embedding",
+    "guard",
+    "safeguard",
+    "moderation",
+    "dall-e",
+    "image",
+    "audio",
+    "transcribe",
+    "rerank",
+];
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiModelList {
+    pub models: Vec<String>,
+    #[serde(default)]
+    pub offline: bool,
+}
+
+#[derive(Deserialize)]
+struct OpenAiModelsResponse {
+    #[serde(default)]
+    data: Vec<OpenAiModel>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiModel {
+    #[serde(default)]
+    id: String,
+}
+
+#[derive(Deserialize)]
+struct GoogleModelsResponse {
+    #[serde(default)]
+    models: Vec<GoogleModel>,
+}
+
+#[derive(Deserialize)]
+struct GoogleModel {
+    #[serde(default)]
+    name: String,
+}
+
+fn is_chat_model(id: &str) -> bool {
+    let lower = id.to_lowercase();
+    !NON_CHAT_MODEL_MARKERS
+        .iter()
+        .any(|marker| lower.contains(marker))
+}
+
+fn filter_chat_models(models: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut filtered = Vec::new();
+    for model in models {
+        let model = model.trim().to_string();
+        if model.is_empty() || !is_chat_model(&model) || filtered.contains(&model) {
+            continue;
+        }
+        filtered.push(model);
+    }
+    filtered
+}
+
+fn order_models(models: Vec<String>, selected: &str) -> Vec<String> {
+    let selected = selected.trim();
+    let mut models = filter_chat_models(models);
+    models.sort_by(|left, right| {
+        left.to_lowercase()
+            .cmp(&right.to_lowercase())
+            .then_with(|| left.cmp(right))
+    });
+    models.dedup_by(|left, right| left.as_str().eq_ignore_ascii_case(right.as_str()));
+
+    if selected.is_empty() {
+        return models;
+    }
+
+    match models.iter().position(|model| model == selected) {
+        Some(index) => {
+            let model = models.remove(index);
+            models.insert(0, model);
+        }
+        None => models.insert(0, selected.to_string()),
+    }
+    models
+}
+
+fn parse_openai_models(raw: &str) -> AppResult<Vec<String>> {
+    let parsed: OpenAiModelsResponse = serde_json::from_str(raw)
+        .map_err(|error| AppError::Ai(format!("models parse: {error}")))?;
+    Ok(parsed.data.into_iter().map(|model| model.id).collect())
+}
+
+fn parse_google_models(raw: &str) -> AppResult<Vec<String>> {
+    let parsed: GoogleModelsResponse = serde_json::from_str(raw)
+        .map_err(|error| AppError::Ai(format!("models parse: {error}")))?;
+    Ok(parsed
+        .models
+        .into_iter()
+        .map(|model| {
+            model
+                .name
+                .trim()
+                .trim_start_matches("models/")
+                .to_string()
+        })
+        .collect())
+}
+
+fn static_models(settings: &AiSettings) -> Vec<String> {
+    let base = settings
+        .base_url
+        .as_deref()
+        .unwrap_or("")
+        .to_lowercase();
+    let presets: &[&str] = match settings.provider {
+        AiProvider::Google => GOOGLE_MODELS,
+        AiProvider::Openai => OPENAI_MODELS,
+        AiProvider::OpenaiCompatible if base.contains("api.groq.com") => GROQ_MODELS,
+        AiProvider::OpenaiCompatible if base.contains("openrouter.ai") => OPENROUTER_MODELS,
+        AiProvider::OpenaiCompatible if base.contains(":11434") => OLLAMA_MODELS,
+        AiProvider::OpenaiCompatible if base.contains(":1234") => LMSTUDIO_MODELS,
+        AiProvider::OpenaiCompatible
+            if base.contains("localhost") || base.contains("127.0.0.1") =>
+        {
+            LOCAL_MODELS
+        }
+        AiProvider::OpenaiCompatible => &[],
+    };
+
+    let mut models: Vec<String> = presets.iter().map(|model| model.to_string()).collect();
+    if models.is_empty() && !settings.model.trim().is_empty() {
+        models.push(settings.model.trim().to_string());
+    }
+    models
+}
+
+fn models_cache() -> &'static Mutex<HashMap<String, (Instant, Vec<String>)>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, (Instant, Vec<String>)>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cached_models(key: &str) -> Option<Vec<String>> {
+    let cache = models_cache().lock().ok()?;
+    let (cached_at, models) = cache.get(key)?;
+    (cached_at.elapsed() < MODELS_CACHE_TTL).then(|| models.clone())
+}
+
+fn cache_models(key: String, models: Vec<String>) {
+    if let Ok(mut cache) = models_cache().lock() {
+        cache.insert(key, (Instant::now(), models));
+    }
+}
+
+fn provider_base_url(settings: &AiSettings) -> AppResult<String> {
+    match settings.provider {
+        AiProvider::Openai => Ok(client::OPENAI_BASE.to_string()),
+        AiProvider::OpenaiCompatible => settings
+            .base_url
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                AppError::Config("Base URL is required for OpenAI-compatible providers".to_string())
+            }),
+        AiProvider::Google => Err(AppError::Config(
+            "Google uses its own models endpoint".to_string(),
+        )),
+    }
+}
+
+async fn fetch_models(settings: &AiSettings, api_key: &str) -> AppResult<Vec<String>> {
+    let client = reqwest::Client::builder()
+        .timeout(MODEL_LIST_TIMEOUT)
+        .build()
+        .map_err(|error| AppError::Ai(format!("HTTP client: {error}")))?;
+
+    let (url, response) = match settings.provider {
+        AiProvider::Openai | AiProvider::OpenaiCompatible => {
+            let base = provider_base_url(settings)?;
+            let url = format!("{}/models", base.trim_end_matches('/'));
+            let response = client
+                .get(url.as_str())
+                .bearer_auth(api_key)
+                .header("accept", "application/json")
+                .send()
+                .await
+                .map_err(|error| AppError::Ai(format!("network: {}", error.without_url())))?;
+            (url, response)
+        }
+        AiProvider::Google => {
+            let response = client
+                .get(client::GOOGLE_BASE)
+                .query(&[("key", api_key)])
+                .header("accept", "application/json")
+                .send()
+                .await
+                .map_err(|error| AppError::Ai(format!("network: {}", error.without_url())))?;
+            (client::GOOGLE_BASE.to_string(), response)
+        }
+    };
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        return Err(AppError::Ai(format!("models {url} {status}: {text}")));
+    }
+
+    let raw = response
+        .text()
+        .await
+        .map_err(|error| AppError::Ai(format!("models response: {error}")))?;
+    let models = match settings.provider {
+        AiProvider::Google => parse_google_models(&raw)?,
+        _ => parse_openai_models(&raw)?,
+    };
+    Ok(filter_chat_models(models))
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn ai_list_models(
+    state: State<'_, AppState>,
+    refresh: Option<bool>,
+) -> AppResult<AiModelList> {
+    let settings = state.ai_settings().await;
+    let cache_key = format!(
+        "{:?}|{}",
+        settings.provider,
+        settings.base_url.as_deref().unwrap_or("")
+    );
+
+    let cached = if refresh.unwrap_or(false) {
+        None
+    } else {
+        cached_models(&cache_key)
+    };
+
+    let fetched = match cached {
+        Some(models) => Some(models),
+        None => {
+            if !settings.key_matches_scope() {
+                None
+            } else {
+                match secrets::get_api_key() {
+                    Ok(api_key) => match fetch_models(&settings, &api_key).await {
+                        Ok(models) if !models.is_empty() => {
+                            cache_models(cache_key, models.clone());
+                            Some(models)
+                        }
+                        _ => None,
+                    },
+                    Err(_) => None,
+                }
+            }
+        }
+    };
+
+    let (models, offline) = match fetched {
+        Some(models) => (models, false),
+        None => (static_models(&settings), true),
+    };
+
+    Ok(AiModelList {
+        models: order_models(models, &settings.model),
+        offline,
+    })
+}
+
 #[tauri::command(rename_all = "snake_case")]
 pub async fn ai_nl2sql(
     state: State<'_, AppState>,
@@ -492,9 +791,70 @@ pub async fn ai_has_key(state: State<'_, AppState>) -> AppResult<bool> {
 #[cfg(test)]
 mod tests {
     use super::{
-        base_url_allowed, build_result_tsv, clean_chat_messages, explain_sql_for, fix_user_message,
-        language_name, optimize_user_message, trim_chat_messages, ChatMessageInput,
+        base_url_allowed, build_result_tsv, clean_chat_messages, explain_sql_for,
+        filter_chat_models, fix_user_message, language_name, optimize_user_message, order_models,
+        parse_openai_models, trim_chat_messages, ChatMessageInput,
     };
+
+    #[test]
+    fn keeps_only_chat_models_from_the_groq_catalog() {
+        let catalog = vec![
+            "qwen/qwen3.8-27b",
+            "openai/gpt-oss-120b",
+            "openai/gpt-oss-20b",
+            "canopylabs/orpheus-v1",
+            "meta-llama/llama-prompt-guard-2-86m",
+            "openai/gpt-oss-safeguard-20b",
+            "whisper-large-v3-turbo",
+        ];
+        let filtered = filter_chat_models(catalog.into_iter().map(str::to_string));
+        assert_eq!(
+            filtered,
+            vec![
+                "qwen/qwen3.8-27b".to_string(),
+                "openai/gpt-oss-120b".to_string(),
+                "openai/gpt-oss-20b".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn orders_models_with_the_selected_one_first_then_alphabetically() {
+        let models = vec![
+            "openai/gpt-oss-20b".to_string(),
+            "qwen/qwen3.8-27b".to_string(),
+            "openai/gpt-oss-120b".to_string(),
+        ];
+        assert_eq!(
+            order_models(models, "openai/gpt-oss-20b"),
+            vec![
+                "openai/gpt-oss-20b".to_string(),
+                "openai/gpt-oss-120b".to_string(),
+                "qwen/qwen3.8-27b".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn keeps_the_selected_model_when_it_is_missing_from_the_list() {
+        let models = vec!["openai/gpt-oss-120b".to_string()];
+        assert_eq!(
+            order_models(models, "my/custom-model"),
+            vec![
+                "my/custom-model".to_string(),
+                "openai/gpt-oss-120b".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_the_openai_models_response_shape() {
+        let raw = r#"{"object":"list","data":[{"id":"gpt-4o-mini","object":"model"},{"id":"whisper-1","object":"model"}]}"#;
+        assert_eq!(
+            parse_openai_models(raw).unwrap(),
+            vec!["gpt-4o-mini".to_string(), "whisper-1".to_string()]
+        );
+    }
 
     #[test]
     fn fix_user_message_includes_sql_error_and_schema() {

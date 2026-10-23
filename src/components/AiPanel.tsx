@@ -1,11 +1,18 @@
 ﻿import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent, ReactNode } from "react";
 import { copyText } from "../clipboard";
-import { aiGetConfig, aiNl2Sql, aiSetConfig, errorMessage } from "../ipc";
+import {
+  aiGetConfig,
+  aiListModels,
+  aiNl2Sql,
+  aiSetConfig,
+  errorMessage,
+} from "../ipc";
 import { formatSql } from "../sql";
 import { useAppStore } from "../store";
 import type {
   AiConfig,
+  AiModelList,
   AiProvider,
   ChatRequest,
   Nl2SqlResult,
@@ -64,7 +71,7 @@ const AI_PRESETS: Record<
     label: "Groq",
     provider: "openai_compatible",
     baseUrl: "https://api.groq.com/openai/v1",
-    model: "llama-3.3-70b-versatile",
+    model: "openai/gpt-oss-120b",
     note: "Uses Groq's free OpenAI-compatible endpoint.",
   },
   ollama: {
@@ -112,12 +119,7 @@ const MODEL_OPTIONS: Record<AiPreset, string[]> = {
     "google/gemini-2.0-flash-001",
     "meta-llama/llama-3.3-70b-instruct",
   ],
-  groq: [
-    "llama-3.3-70b-versatile",
-    "llama-3.1-8b-instant",
-    "mixtral-8x7b-32768",
-    "gemma2-9b-it",
-  ],
+  groq: ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"],
   ollama: ["llama3.1", "qwen2.5", "mistral", "deepseek-r1"],
   lmstudio: ["local-model", "qwen2.5", "mistral", "llama3.1"],
   opencode: ["gpt-4o-mini", "gpt-4o", "anthropic/claude-3.5-sonnet"],
@@ -160,6 +162,16 @@ function inferPreset(config: AiConfig): AiPreset {
   if (url.includes(":1234")) return "lmstudio";
   if (url.includes("localhost") || url.includes("127.0.0.1")) return "opencode";
   return "custom";
+}
+
+function withSelectedModel(options: string[], selected: string): string[] {
+  const result: string[] = [];
+  for (const option of options) {
+    if (option.trim() && !result.includes(option)) result.push(option);
+  }
+  const current = selected.trim();
+  if (current && !result.includes(current)) result.unshift(current);
+  return result;
 }
 
 function sqlHighlight(sql: string): ReactNode {
@@ -257,7 +269,17 @@ export default function AiPanel({
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [mode, setMode] = useState<AiMode>("generate");
+  const [liveModels, setLiveModels] = useState<AiModelList | null>(null);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [modelQuery, setModelQuery] = useState("");
+  const [modelIndex, setModelIndex] = useState(0);
+  const [toast, setToast] = useState<string | null>(null);
   const keyRef = useRef<HTMLInputElement>(null);
+  const modelTriggerRef = useRef<HTMLButtonElement>(null);
+  const modelMenuRef = useRef<HTMLDivElement>(null);
+  const modelSearchRef = useRef<HTMLInputElement>(null);
+  const modelsRequestRef = useRef(0);
 
   const isConnected = activeConnId ? !!connected[activeConnId] : false;
   const hasKey = !!config?.has_key;
@@ -277,9 +299,38 @@ export default function AiPanel({
     setPreset(nextPreset);
     setProvider(value.provider);
     setModel(value.model);
-    setModelCustom(!MODEL_OPTIONS[nextPreset].includes(value.model));
+    setModelCustom(
+      !MODEL_OPTIONS[nextPreset].includes(value.model) &&
+        !(liveModels?.models ?? []).includes(value.model),
+    );
     setBaseUrl(value.base_url ?? "");
   };
+
+  const loadModels = async (refresh = false) => {
+    const requestId = ++modelsRequestRef.current;
+    setModelsLoading(true);
+    try {
+      const value = await aiListModels(refresh);
+      if (requestId === modelsRequestRef.current) setLiveModels(value);
+    } catch {
+      // The command already falls back to the preset list; keep what we have.
+    } finally {
+      if (requestId === modelsRequestRef.current) setModelsLoading(false);
+    }
+  };
+
+  const modelsMatchSavedScope =
+    !!config &&
+    config.provider === provider &&
+    (provider !== "openai_compatible" ||
+      (config.base_url ?? "").replace(/\/+$/, "") === normalizedBaseUrl);
+
+  const modelOptions = withSelectedModel(
+    modelsMatchSavedScope && liveModels
+      ? liveModels.models
+      : MODEL_OPTIONS[preset],
+    modelsMatchSavedScope && config ? config.model : model,
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -288,6 +339,7 @@ export default function AiPanel({
       .then((value) => {
         if (cancelled) return;
         applyConfig(value);
+        void loadModels();
         if (!value.has_key) setSettingsOpen(true);
       })
       .catch((configError) => {
@@ -326,6 +378,38 @@ export default function AiPanel({
     return () => window.clearTimeout(timer);
   }, [copied]);
 
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(null), 1600);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+
+  useEffect(() => {
+    if (settingsOpen) void loadModels();
+  }, [settingsOpen]);
+
+  useEffect(() => {
+    if (!modelMenuOpen) return;
+
+    const frame = requestAnimationFrame(() => modelSearchRef.current?.focus());
+    const onMouseDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (
+        modelMenuRef.current?.contains(target) ||
+        modelTriggerRef.current?.contains(target)
+      ) {
+        return;
+      }
+      setModelMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onMouseDown);
+
+    return () => {
+      cancelAnimationFrame(frame);
+      document.removeEventListener("mousedown", onMouseDown);
+    };
+  }, [modelMenuOpen]);
+
   const openSettings = () => {
     if (config) applyConfig(config);
     setError(null);
@@ -347,6 +431,69 @@ export default function AiPanel({
     setModel(next.model);
     setModelCustom(!next.model || !MODEL_OPTIONS[value].includes(next.model));
     setError(null);
+  };
+
+  const modelQueryText = modelQuery.trim().toLowerCase();
+  const filteredModels = modelOptions.filter((option) =>
+    option.toLowerCase().includes(modelQueryText),
+  );
+  const activeModelIndex =
+    filteredModels.length === 0
+      ? -1
+      : Math.min(modelIndex, filteredModels.length - 1);
+
+  const openModelMenu = () => {
+    setModelQuery("");
+    setModelIndex(0);
+    setModelMenuOpen((open) => !open);
+    void loadModels(false);
+  };
+
+  const closeModelMenu = (focusTrigger = false) => {
+    setModelMenuOpen(false);
+    if (focusTrigger) {
+      requestAnimationFrame(() => modelTriggerRef.current?.focus());
+    }
+  };
+
+  const chooseModel = async (nextModel: string) => {
+    if (!config) return;
+    if (nextModel === config.model) {
+      closeModelMenu();
+      return;
+    }
+
+    try {
+      const value = await aiSetConfig(
+        config.provider,
+        nextModel,
+        config.base_url ?? undefined,
+        undefined,
+      );
+      applyConfig(value);
+      setToast(`Model set to ${value.model}`);
+      closeModelMenu();
+    } catch (selectionError) {
+      setToast(errorMessage(selectionError));
+    }
+  };
+
+  const handleModelMenuKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      if (filteredModels.length === 0) return;
+      setModelIndex(Math.min(activeModelIndex + 1, filteredModels.length - 1));
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setModelIndex(Math.max(activeModelIndex - 1, 0));
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      const option = filteredModels[activeModelIndex] ?? filteredModels[0];
+      if (option) void chooseModel(option);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      closeModelMenu(true);
+    }
   };
 
   const handleSaveSettings = async (event: FormEvent) => {
@@ -510,7 +657,7 @@ export default function AiPanel({
       )}
 
       <Field label="Model">
-        {MODEL_OPTIONS[preset].length > 0 && (
+        {modelOptions.length > 0 && (
           <select
             value={modelCustom ? CUSTOM_MODEL : model}
             onChange={(event) => {
@@ -524,7 +671,7 @@ export default function AiPanel({
             }}
             style={inputStyle}
           >
-            {MODEL_OPTIONS[preset].map((option) => (
+            {modelOptions.map((option) => (
               <option key={option} value={option}>
                 {option}
               </option>
@@ -532,7 +679,7 @@ export default function AiPanel({
             <option value={CUSTOM_MODEL}>Custom…</option>
           </select>
         )}
-        {(modelCustom || MODEL_OPTIONS[preset].length === 0) && (
+        {(modelCustom || modelOptions.length === 0) && (
           <input
             value={model}
             onChange={(event) => setModel(event.target.value)}
@@ -542,7 +689,7 @@ export default function AiPanel({
             className="v2-input"
             style={{
               ...inputStyle,
-              marginTop: MODEL_OPTIONS[preset].length > 0 ? 6 : 0,
+              marginTop: modelOptions.length > 0 ? 6 : 0,
             }}
           />
         )}
@@ -626,6 +773,7 @@ export default function AiPanel({
         minHeight: 0,
         display: "flex",
         flexDirection: "column",
+        position: "relative",
       }}
     >
       <div
@@ -1219,42 +1367,254 @@ export default function AiPanel({
               />
             </button>
             <span style={{ color: "var(--fa)", marginLeft: 6 }}>Model</span>
-            <button
-              type="button"
-              className="df2-quiet"
-              onClick={openSettings}
+            <div
               style={{
-                height: 22,
+                position: "relative",
                 flex: 1,
                 minWidth: 0,
                 display: "flex",
-                alignItems: "center",
-                gap: 4,
-                padding: "0 6px",
-                border: 0,
-                borderRadius: 4,
-                fontFamily: "var(--mono)",
-                fontSize: 11,
-                cursor: "default",
-                overflow: "hidden",
               }}
             >
-              <span
+              <button
+                ref={modelTriggerRef}
+                type="button"
+                className="df2-quiet"
+                onClick={openModelMenu}
+                aria-haspopup="listbox"
+                aria-expanded={modelMenuOpen}
                 style={{
+                  height: 22,
+                  flex: 1,
+                  minWidth: 0,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 4,
+                  padding: "0 6px",
+                  border: 0,
+                  borderRadius: 4,
+                  fontFamily: "var(--mono)",
+                  fontSize: 11,
+                  cursor: "default",
                   overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
                 }}
               >
-                {config?.model ?? "—"}
-              </span>
-              <i
-                className="icon-chevrons-up-down"
-                style={{ fontSize: 11, color: "var(--fa)" }}
-              />
-            </button>
+                <span
+                  style={{
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {config?.model ?? "—"}
+                </span>
+                <i
+                  className="icon-chevrons-up-down"
+                  style={{ fontSize: 11, color: "var(--fa)" }}
+                />
+              </button>
+
+              {modelMenuOpen && config && (
+                <div
+                  ref={modelMenuRef}
+                  role="dialog"
+                  aria-label="Choose a model"
+                  style={{
+                    position: "absolute",
+                    left: 0,
+                    bottom: "calc(100% + 5px)",
+                    zIndex: 30,
+                    width: 280,
+                    maxWidth: "calc(100vw - 24px)",
+                    background: "var(--sf)",
+                    border: "1px solid var(--bd2)",
+                    borderRadius: 6,
+                    boxShadow: "var(--sh)",
+                    overflow: "hidden",
+                  }}
+                >
+                  <div
+                    style={{
+                      padding: 6,
+                      borderBottom: "1px solid var(--bd)",
+                    }}
+                  >
+                    <input
+                      ref={modelSearchRef}
+                      value={modelQuery}
+                      onChange={(event) => {
+                        setModelQuery(event.target.value);
+                        setModelIndex(0);
+                      }}
+                      onKeyDown={handleModelMenuKeyDown}
+                      placeholder="Filter models"
+                      autoComplete="off"
+                      spellCheck={false}
+                      className="v2-input"
+                      style={{ ...inputStyle, height: 26, fontSize: 12 }}
+                    />
+                  </div>
+                  <div
+                    role="listbox"
+                    aria-label="Models"
+                    style={{ maxHeight: 220, overflow: "auto", padding: 4 }}
+                  >
+                    {filteredModels.length === 0 ? (
+                      <div
+                        style={{
+                          padding: "6px 8px",
+                          color: "var(--mu)",
+                          fontSize: 11.5,
+                        }}
+                      >
+                        No matching models
+                      </div>
+                    ) : (
+                      filteredModels.map((option, index) => {
+                        const selected = option === config.model;
+                        const active = index === activeModelIndex;
+                        return (
+                          <button
+                            key={option}
+                            type="button"
+                            role="option"
+                            aria-selected={selected}
+                            className="df2-quiet"
+                            onMouseEnter={() => setModelIndex(index)}
+                            onClick={() => void chooseModel(option)}
+                            style={{
+                              width: "100%",
+                              height: 26,
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 6,
+                              padding: "0 6px",
+                              border: 0,
+                              borderRadius: 4,
+                              background: active
+                                ? "var(--sel)"
+                                : "transparent",
+                              color: "var(--tx)",
+                              fontSize: 11.5,
+                              textAlign: "left",
+                              cursor: "default",
+                            }}
+                          >
+                            <span
+                              style={{
+                                width: 14,
+                                flex: "none",
+                                display: "flex",
+                              }}
+                            >
+                              {selected && (
+                                <i
+                                  className="icon-check"
+                                  style={{ fontSize: 11, color: "var(--ac)" }}
+                                />
+                              )}
+                            </span>
+                            <span
+                              style={{
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
+                              }}
+                            >
+                              {option}
+                            </span>
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                  <div
+                    style={{
+                      borderTop: "1px solid var(--bd)",
+                      padding: 4,
+                    }}
+                  >
+                    <button
+                      type="button"
+                      className="df2-quiet"
+                      onClick={() => void loadModels(true)}
+                      disabled={modelsLoading}
+                      style={{
+                        width: "100%",
+                        height: 26,
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        padding: "0 6px",
+                        border: 0,
+                        borderRadius: 4,
+                        color: "var(--mu)",
+                        fontSize: 11.5,
+                        cursor: "default",
+                        opacity: modelsLoading ? 0.6 : 1,
+                      }}
+                    >
+                      <i
+                        className="icon-refresh-cw"
+                        style={{ fontSize: 11 }}
+                      />
+                      <span>{modelsLoading ? "Refreshing…" : "Refresh"}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="df2-quiet"
+                      onClick={() => {
+                        closeModelMenu();
+                        openSettings();
+                      }}
+                      style={{
+                        width: "100%",
+                        height: 26,
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        padding: "0 6px",
+                        border: 0,
+                        borderRadius: 4,
+                        color: "var(--mu)",
+                        fontSize: 11.5,
+                        cursor: "default",
+                      }}
+                    >
+                      <i className="icon-settings" style={{ fontSize: 11 }} />
+                      <span>Settings…</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </>
+      )}
+
+      {toast && (
+        <div
+          role="status"
+          style={{
+            position: "absolute",
+            left: "50%",
+            bottom: 38,
+            transform: "translateX(-50%)",
+            zIndex: 40,
+            maxWidth: "calc(100% - 24px)",
+            padding: "5px 10px",
+            border: "1px solid var(--bd2)",
+            borderRadius: 4,
+            background: "var(--sf2)",
+            boxShadow: "var(--sh)",
+            color: "var(--tx)",
+            fontSize: 11.5,
+            lineHeight: 1.4,
+            textAlign: "center",
+            pointerEvents: "none",
+          }}
+        >
+          {toast}
+        </div>
       )}
     </div>
   );

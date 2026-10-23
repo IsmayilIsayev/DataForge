@@ -6,8 +6,8 @@ use crate::ai::{AiProvider, AiSettings};
 use crate::core::secrets;
 use crate::error::{AppError, AppResult};
 
-const OPENAI_BASE: &str = "https://api.openai.com/v1";
-const GOOGLE_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/models";
+pub(crate) const OPENAI_BASE: &str = "https://api.openai.com/v1";
+pub(crate) const GOOGLE_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 
 #[derive(Serialize)]
 struct OpenAiRequest<'a> {

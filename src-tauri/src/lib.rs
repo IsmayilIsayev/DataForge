@@ -302,6 +302,7 @@ pub fn run() {
             commands::ai::ai_optimize,
             commands::ai::ai_get_config,
             commands::ai::ai_set_config,
+            commands::ai::ai_list_models,
             commands::ai::ai_has_key,
         ])
         .run(tauri::generate_context!())

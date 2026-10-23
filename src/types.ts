@@ -59,6 +59,11 @@ export interface AiConfig {
   has_key: boolean;
 }
 
+export interface AiModelList {
+  models: string[];
+  offline: boolean;
+}
+
 export type CellValue = string | number | boolean | null;
 
 /** One column reference with its value, used for primary-key WHERE clauses and
