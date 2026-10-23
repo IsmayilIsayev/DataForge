@@ -47,6 +47,103 @@ pub struct AiOptimizeResult {
     pub rewritten_sql: Option<String>,
 }
 
+const MAX_CHAT_MESSAGES: usize = 12;
+const MAX_RESULT_ROWS: usize = 50;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatMessageInput {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatResultContext {
+    #[serde(default)]
+    pub sql: String,
+    #[serde(default)]
+    pub columns: Vec<String>,
+    #[serde(default)]
+    pub rows: Vec<Vec<serde_json::Value>>,
+}
+
+fn normalized_chat_role(role: &str) -> &'static str {
+    if role.eq_ignore_ascii_case("assistant") {
+        "assistant"
+    } else {
+        "user"
+    }
+}
+
+fn clean_chat_messages(messages: &[ChatMessageInput]) -> Vec<ChatMessageInput> {
+    messages
+        .iter()
+        .filter_map(|message| {
+            let content = message.content.trim();
+            if content.is_empty() {
+                return None;
+            }
+            Some(ChatMessageInput {
+                role: normalized_chat_role(&message.role).to_string(),
+                content: content.to_string(),
+            })
+        })
+        .collect()
+}
+
+fn trim_chat_messages(messages: &[ChatMessageInput]) -> &[ChatMessageInput] {
+    let start = messages.len().saturating_sub(MAX_CHAT_MESSAGES);
+    &messages[start..]
+}
+
+fn tsv_escape(value: &str) -> String {
+    value
+        .replace('\t', "\\t")
+        .replace('\r', "\\r")
+        .replace('\n', "\\n")
+}
+
+fn tsv_value(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Null => "NULL".to_string(),
+        serde_json::Value::String(text) => text.clone(),
+        other => other.to_string(),
+    }
+}
+
+fn build_result_tsv(columns: &[String], rows: &[Vec<serde_json::Value>]) -> String {
+    let mut lines = Vec::with_capacity(rows.len().min(MAX_RESULT_ROWS) + 1);
+    lines.push(
+        columns
+            .iter()
+            .map(|column| tsv_escape(column))
+            .collect::<Vec<_>>()
+            .join("\t"),
+    );
+
+    for row in rows.iter().take(MAX_RESULT_ROWS) {
+        lines.push(
+            row.iter()
+                .map(|value| tsv_escape(&tsv_value(value)))
+                .collect::<Vec<_>>()
+                .join("\t"),
+        );
+    }
+
+    lines.join("\n")
+}
+
+fn result_context_text(context: &ChatResultContext) -> String {
+    let mut text = String::from("\n\nUSER-PROVIDED QUERY RESULT (you did not fetch this):\n");
+    if !context.sql.trim().is_empty() {
+        text.push_str("SQL:\n");
+        text.push_str(context.sql.trim());
+        text.push('\n');
+    }
+    text.push_str("COLUMNS AND ROWS (TSV, up to 50 rows):\n");
+    text.push_str(&build_result_tsv(&context.columns, &context.rows));
+    text
+}
+
 fn language_name(code: Option<&str>) -> Option<&'static str> {
     let code = code?.trim();
     if code.eq_ignore_ascii_case("az") || code.eq_ignore_ascii_case("azerbaijani") {
@@ -217,6 +314,83 @@ pub async fn ai_nl2sql(
 }
 
 #[tauri::command(rename_all = "snake_case")]
+pub async fn ai_chat(
+    state: State<'_, AppState>,
+    conn_id: String,
+    database: Option<String>,
+    messages: Vec<ChatMessageInput>,
+    ui_language: Option<String>,
+    result: Option<ChatResultContext>,
+) -> AppResult<String> {
+    let cleaned = clean_chat_messages(&messages);
+    if cleaned.is_empty() {
+        return Err(AppError::Config("Mesaj boşdur".to_string()));
+    }
+    let messages = trim_chat_messages(&cleaned);
+
+    let driver = state.pool.get(&conn_id).await?;
+    let dialect = driver.dialect_name();
+    let settings = state.ai_settings().await;
+
+    let latest_user = messages
+        .iter()
+        .rev()
+        .find(|message| message.role == "user")
+        .map(|message| message.content.clone())
+        .unwrap_or_default();
+    let mut schema_question = latest_user;
+    if let Some(context) = result.as_ref() {
+        if !context.sql.trim().is_empty() {
+            schema_question.push(' ');
+            schema_question.push_str(context.sql.trim());
+        }
+    }
+
+    let snapshot = driver.get_schema(database.as_deref()).await?;
+    let schema = nl2sql::build_schema_context(
+        &snapshot,
+        &schema_question,
+        settings.schema_token_budget,
+    );
+
+    eprintln!(
+        "[ai_chat] {} messages, schema ~{} tokens, {} of {} tables with columns{}",
+        messages.len(),
+        schema.estimated_tokens,
+        schema.tables_with_columns.len(),
+        schema.total_tables,
+        if schema.truncated { " (trimmed)" } else { "" }
+    );
+
+    let system = prompts::chat_system(
+        dialect,
+        language_name(ui_language.as_deref()),
+        &schema.text,
+    );
+
+    let mut contents: Vec<String> = messages
+        .iter()
+        .map(|message| message.content.clone())
+        .collect();
+    if let Some(context) = result.as_ref() {
+        if let Some(index) = messages.iter().rposition(|message| message.role == "user") {
+            contents[index].push_str(&result_context_text(context));
+        }
+    }
+
+    let turns: Vec<client::ChatTurn<'_>> = messages
+        .iter()
+        .zip(contents.iter())
+        .map(|(message, content)| client::ChatTurn {
+            role: message.role.as_str(),
+            content: content.as_str(),
+        })
+        .collect();
+
+    client::complete_messages(&settings, &system, &turns).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
 pub async fn ai_explain(
     state: State<'_, AppState>,
     sql: String,
@@ -318,7 +492,8 @@ pub async fn ai_has_key(state: State<'_, AppState>) -> AppResult<bool> {
 #[cfg(test)]
 mod tests {
     use super::{
-        base_url_allowed, explain_sql_for, fix_user_message, language_name, optimize_user_message,
+        base_url_allowed, build_result_tsv, clean_chat_messages, explain_sql_for, fix_user_message,
+        language_name, optimize_user_message, trim_chat_messages, ChatMessageInput,
     };
 
     #[test]
@@ -388,6 +563,73 @@ mod tests {
             explain_sql_for("postgres", "SELECT 1; DELETE FROM users"),
             None
         );
+    }
+
+    #[test]
+    fn chat_messages_are_trimmed_to_the_last_twelve() {
+        let messages: Vec<ChatMessageInput> = (0..15)
+            .map(|index| {
+                let role = if index % 2 == 0 { "user" } else { "assistant" };
+                ChatMessageInput {
+                    role: role.to_string(),
+                    content: format!("message-{index}"),
+                }
+            })
+            .collect();
+
+        let trimmed = trim_chat_messages(&messages);
+        assert_eq!(trimmed.len(), 12);
+        assert_eq!(trimmed.first().unwrap().content, "message-3");
+        assert_eq!(trimmed.last().unwrap().content, "message-14");
+    }
+
+    #[test]
+    fn chat_messages_drop_empty_content_and_normalize_roles() {
+        let messages = vec![
+            ChatMessageInput {
+                role: "system".to_string(),
+                content: "  ".to_string(),
+            },
+            ChatMessageInput {
+                role: "ASSISTANT".to_string(),
+                content: " hello ".to_string(),
+            },
+            ChatMessageInput {
+                role: "user".to_string(),
+                content: "hi".to_string(),
+            },
+        ];
+
+        let cleaned = clean_chat_messages(&messages);
+        assert_eq!(cleaned.len(), 2);
+        assert_eq!(cleaned[0].role, "assistant");
+        assert_eq!(cleaned[0].content, "hello");
+        assert_eq!(cleaned[1].role, "user");
+    }
+
+    #[test]
+    fn result_tsv_caps_rows_and_escapes_control_characters() {
+        let rows = (0..60)
+            .map(|index| {
+                vec![
+                    serde_json::json!(format!("row-{index}\tvalue\nnext")),
+                    serde_json::json!(index),
+                ]
+            })
+            .collect::<Vec<_>>();
+
+        let tsv = build_result_tsv(&["name".to_string(), "id".to_string()], &rows);
+        assert_eq!(tsv.lines().count(), 51);
+        assert!(tsv.contains("row-0\\tvalue\\nnext"));
+        assert!(tsv.contains("row-49\\tvalue\\nnext"));
+        assert!(!tsv.contains("row-50"));
+        assert!(!tsv.contains("row-0\tvalue"));
+    }
+
+    #[test]
+    fn result_tsv_escapes_column_names() {
+        let tsv = build_result_tsv(&["odd\tname".to_string()], &[]);
+        assert_eq!(tsv, "odd\\tname");
     }
 
     #[test]

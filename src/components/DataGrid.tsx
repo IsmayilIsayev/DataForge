@@ -34,7 +34,7 @@ import { isProduction } from "../environment";
 import { guardSqlExecution, readOnlyWriteError } from "../prodGuard";
 import { useAppStore } from "../store";
 import type { PendingChange } from "../store";
-import type { CellValue, Dialect } from "../types";
+import type { CellValue, ChatResultContext, Dialect } from "../types";
 
 const INDEX_WIDTH = 44;
 const DEFAULT_COL_WIDTH = 160;
@@ -62,6 +62,7 @@ interface Props {
   where?: string;
   onServerQuery?: (where: string, orderBy: string) => void;
   onReload?: () => void;
+  onExplainResult?: (context: ChatResultContext) => void;
 }
 
 interface Position {
@@ -270,6 +271,7 @@ export default function DataGrid({
   where,
   onServerQuery,
   onReload,
+  onExplainResult,
 }: Props) {
   const result = useAppStore((state) => state.result);
   const running = useAppStore((state) => state.running);
@@ -279,6 +281,12 @@ export default function DataGrid({
   const viewerPrefs = useAppStore((state) => state.viewerPrefs);
   const setViewerPref = useAppStore((state) => state.setViewerPref);
   const autoCommitEdits = useAppStore((state) => state.autoCommitEdits);
+  const explainResultConsent = useAppStore(
+    (state) => state.explainResultConsent,
+  );
+  const grantExplainResultConsent = useAppStore(
+    (state) => state.grantExplainResultConsent,
+  );
   const connection = useAppStore((state) =>
     state.connections.find((item) => item.id === connId),
   );
@@ -1350,6 +1358,24 @@ export default function DataGrid({
   const hasResult = !!result;
   const hasColumns = columns.length > 0;
   const canExportWholeTable = !!(table && connId);
+  const needsProdExplainConsent =
+    isProduction(connection) && !explainResultConsent;
+
+  const requestExplainResult = () => {
+    if (!onExplainResult || !result || result.columns.length === 0) return;
+    if (needsProdExplainConsent) {
+      const confirmed = window.confirm(
+        "This is a production connection. Sending the last executed SQL and the first 50 result rows to your AI provider may expose sensitive data. Continue?",
+      );
+      if (!confirmed) return;
+      grantExplainResultConsent();
+    }
+    onExplainResult({
+      sql: sql ?? "",
+      columns: result.columns,
+      rows: result.rows.slice(0, 50),
+    });
+  };
 
   return (
     <section
@@ -2298,6 +2324,39 @@ export default function DataGrid({
             <i className="icon-copy" style={{ fontSize: 13 }} />
             <span>Copy</span>
           </button>
+          {onExplainResult && hasColumns && (
+            <button
+              type="button"
+              className="v2-icon-btn"
+              onClick={requestExplainResult}
+              title={
+                needsProdExplainConsent
+                  ? "Production: confirm before sending SQL and up to 50 rows to your AI provider"
+                  : "Sends the last executed SQL and the first 50 rows to your AI provider"
+              }
+              style={{
+                height: 24,
+                flex: "none",
+                display: "flex",
+                alignItems: "center",
+                gap: 4,
+                padding: "0 6px",
+                border: 0,
+                borderRadius: 4,
+                background: "transparent",
+                color: needsProdExplainConsent ? "var(--wn)" : "var(--mu)",
+                fontSize: 12,
+                cursor: "default",
+              }}
+            >
+              <i className="icon-sparkles" style={{ fontSize: 13 }} />
+              <span>
+                {needsProdExplainConsent
+                  ? "Enable result AI"
+                  : "Explain this result"}
+              </span>
+            </button>
+          )}
           <button
             type="button"
             className="v2-icon-btn"

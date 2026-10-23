@@ -42,6 +42,48 @@ DATABASE SCHEMA:
     )
 }
 
+pub fn chat_system(dialect: &str, language: Option<&str>, schema: &str) -> String {
+    let language_rule = match language.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(language) => format!(
+            "Answer in {language} (the user's UI language), even when the schema or SQL uses another language."
+        ),
+        None => "Answer in the same language as the user's latest message.".to_string(),
+    };
+
+    format!(
+        r#"You are a helpful database assistant for {dialect}. You help the user understand their
+database, write queries, and interpret results.
+
+DIALECT: {dialect} (supported: mysql, postgres, sqlite, SQL Server / mssql).
+- Use only valid {dialect} syntax and functions.
+- MySQL uses backticks (`table`); PostgreSQL and SQLite use double quotes ("table"); SQL Server uses [brackets].
+- Result limits: LIMIT on MySQL, PostgreSQL and SQLite; TOP (n) or OFFSET ... FETCH on SQL Server.
+- Never rename or translate schema identifiers.
+
+ANSWERING:
+- Be concise and concrete. Explain assumptions briefly when the request is ambiguous.
+- {language_rule}
+- When you propose SQL, put each statement in its own ```sql fenced code block.
+- You do NOT run queries and you never see live data unless the user includes it in the conversation.
+- Never claim that you executed anything, and never claim a result is from the database. Say "this query would..." or "based on the rows you shared...".
+
+SAFETY:
+- Never generate DROP, TRUNCATE, DELETE or UPDATE unless the user explicitly asks for that operation.
+- Any UPDATE or DELETE must include a WHERE clause that targets the intended rows. If no safe predicate is possible, explain why and do not provide the statement.
+- Warn about destructive statements, full table scans, and missing or unbounded WHERE clauses.
+- Prefer explicit column lists over SELECT *.
+
+SCHEMA RULES:
+- Never invent tables or columns. Use only the schema below.
+- The schema lists every table name. Columns are provided only for relevant tables.
+- Tables under "OTHER TABLES (names only)" have no column information; do not guess their columns.
+
+DATABASE SCHEMA:
+{schema}
+"#
+    )
+}
+
 pub fn explain_system(language: Option<&str>) -> String {
     match language.map(str::trim).filter(|value| !value.is_empty()) {
         Some(language) => format!(
@@ -93,7 +135,7 @@ RULES:
 
 #[cfg(test)]
 mod tests {
-    use super::{explain_system, fix_error_system, nl2sql_system, optimize_system};
+    use super::{chat_system, explain_system, fix_error_system, nl2sql_system, optimize_system};
 
     #[test]
     fn nl2sql_prompt_keeps_the_json_contract() {
@@ -159,6 +201,30 @@ mod tests {
                 "nl2sql prompt must contain the Azerbaijani hint: {hint}"
             );
         }
+    }
+
+    #[test]
+    fn chat_prompt_has_dialect_language_and_safety_rules() {
+        let prompt = chat_system("postgres", Some("Azerbaijani"), "TABLE users(id bigint)");
+        for rule in [
+            "database assistant for postgres",
+            "Azerbaijani",
+            "```sql",
+            "Never claim that you executed anything",
+            "Never generate DROP, TRUNCATE, DELETE or UPDATE",
+            "WHERE clause",
+            "destructive statements",
+            "TABLE users(id bigint)",
+        ] {
+            assert!(
+                prompt.contains(rule),
+                "chat prompt must contain the rule: {rule}"
+            );
+        }
+
+        let fallback = chat_system("mysql", None, "");
+        assert!(fallback.contains("same language"));
+        assert!(fallback.contains("database assistant for mysql"));
     }
 
     #[test]

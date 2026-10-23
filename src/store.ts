@@ -4,6 +4,7 @@ import type { ClassifiedStatement } from "./sqlGuard";
 import type {
   CellRef,
   CellValue,
+  ChatMessage,
   ConnectionMeta,
   ConnectionState,
   ExplainPlan,
@@ -215,6 +216,61 @@ function loadQueryHistory(): QueryHistoryEntry[] {
   }
 }
 
+export const CHAT_MESSAGES_MAX = 50;
+const CHAT_THREADS_KEY = "df-ai-chat";
+
+export function chatThreadKey(
+  connId: string,
+  database: string | null | undefined,
+): string {
+  return `${connId}::${database ?? ""}`;
+}
+
+function isChatMessage(value: unknown): value is ChatMessage {
+  if (!value || typeof value !== "object") return false;
+  const message = value as { role?: unknown; content?: unknown };
+  return (
+    (message.role === "user" || message.role === "assistant") &&
+    typeof message.content === "string"
+  );
+}
+
+function loadChatThreads(): Record<string, ChatMessage[]> {
+  try {
+    const value = JSON.parse(localStorage.getItem(CHAT_THREADS_KEY) || "{}");
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).flatMap(
+        ([key, thread]): Array<[string, ChatMessage[]]> => {
+          if (!Array.isArray(thread)) return [];
+          const messages = thread
+            .filter(isChatMessage)
+            .filter((message) => !QUERY_HISTORY_SECRET.test(message.content))
+            .slice(-CHAT_MESSAGES_MAX);
+          return messages.length > 0 ? [[key, messages]] : [];
+        },
+      ),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function persistChatThreads(threads: Record<string, ChatMessage[]>): void {
+  try {
+    const safe = Object.fromEntries(
+      Object.entries(threads).map(([key, messages]) => [
+        key,
+        messages
+          .filter((message) => !QUERY_HISTORY_SECRET.test(message.content))
+          .slice(-CHAT_MESSAGES_MAX),
+      ]),
+    );
+    localStorage.setItem(CHAT_THREADS_KEY, JSON.stringify(safe));
+  } catch {}
+}
+
 function sameFavorite(a: FavoriteTable, b: FavoriteTable): boolean {
   return (
     a.connId === b.connId &&
@@ -301,6 +357,18 @@ interface AppStore {
   queryHistory: QueryHistoryEntry[];
   pushQueryHistory: (sql: string, connId?: string, database?: string) => void;
   clearQueryHistory: () => void;
+  chatThreads: Record<string, ChatMessage[]>;
+  appendChatMessage: (
+    connId: string,
+    database: string | null | undefined,
+    message: ChatMessage,
+  ) => void;
+  clearChatThread: (
+    connId: string,
+    database: string | null | undefined,
+  ) => void;
+  explainResultConsent: boolean;
+  grantExplainResultConsent: () => void;
   setActiveConn: (id: string | null) => boolean;
   setDatabases: (databases: string[]) => void;
   setActiveDb: (database: string | null) => void;
@@ -383,6 +451,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   connGroups: loadConnGroups(),
   groupStars: loadGroupStars(),
   queryHistory: loadQueryHistory(),
+  chatThreads: loadChatThreads(),
+  explainResultConsent: false,
   activeConnId: null,
   databases: [],
   activeDb: null,
@@ -571,6 +641,27 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
     set({ queryHistory: [] });
   },
+  appendChatMessage: (connId, database, message) =>
+    set((state) => {
+      const key = chatThreadKey(connId, database);
+      const nextThread = [
+        ...(state.chatThreads[key] ?? []),
+        message,
+      ].slice(-CHAT_MESSAGES_MAX);
+      const chatThreads = { ...state.chatThreads, [key]: nextThread };
+      persistChatThreads(chatThreads);
+      return { chatThreads };
+    }),
+  clearChatThread: (connId, database) =>
+    set((state) => {
+      const key = chatThreadKey(connId, database);
+      if (!state.chatThreads[key]) return {};
+      const chatThreads = { ...state.chatThreads };
+      delete chatThreads[key];
+      persistChatThreads(chatThreads);
+      return { chatThreads };
+    }),
+  grantExplainResultConsent: () => set({ explainResultConsent: true }),
   setActiveConn: (activeConnId) => {
     const state = get();
     const switching = activeConnId !== state.activeConnId;

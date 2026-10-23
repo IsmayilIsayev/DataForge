@@ -1,4 +1,5 @@
-import { useEffect, useMemo } from "react";
+import { useEffect } from "react";
+import Markdown from "../markdown";
 
 interface Props {
   version: string;
@@ -9,54 +10,6 @@ interface Props {
   onClose: () => void;
 }
 
-type Block =
-  | { kind: "heading"; level: number; text: string }
-  | { kind: "list"; items: string[] }
-  | { kind: "paragraph"; text: string };
-
-function parseNotes(source: string): Block[] {
-  const blocks: Block[] = [];
-  let items: string[] | null = null;
-
-  const flushList = () => {
-    if (!items) return;
-    blocks.push({ kind: "list", items });
-    items = null;
-  };
-
-  for (const rawLine of source.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line) {
-      flushList();
-      continue;
-    }
-
-    const heading = /^(#{1,6})\s+(.+)$/.exec(line);
-    if (heading) {
-      flushList();
-      blocks.push({
-        kind: "heading",
-        level: heading[1].length,
-        text: heading[2],
-      });
-      continue;
-    }
-
-    const bullet = /^[-*]\s+(.+)$/.exec(line);
-    if (bullet) {
-      if (!items) items = [];
-      items.push(bullet[1]);
-      continue;
-    }
-
-    flushList();
-    blocks.push({ kind: "paragraph", text: line });
-  }
-
-  flushList();
-  return blocks;
-}
-
 export default function WhatsNewDialog({
   version,
   notes,
@@ -65,7 +18,6 @@ export default function WhatsNewDialog({
   onInstall,
   onClose,
 }: Props) {
-  const blocks = useMemo(() => parseNotes(notes), [notes]);
   const title =
     kind === "whats-new"
       ? `What's new in v${version}`
@@ -158,55 +110,10 @@ export default function WhatsNewDialog({
             fontSize: 12.5,
           }}
         >
-          {blocks.length === 0 ? (
-            <span style={{ color: "var(--mu)" }}>See CHANGELOG.md.</span>
+          {notes.trim() ? (
+            <Markdown source={notes} />
           ) : (
-            blocks.map((block, index) => {
-              if (block.kind === "heading") {
-                return (
-                  <div
-                    key={index}
-                    style={{
-                      marginTop: index === 0 ? 0 : 4,
-                      fontWeight: 600,
-                      fontSize: block.level <= 2 ? 13 : 11,
-                      letterSpacing: block.level <= 2 ? undefined : ".04em",
-                      textTransform: block.level <= 2 ? undefined : "uppercase",
-                      color: block.level <= 2 ? "var(--tx)" : "var(--mu)",
-                    }}
-                  >
-                    {block.text}
-                  </div>
-                );
-              }
-
-              if (block.kind === "list") {
-                return (
-                  <ul
-                    key={index}
-                    style={{
-                      margin: 0,
-                      paddingLeft: 18,
-                      display: "flex",
-                      flexDirection: "column",
-                      gap: 5,
-                    }}
-                  >
-                    {block.items.map((item, itemIndex) => (
-                      <li key={itemIndex} style={{ color: "var(--tx)", lineHeight: 1.5 }}>
-                        {item}
-                      </li>
-                    ))}
-                  </ul>
-                );
-              }
-
-              return (
-                <p key={index} style={{ margin: 0, color: "var(--mu)", lineHeight: 1.5 }}>
-                  {block.text}
-                </p>
-              );
-            })
+            <span style={{ color: "var(--mu)" }}>See CHANGELOG.md.</span>
           )}
         </div>
 

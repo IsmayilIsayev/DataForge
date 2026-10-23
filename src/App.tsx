@@ -42,7 +42,13 @@ import { environmentColor, isProtectedEnvironment } from "./environment";
 import { guardSqlExecution } from "./prodGuard";
 import { useAppStore } from "./store";
 import type { TableTab } from "./store";
-import type { AiActionState, AiTextTarget, ConnectionMeta } from "./types";
+import type {
+  AiActionState,
+  AiTextTarget,
+  ChatRequest,
+  ChatResultContext,
+  ConnectionMeta,
+} from "./types";
 
 const AiActionPanel = lazy(() => import("./components/AiActionPanel"));
 const AiPanel = lazy(() => import("./components/AiPanel"));
@@ -146,6 +152,7 @@ export default function App() {
     useState<ConnectionMeta | null>(null);
   const [aiOpen, setAiOpen] = useState(false);
   const [aiSettingsSignal, setAiSettingsSignal] = useState(0);
+  const [chatRequest, setChatRequest] = useState<ChatRequest | null>(null);
   const [aiAction, setAiAction] = useState<AiActionState | null>(null);
   const [aiBusy, setAiBusy] = useState<
     "fix" | "explain" | "optimize" | null
@@ -683,6 +690,47 @@ export default function App() {
     },
     [executeSql],
   );
+
+  const handleRunChatSql = useCallback(
+    (sql: string) => {
+      const store = useAppStore.getState();
+      if (!sql.trim()) return;
+      if (!store.activeConnId || !store.connected[store.activeConnId]) {
+        store.setError("Connect to the database first.");
+        return;
+      }
+
+      const tab = store.tabs.find((item) => item.id === store.activeTabId);
+      if (tab?.type === "query" && store.tabStates[tab.id]?.running) {
+        store.setError("A query is already running in this tab.", tab.id);
+        return;
+      }
+
+      const tabId =
+        tab?.type === "query" ? tab.id : store.addQueryTab(sql, "AI chat");
+      store.pushQueryHistory(
+        sql,
+        store.activeConnId,
+        store.activeDb ?? undefined,
+      );
+      void executeSql(
+        store.activeConnId,
+        sql,
+        store.activeDb ?? undefined,
+        tabId,
+      );
+    },
+    [executeSql],
+  );
+
+  const handleExplainResult = useCallback((context: ChatResultContext) => {
+    setChatRequest({
+      id: Date.now(),
+      content: "Explain/summarize this result",
+      result: context,
+    });
+    setAiOpen(true);
+  }, []);
 
   const handleOpenTable = useCallback(
     async (connection: ConnectionMeta, database: string, table: string) => {
@@ -1922,8 +1970,10 @@ export default function App() {
                   viewKey={`${activeTab.id}:${activeView?.resultVersion ?? 0}`}
                   dialect={activeConnection?.dialect ?? "mysql"}
                   database={activeDb}
+                  connId={activeView?.connId ?? activeConnId ?? undefined}
                   sql={activeView?.executedSql ?? undefined}
                   theme={theme}
+                  onExplainResult={handleExplainResult}
                 />
               )}
             </>
@@ -1970,6 +2020,10 @@ export default function App() {
                 <AiPanel
                   onClose={() => setAiOpen(false)}
                   settingsSignal={aiSettingsSignal}
+                  chatRequest={chatRequest}
+                  onChatRequestHandled={() => setChatRequest(null)}
+                  onRunSql={handleRunChatSql}
+                  uiLanguage={UI_LANGUAGE}
                 />
               </Suspense>
             </aside>

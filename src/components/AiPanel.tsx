@@ -1,15 +1,28 @@
-﻿import { useEffect, useRef, useState } from "react";
+﻿import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent, ReactNode } from "react";
 import { copyText } from "../clipboard";
 import { aiGetConfig, aiNl2Sql, aiSetConfig, errorMessage } from "../ipc";
 import { formatSql } from "../sql";
 import { useAppStore } from "../store";
-import type { AiConfig, AiProvider, Nl2SqlResult } from "../types";
+import type {
+  AiConfig,
+  AiProvider,
+  ChatRequest,
+  Nl2SqlResult,
+} from "../types";
+
+const AiChatView = lazy(() => import("./AiChatView"));
 
 interface Props {
   onClose: () => void;
   settingsSignal?: number;
+  chatRequest?: ChatRequest | null;
+  onChatRequestHandled?: () => void;
+  onRunSql?: (sql: string) => void;
+  uiLanguage?: string;
 }
+
+type AiMode = "generate" | "chat";
 
 const CUSTOM_MODEL = "__custom__";
 
@@ -214,7 +227,14 @@ function Field({
   );
 }
 
-export default function AiPanel({ onClose, settingsSignal = 0 }: Props) {
+export default function AiPanel({
+  onClose,
+  settingsSignal = 0,
+  chatRequest = null,
+  onChatRequestHandled,
+  onRunSql,
+  uiLanguage = "en",
+}: Props) {
   const activeConnId = useAppStore((state) => state.activeConnId);
   const activeDb = useAppStore((state) => state.activeDb);
 
@@ -236,6 +256,7 @@ export default function AiPanel({ onClose, settingsSignal = 0 }: Props) {
   const [result, setResult] = useState<Nl2SqlResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [mode, setMode] = useState<AiMode>("generate");
   const keyRef = useRef<HTMLInputElement>(null);
 
   const isConnected = activeConnId ? !!connected[activeConnId] : false;
@@ -289,6 +310,10 @@ export default function AiPanel({ onClose, settingsSignal = 0 }: Props) {
       setSettingsOpen(true);
     }
   }, [settingsSignal]);
+
+  useEffect(() => {
+    if (chatRequest) setMode("chat");
+  }, [chatRequest]);
 
   useEffect(() => {
     setResult(null);
@@ -646,6 +671,66 @@ export default function AiPanel({ onClose, settingsSignal = 0 }: Props) {
         settingsForm
       ) : (
         <>
+          <div
+            style={{
+              height: 30,
+              flex: "none",
+              display: "flex",
+              alignItems: "stretch",
+              gap: 2,
+              padding: "0 6px",
+              borderBottom: "1px solid var(--bd)",
+            }}
+          >
+            {(
+              [
+                ["generate", "Generate SQL"],
+                ["chat", "Chat"],
+              ] as const
+            ).map(([id, label]) => {
+              const active = mode === id;
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  className="df2-quiet df2-hover-tx"
+                  onClick={() => setMode(id)}
+                  style={{
+                    height: 30,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 5,
+                    padding: "0 8px",
+                    border: 0,
+                    borderBottom: `2px solid ${
+                      active ? "var(--ac)" : "transparent"
+                    }`,
+                    borderRadius: 0,
+                    background: "transparent",
+                    color: active ? "var(--tx)" : "var(--mu)",
+                    cursor: "default",
+                    fontSize: 11.5,
+                  }}
+                >
+                  <i
+                    className={id === "chat" ? "icon-message-circle" : "icon-code"}
+                    style={{ fontSize: 12 }}
+                  />
+                  <span>{label}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {mode === "generate" ? (
+            <div
+              style={{
+                flex: 1,
+                minHeight: 0,
+                display: "flex",
+                flexDirection: "column",
+              }}
+            >
           <div
             style={{
               flex: "none",
@@ -1068,6 +1153,34 @@ export default function AiPanel({ onClose, settingsSignal = 0 }: Props) {
               </div>
             )}
           </div>
+            </div>
+          ) : (
+            <Suspense
+              fallback={
+                <div style={{ padding: 12, color: "var(--mu)" }}>
+                  Loading chat…
+                </div>
+              }
+            >
+              <AiChatView
+                connId={activeConnId}
+                database={activeDb}
+                isConnected={isConnected}
+                hasKey={hasKey}
+                uiLanguage={uiLanguage}
+                onConfigure={() => {
+                  setError(null);
+                  setSettingsOpen(true);
+                }}
+                onInsertSql={(sql) =>
+                  setSql(formatSql(sql, activeDialect))
+                }
+                onRunSql={onRunSql}
+                request={chatRequest}
+                onRequestHandled={onChatRequestHandled}
+              />
+            </Suspense>
+          )}
 
           <div
             style={{

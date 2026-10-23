@@ -7,6 +7,8 @@ import type {
   AiProvider,
   CellRef,
   CellValue,
+  ChatMessage,
+  ChatResultContext,
   ColumnInfo,
   ConnectionInput,
   ConnectionMeta,
@@ -380,6 +382,21 @@ export const aiNl2Sql = (
     question,
     include_schema: includeSchema,
     database: database ?? null,
+  });
+
+export const aiChat = (
+  connId: string,
+  database: string | undefined,
+  messages: ChatMessage[],
+  uiLanguage?: string,
+  result?: ChatResultContext,
+) =>
+  invoke<string>("ai_chat", {
+    conn_id: connId,
+    database: database ?? null,
+    messages,
+    ui_language: uiLanguage ?? null,
+    result: result ?? null,
   });
 
 export const aiExplain = (sql: string, language?: string) =>

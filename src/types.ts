@@ -121,6 +121,25 @@ export interface AiOptimizeResult {
   rewritten_sql?: string | null;
 }
 
+export type ChatRole = "user" | "assistant";
+
+export interface ChatMessage {
+  role: ChatRole;
+  content: string;
+}
+
+export interface ChatResultContext {
+  sql: string;
+  columns: string[];
+  rows: CellValue[][];
+}
+
+export interface ChatRequest {
+  id: number;
+  content: string;
+  result?: ChatResultContext;
+}
+
 export interface PlanNode {
   label: string;
   relation?: string;

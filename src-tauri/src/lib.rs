@@ -294,6 +294,7 @@ pub fn run() {
             commands::import::preview_csv,
             commands::import::import_csv,
             commands::ai::ai_nl2sql,
+            commands::ai::ai_chat,
             commands::ai::ai_explain,
             commands::ai::ai_fix_error,
             commands::ai::ai_optimize,

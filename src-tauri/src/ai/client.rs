@@ -63,7 +63,15 @@ struct GoogleGenerationConfig {
 
 #[derive(Serialize)]
 struct GoogleContent<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    role: Option<&'a str>,
     parts: Vec<GooglePart<'a>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ChatTurn<'a> {
+    pub role: &'a str,
+    pub content: &'a str,
 }
 
 #[derive(Serialize)]
@@ -95,6 +103,27 @@ struct GoogleResponsePart {
 }
 
 pub async fn complete(settings: &AiSettings, system: &str, user: &str) -> AppResult<String> {
+    let messages = [ChatTurn {
+        role: "user",
+        content: user,
+    }];
+    complete_inner(settings, system, &messages, true).await
+}
+
+pub async fn complete_messages(
+    settings: &AiSettings,
+    system: &str,
+    messages: &[ChatTurn<'_>],
+) -> AppResult<String> {
+    complete_inner(settings, system, messages, false).await
+}
+
+async fn complete_inner(
+    settings: &AiSettings,
+    system: &str,
+    messages: &[ChatTurn<'_>],
+    json_mode: bool,
+) -> AppResult<String> {
     let model = settings.model.trim();
     if model.is_empty() {
         return Err(AppError::Config("AI model is not configured".to_string()));
@@ -131,20 +160,21 @@ pub async fn complete(settings: &AiSettings, system: &str, user: &str) -> AppRes
 
             let url = format!("{}/chat/completions", base.trim_end_matches('/'));
 
-            let mut use_json_format = true;
+            let mut use_json_format = json_mode;
             loop {
+                let mut request_messages = Vec::with_capacity(messages.len() + 1);
+                request_messages.push(ChatMessage {
+                    role: "system",
+                    content: system,
+                });
+                request_messages.extend(messages.iter().map(|turn| ChatMessage {
+                    role: turn.role,
+                    content: turn.content,
+                }));
+
                 let body = OpenAiRequest {
                     model,
-                    messages: vec![
-                        ChatMessage {
-                            role: "system",
-                            content: system,
-                        },
-                        ChatMessage {
-                            role: "user",
-                            content: user,
-                        },
-                    ],
+                    messages: request_messages,
                     response_format: if use_json_format {
                         Some(ResponseFormat {
                             kind: "json_object",
@@ -206,13 +236,28 @@ pub async fn complete(settings: &AiSettings, system: &str, user: &str) -> AppRes
             let url = format!("{GOOGLE_BASE}/{model}:generateContent");
             let body = GoogleRequest {
                 system_instruction: GoogleContent {
+                    role: None,
                     parts: vec![GooglePart { text: system }],
                 },
-                contents: vec![GoogleContent {
-                    parts: vec![GooglePart { text: user }],
-                }],
+                contents: messages
+                    .iter()
+                    .map(|turn| GoogleContent {
+                        role: Some(if turn.role == "assistant" {
+                            "model"
+                        } else {
+                            "user"
+                        }),
+                        parts: vec![GooglePart {
+                            text: turn.content,
+                        }],
+                    })
+                    .collect(),
                 generation_config: GoogleGenerationConfig {
-                    response_mime_type: "application/json",
+                    response_mime_type: if json_mode {
+                        "application/json"
+                    } else {
+                        "text/plain"
+                    },
                 },
             };
 
