@@ -177,8 +177,8 @@ export const aiNl2Sql = (
     database: database ?? null,
   });
 
-export const aiExplain = (sql: string) =>
-  invoke<AiExplainResult>("ai_explain", { sql });
+export const aiExplain = (sql: string, language?: string) =>
+  invoke<AiExplainResult>("ai_explain", { sql, language: language ?? null });
 
 export const aiGetConfig = () => invoke<AiConfig>("ai_get_config");
 
@@ -187,14 +187,12 @@ export const aiSetConfig = (
   model: string,
   baseUrl?: string,
   apiKey?: string,
-  schemaTokenBudget?: number,
 ) =>
   invoke<AiConfig>("ai_set_config", {
     provider,
     model,
     base_url: baseUrl ?? null,
     api_key: apiKey ?? null,
-    schema_token_budget: schemaTokenBudget ?? null,
   });
 
 export const aiHasKey = () => invoke<boolean>("ai_has_key");

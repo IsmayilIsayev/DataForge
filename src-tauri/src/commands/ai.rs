@@ -34,7 +34,6 @@ pub struct AiConfigView {
     pub provider: AiProvider,
     pub model: String,
     pub base_url: Option<String>,
-    pub schema_token_budget: u32,
     pub has_key: bool,
 }
 
@@ -46,7 +45,6 @@ pub async fn ai_get_config(state: State<'_, AppState>) -> AppResult<AiConfigView
         provider: settings.provider,
         model: settings.model,
         base_url: settings.base_url,
-        schema_token_budget: settings.schema_token_budget,
         has_key,
     })
 }
@@ -58,12 +56,8 @@ pub async fn ai_set_config(
     model: String,
     base_url: Option<String>,
     api_key: Option<String>,
-    schema_token_budget: Option<u32>,
 ) -> AppResult<AiConfigView> {
     let current = state.ai_settings().await;
-    let schema_token_budget = nl2sql::clamp_budget(
-        schema_token_budget.unwrap_or(current.schema_token_budget),
-    );
     let model = model.trim().to_string();
     if model.is_empty() {
         return Err(AppError::Config("AI model is required".to_string()));
@@ -121,7 +115,7 @@ pub async fn ai_set_config(
         provider,
         model,
         base_url,
-        schema_token_budget,
+        schema_token_budget: current.schema_token_budget,
         key_scope,
     };
     state.set_ai_settings(settings.clone()).await?;
@@ -130,7 +124,6 @@ pub async fn ai_set_config(
         provider: settings.provider,
         model: settings.model,
         base_url: settings.base_url,
-        schema_token_budget: settings.schema_token_budget,
         has_key: settings.key_scope.is_some(),
     })
 }
@@ -170,13 +163,18 @@ pub async fn ai_nl2sql(
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub async fn ai_explain(state: State<'_, AppState>, sql: String) -> AppResult<AiExplainResult> {
+pub async fn ai_explain(
+    state: State<'_, AppState>,
+    sql: String,
+    language: Option<String>,
+) -> AppResult<AiExplainResult> {
     if sql.trim().is_empty() {
         return Err(AppError::Config("SQL boşdur".to_string()));
     }
 
     let settings = state.ai_settings().await;
-    let raw = client::complete(&settings, prompts::explain_system(), &sql).await?;
+    let system = prompts::explain_system(language.as_deref());
+    let raw = client::complete(&settings, &system, &sql).await?;
 
     nl2sql::parse_json::<AiExplainResult>(&raw)
         .map_err(|error| AppError::Ai(format!("JSON parse: {error}\nxam: {raw}")))

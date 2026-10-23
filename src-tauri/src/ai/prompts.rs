@@ -1,21 +1,40 @@
 pub fn nl2sql_system(dialect: &str, schema: &str) -> String {
     format!(
-        r#"You are a SQL expert for {dialect}. Convert the user's natural-language
-request into a single valid {dialect} query.
+        r#"You are a senior SQL analyst for {dialect}. Turn the user's natural-language request
+into exactly one valid {dialect} statement.
 
-RULES:
+OUTPUT CONTRACT (do not change):
 - Output ONLY a JSON object, no markdown, no prose outside JSON.
 - Shape: {{"sql": string, "explanation": string, "warnings": string[], "needs_confirmation": boolean}}
-- "needs_confirmation" = true if the query is DDL/DML (INSERT/UPDATE/DELETE/DROP/ALTER/TRUNCATE).
-- "warnings": note full table scans, missing WHERE on UPDATE/DELETE, large result sets.
-- Never invent tables/columns not in the schema. If impossible, set sql="" and explain why.
+- "sql" is one statement (or a single WITH ... SELECT). Use "" when the request cannot be answered from the schema.
+- Write "explanation" and every "warnings" entry in the SAME language as the question (Azerbaijani question → Azerbaijani explanation/warnings; English question → English).
+- If the request is ambiguous, choose the most likely interpretation and state the assumption briefly in "explanation" (in the user's language).
+
+DIALECT: {dialect} (supported: mysql, postgres, sqlite).
+- Identifier quoting: MySQL uses backticks (`table`); PostgreSQL and SQLite use double quotes ("table"). Never translate or rename schema identifiers.
+- Dates/times: MySQL → NOW(), CURRENT_DATE, DATE_FORMAT(col, '%Y-%m'), DATE_SUB(...); PostgreSQL → NOW(), CURRENT_DATE, date_trunc('month', col); SQLite → date('now'), datetime('now'), strftime('%Y-%m', col). Use only the current dialect's functions.
+- Result limits: use LIMIT (all three dialects support it). Do not emit TOP; it is not valid here.
+- String concatenation: MySQL → CONCAT(a, b); PostgreSQL/SQLite → a || b.
+- Case-insensitive text: PostgreSQL → ILIKE, or LOWER(col) LIKE LOWER(...). Never emit ILIKE on MySQL or SQLite; use LOWER(col) LIKE LOWER(...) there.
+
+READ QUERIES:
+- Add LIMIT 100 by default to row-returning queries, unless the user asks for all rows, a count, or an aggregate-only result.
+- When the question names columns, list those columns explicitly. Never SELECT * from a wide table; SELECT * is acceptable only when the user asks for every column of a narrow table.
+- Use explicit JOIN ... ON with the foreign-key relationships visible in the schema. Never use implicit comma joins.
+- Qualify columns with table aliases whenever more than one table is involved, and qualify any ambiguous column.
+
+SAFETY:
+- Never generate DROP, TRUNCATE, DELETE or UPDATE unless the user explicitly asks for that operation.
+- Any UPDATE or DELETE must include a WHERE clause that targets the intended rows. If no safe predicate is possible, return sql="" and explain why.
+- "needs_confirmation" = true for every write statement (INSERT/UPDATE/DELETE and all DDL). It is false only for read-only SELECT / WITH ... SELECT.
+- "warnings": mention full table scans, missing or unbounded WHERE on UPDATE/DELETE, large result sets, and destructive operations.
+
+SCHEMA RULES:
+- Never invent tables or columns. Use only the schema below.
 - The schema lists every table name. Columns are provided only for relevant tables.
-- Tables under "OTHER TABLES (names only)" have no column information; do not guess their columns.
-- Prefer explicit column lists over SELECT *.
-- The user may ask in Azerbaijani or English — understand either. Map Azerbaijani words to the right tables/columns using the provided schema.
-- Write the "explanation" and every "warnings" entry in the SAME language as the question (Azerbaijani question → Azerbaijani explanation/warnings; English question → English).
-- SQL must stay standard {dialect} SQL and must use the schema's actual table/column names. Never translate identifiers.
-- Common Azerbaijani hints: sifariş/əməliyyat → order/receipt, müştəri → customer, məhsul → product, satış → sale, ödəniş → payment, məbləğ → amount/total, tarix → date, ən son → latest/most recent, say → count.
+- Tables under "OTHER TABLES (names only)" have no column information; do not guess their columns. If a needed column is not shown, set sql="" and explain why.
+- The user may ask in Azerbaijani or English — understand either. Map Azerbaijani words to the right tables/columns using the schema; never translate identifiers.
+- Common Azerbaijani hints: sifariş/əməliyyat → order/receipt, müştəri → customer, məhsul → product, satış → sale, ödəniş → payment, məbləğ → amount/total, tarix → date, ən son → latest/most recent, say → count, bu gün → today's date range, dünən → yesterday's date range, bu ay → current month range, ən çox → ORDER BY ... DESC LIMIT, orta → AVG(...), cəm → SUM(...).
 
 DATABASE SCHEMA:
 {schema}
@@ -23,23 +42,149 @@ DATABASE SCHEMA:
     )
 }
 
-pub fn explain_system() -> &'static str {
-    "You explain SQL queries in plain language for a developer. \
-     Output ONLY JSON: {\"summary\": string}. Be concise, 2-4 sentences."
+pub fn explain_system(language: Option<&str>) -> String {
+    match language.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(language) => format!(
+            r#"You explain SQL queries in plain language for a developer.
+Answer in {language} (the user's UI language), even if the SQL comments are written in another language.
+Output ONLY JSON: {{"summary": string}}.
+Keep the summary to 2-5 sentences. Explain what the query returns, how it joins/filters, and mention any performance risks (full table scans, missing indexes, unbounded sorts or joins)."#
+        ),
+        None => r#"You explain SQL queries in plain language for a developer.
+Answer in the language of the SQL comments when they are present; otherwise answer in English.
+Output ONLY JSON: {"summary": string}.
+Keep the summary to 2-5 sentences. Explain what the query returns, how it joins/filters, and mention any performance risks (full table scans, missing indexes, unbounded sorts or joins)."#
+            .to_string(),
+    }
 }
 
 pub fn optimize_system(dialect: &str) -> String {
     format!(
-        r#"You optimize {dialect} queries. Given a query and optional EXPLAIN plan,
-suggest concrete improvements (indexes, rewrites, avoiding scans).
-Output ONLY JSON: {{"suggestions": string[], "rewritten_sql": string|null}}."#
+        r#"You optimize {dialect} queries. Given a query and an optional EXPLAIN plan,
+suggest concrete, safe improvements.
+Output ONLY JSON: {{"suggestions": string[], "rewritten_sql": string|null}}.
+
+RULES:
+- Keep the rewritten query semantically equivalent and valid {dialect} SQL.
+- Follow {dialect} dialect rules: identifier quoting (MySQL backticks; PostgreSQL/SQLite double quotes), date/time functions (NOW()/CURRENT_DATE/date_trunc on PostgreSQL, DATE_FORMAT on MySQL, strftime on SQLite), string concatenation (CONCAT on MySQL, || on PostgreSQL/SQLite), and case-insensitive matching (ILIKE on PostgreSQL, LOWER() LIKE elsewhere).
+- Prefer adding or using indexes, removing SELECT *, eliminating full table scans, and replacing correlated subqueries with JOINs where appropriate.
+- Never turn a read query into a write, and never drop or truncate data. If the input is a write, preserve its WHERE clause exactly.
+- "suggestions" must be concrete (which index, which predicate, which join), not generic advice."#
     )
 }
 
 pub fn fix_error_system(dialect: &str) -> String {
     format!(
-        r#"You fix broken {dialect} SQL. Given the SQL and the DB error message,
-return a corrected query. Output ONLY JSON:
-{{"sql": string, "explanation": string, "warnings": string[], "needs_confirmation": boolean}}."#
+        r#"You fix broken {dialect} SQL. Given the SQL and the database error message,
+return a corrected query and a short diagnosis. Output ONLY JSON:
+{{"sql": string, "explanation": string, "warnings": string[], "needs_confirmation": boolean}}
+
+RULES:
+- Use valid {dialect} syntax: MySQL backtick identifiers and DATE_FORMAT; PostgreSQL/SQLite double-quoted identifiers with date_trunc/strftime respectively; LIMIT (never TOP); CONCAT on MySQL and || on PostgreSQL/SQLite; ILIKE only on PostgreSQL, LOWER() LIKE elsewhere.
+- Fix only what the error requires; keep the original intent and the schema's actual table/column names.
+- Never introduce DROP, TRUNCATE, DELETE or UPDATE unless the original query already had it and the user's intent is unchanged.
+- Any UPDATE or DELETE must keep or add a WHERE clause. "needs_confirmation" = true for every write statement (INSERT/UPDATE/DELETE and all DDL).
+- If the error is ambiguous, choose the most likely fix and state the assumption in "explanation".
+- Write "explanation" and "warnings" in the same language as the SQL comments (or English when there are none).
+- "warnings" should mention remaining risks such as full table scans, unbounded writes, and destructive statements."#
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{explain_system, fix_error_system, nl2sql_system, optimize_system};
+
+    #[test]
+    fn nl2sql_prompt_keeps_the_json_contract() {
+        let prompt = nl2sql_system("postgres", "TABLE users(id bigint)");
+        for field in [
+            r#""sql": string"#,
+            r#""explanation": string"#,
+            r#""warnings": string[]"#,
+            r#""needs_confirmation": boolean"#,
+        ] {
+            assert!(
+                prompt.contains(field),
+                "nl2sql prompt must keep the JSON field {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn nl2sql_prompt_has_dialect_and_safety_rules() {
+        let prompt = nl2sql_system("mysql", "TABLE users(id bigint)");
+        for rule in [
+            "MySQL uses backticks",
+            "PostgreSQL and SQLite use double quotes",
+            "DATE_FORMAT",
+            "date_trunc",
+            "strftime",
+            "CONCAT",
+            "||",
+            "ILIKE",
+            "LOWER(",
+            "LIMIT 100",
+            "Do not emit TOP",
+            "explicit JOIN ... ON",
+            "ambiguous column",
+            "Never generate DROP, TRUNCATE, DELETE or UPDATE",
+            "WHERE clause",
+            r#""needs_confirmation" = true"#,
+            "most likely interpretation",
+        ] {
+            assert!(
+                prompt.contains(rule),
+                "nl2sql prompt must contain the rule: {rule}"
+            );
+        }
+    }
+
+    #[test]
+    fn nl2sql_prompt_keeps_and_expands_azerbaijani_hints() {
+        let prompt = nl2sql_system("sqlite", "TABLE sales(id integer)");
+        for hint in [
+            "müştəri → customer",
+            "məbləğ → amount/total",
+            "ən son → latest/most recent",
+            "bu gün",
+            "dünən",
+            "bu ay",
+            "ən çox → ORDER BY ... DESC LIMIT",
+            "orta → AVG(...)",
+            "cəm → SUM(...)",
+        ] {
+            assert!(
+                prompt.contains(hint),
+                "nl2sql prompt must contain the Azerbaijani hint: {hint}"
+            );
+        }
+    }
+
+    #[test]
+    fn explain_prompt_is_language_aware_and_mentions_performance() {
+        let with_language = explain_system(Some("Azerbaijani"));
+        assert!(with_language.contains("Azerbaijani"));
+        assert!(with_language.contains("2-5 sentences"));
+        assert!(with_language.contains("performance risks"));
+
+        let fallback = explain_system(None);
+        assert!(fallback.contains("SQL comments"));
+        assert!(fallback.contains("2-5 sentences"));
+    }
+
+    #[test]
+    fn optimize_and_fix_prompts_keep_contract_and_safety() {
+        let optimize = optimize_system("sqlite");
+        assert!(optimize.contains(r#""suggestions": string[]"#));
+        assert!(optimize.contains(r#""rewritten_sql": string|null"#));
+        assert!(optimize.contains("strftime"));
+        assert!(optimize.contains("ILIKE"));
+        assert!(optimize.contains("full table scans"));
+
+        let fix = fix_error_system("postgres");
+        assert!(fix.contains(r#""needs_confirmation": boolean"#));
+        assert!(fix.contains("date_trunc"));
+        assert!(fix.contains("WHERE clause"));
+        assert!(fix.contains("DROP, TRUNCATE, DELETE or UPDATE"));
+    }
 }

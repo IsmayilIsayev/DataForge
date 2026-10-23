@@ -33,6 +33,8 @@ pub struct AiSettings {
     pub model: String,
     #[serde(default)]
     pub base_url: Option<String>,
+    /// Backend-only tuning value. Kept with a serde default so settings files
+    /// written by older builds still load; it is no longer exposed in the UI.
     #[serde(default = "default_schema_token_budget")]
     pub schema_token_budget: u32,
     /// Provider + base URL the stored keychain key belongs to. Missing for
@@ -111,5 +113,15 @@ mod tests {
     fn legacy_settings_without_a_scope_do_not_match() {
         let settings = AiSettings::default();
         assert!(!settings.key_matches_scope());
+    }
+
+    #[test]
+    fn legacy_settings_without_schema_budget_use_the_default() {
+        let settings: AiSettings =
+            serde_json::from_str(r#"{"provider":"openai","model":"gpt-4o-mini"}"#).unwrap();
+        assert_eq!(
+            settings.schema_token_budget,
+            crate::ai::nl2sql::DEFAULT_SCHEMA_TOKEN_BUDGET
+        );
     }
 }

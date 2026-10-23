@@ -27,7 +27,6 @@ export interface AiConfig {
   provider: AiProvider;
   model: string;
   base_url?: string;
-  schema_token_budget: number;
   has_key: boolean;
 }
 

@@ -10,15 +10,12 @@ interface Props {
   onClose: () => void;
 }
 
-const PROVIDER_LABELS: Record<AiProvider, string> = {
-  openai: "OpenAI",
-  openai_compatible: "Compatible",
-  google: "Google Gemini",
-};
+const CUSTOM_MODEL = "__custom__";
 
 type AiPreset =
   | "openai"
   | "openrouter"
+  | "groq"
   | "ollama"
   | "lmstudio"
   | "opencode"
@@ -49,6 +46,13 @@ const AI_PRESETS: Record<
     model: "openai/gpt-4o-mini",
     note: "Routes requests through OpenRouter.",
   },
+  groq: {
+    label: "Groq",
+    provider: "openai_compatible",
+    baseUrl: "https://api.groq.com/openai/v1",
+    model: "llama-3.3-70b-versatile",
+    note: "Uses Groq's free OpenAI-compatible endpoint.",
+  },
   ollama: {
     label: "Ollama (local)",
     provider: "openai_compatible",
@@ -78,12 +82,38 @@ const AI_PRESETS: Record<
     note: "Uses the Google Generative Language API.",
   },
   custom: {
-    label: "Custom",
+    label: "Custom / OpenAI-compatible",
     provider: "openai_compatible",
     baseUrl: "",
     model: "",
     note: "Enter any OpenAI-compatible base URL, model, and key.",
   },
+};
+
+const MODEL_OPTIONS: Record<AiPreset, string[]> = {
+  openai: ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "o3-mini"],
+  openrouter: [
+    "openai/gpt-4o-mini",
+    "anthropic/claude-3.5-sonnet",
+    "google/gemini-2.0-flash-001",
+    "meta-llama/llama-3.3-70b-instruct",
+  ],
+  groq: [
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+    "mixtral-8x7b-32768",
+    "gemma2-9b-it",
+  ],
+  ollama: ["llama3.1", "qwen2.5", "mistral", "deepseek-r1"],
+  lmstudio: ["local-model", "qwen2.5", "mistral", "llama3.1"],
+  opencode: ["gpt-4o-mini", "gpt-4o", "anthropic/claude-3.5-sonnet"],
+  google: [
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
+    "gemini-1.5-pro",
+    "gemini-1.5-flash",
+  ],
+  custom: [],
 };
 
 const KEYWORDS = new Set(
@@ -111,6 +141,7 @@ function inferPreset(config: AiConfig): AiPreset {
   const url = (config.base_url ?? "").toLowerCase();
   if (url.includes("api.openai.com")) return "openai";
   if (url.includes("openrouter.ai")) return "openrouter";
+  if (url.includes("api.groq.com")) return "groq";
   if (url.includes(":11434")) return "ollama";
   if (url.includes(":1234")) return "lmstudio";
   if (url.includes("localhost") || url.includes("127.0.0.1")) return "opencode";
@@ -193,10 +224,10 @@ export default function AiPanel({ onClose }: Props) {
   const [config, setConfig] = useState<AiConfig | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [preset, setPreset] = useState<AiPreset>("openai");
-  const [provider, setProvider] = useState<AiProvider>("openai");
+  const [provider, setProvider] = useState<AiProvider>("openai_compatible");
   const [model, setModel] = useState("gpt-4o-mini");
+  const [modelCustom, setModelCustom] = useState(false);
   const [baseUrl, setBaseUrl] = useState("");
-  const [schemaBudget, setSchemaBudget] = useState("3000");
   const [includeSchema, setIncludeSchema] = useState(true);
   const [savingSettings, setSavingSettings] = useState(false);
   const [question, setQuestion] = useState("");
@@ -218,18 +249,23 @@ export default function AiPanel({ onClose }: Props) {
     connections.find((connection) => connection.id === activeConnId)?.dialect ??
     "mysql";
 
+  const applyConfig = (value: AiConfig) => {
+    const nextPreset = inferPreset(value);
+    setConfig(value);
+    setPreset(nextPreset);
+    setProvider(value.provider);
+    setModel(value.model);
+    setModelCustom(!MODEL_OPTIONS[nextPreset].includes(value.model));
+    setBaseUrl(value.base_url ?? "");
+  };
+
   useEffect(() => {
     let cancelled = false;
 
     aiGetConfig()
       .then((value) => {
         if (cancelled) return;
-        setConfig(value);
-        setPreset(inferPreset(value));
-        setProvider(value.provider);
-        setModel(value.model);
-        setBaseUrl(value.base_url ?? "");
-        setSchemaBudget(String(value.schema_token_budget ?? 3000));
+        applyConfig(value);
         if (!value.has_key) setSettingsOpen(true);
       })
       .catch((configError) => {
@@ -256,25 +292,13 @@ export default function AiPanel({ onClose }: Props) {
   }, [copied]);
 
   const openSettings = () => {
-    if (config) {
-      setPreset(inferPreset(config));
-      setProvider(config.provider);
-      setModel(config.model);
-      setBaseUrl(config.base_url ?? "");
-      setSchemaBudget(String(config.schema_token_budget ?? 3000));
-    }
+    if (config) applyConfig(config);
     setError(null);
     setSettingsOpen(true);
   };
 
   const closeSettings = () => {
-    if (config) {
-      setPreset(inferPreset(config));
-      setProvider(config.provider);
-      setModel(config.model);
-      setBaseUrl(config.base_url ?? "");
-      setSchemaBudget(String(config.schema_token_budget ?? 3000));
-    }
+    if (config) applyConfig(config);
     if (keyRef.current) keyRef.current.value = "";
     setError(null);
     setSettingsOpen(false);
@@ -285,7 +309,8 @@ export default function AiPanel({ onClose }: Props) {
     setPreset(value);
     setProvider(next.provider);
     setBaseUrl(next.baseUrl);
-    if (next.model) setModel(next.model);
+    setModel(next.model);
+    setModelCustom(!next.model || !MODEL_OPTIONS[value].includes(next.model));
     setError(null);
   };
 
@@ -296,8 +321,8 @@ export default function AiPanel({ onClose }: Props) {
       setError("Enter a model name.");
       return;
     }
-    if (provider === "openai_compatible" && !baseUrl.trim()) {
-      setError("Base URL is required for OpenAI-compatible providers.");
+    if (preset === "custom" && !baseUrl.trim()) {
+      setError("Base URL is required for the Custom provider.");
       return;
     }
 
@@ -306,25 +331,19 @@ export default function AiPanel({ onClose }: Props) {
 
     try {
       const apiKey = keyRef.current?.value.trim() || undefined;
-      const budget = Math.min(
-        8000,
-        Math.max(500, Number(schemaBudget) || 3000),
-      );
+      const baseUrlForSave =
+        preset === "custom"
+          ? baseUrl.trim()
+          : AI_PRESETS[preset].baseUrl.trim();
       const value = await aiSetConfig(
         provider,
         model.trim(),
-        provider === "openai_compatible" ? baseUrl.trim() : undefined,
+        provider === "openai_compatible" ? baseUrlForSave : undefined,
         apiKey,
-        budget,
       );
 
       if (keyRef.current) keyRef.current.value = "";
-      setConfig(value);
-      setPreset(inferPreset(value));
-      setProvider(value.provider);
-      setModel(value.model);
-      setBaseUrl(value.base_url ?? "");
-      setSchemaBudget(String(value.schema_token_budget ?? budget));
+      applyConfig(value);
 
       if (!value.has_key) {
         setSettingsOpen(true);
@@ -425,7 +444,7 @@ export default function AiPanel({ onClose }: Props) {
         </span>
       </div>
 
-      <Field label="Preset">
+      <Field label="Provider">
         <select
           value={preset}
           onChange={(event) => applyPreset(event.target.value as AiPreset)}
@@ -433,11 +452,12 @@ export default function AiPanel({ onClose }: Props) {
         >
           <option value="openai">OpenAI</option>
           <option value="openrouter">OpenRouter</option>
+          <option value="groq">Groq</option>
           <option value="ollama">Ollama (local)</option>
           <option value="lmstudio">LM Studio (local)</option>
           <option value="opencode">opencode (local)</option>
-          <option value="google">Google</option>
-          <option value="custom">Custom</option>
+          <option value="google">Google Gemini</option>
+          <option value="custom">Custom / OpenAI-compatible</option>
         </select>
       </Field>
 
@@ -454,46 +474,51 @@ export default function AiPanel({ onClose }: Props) {
         </p>
       )}
 
-      <Field label="Provider">
-        <select
-          value={provider}
-          onChange={(event) => {
-            setProvider(event.target.value as AiProvider);
-            setPreset("custom");
-            setError(null);
-          }}
-          style={inputStyle}
-        >
-          <option value="openai">OpenAI</option>
-          <option value="openai_compatible">OpenAI-compatible</option>
-          <option value="google">Google Gemini</option>
-        </select>
-      </Field>
-
       <Field label="Model">
-        <input
-          value={model}
-          onChange={(event) => {
-            setModel(event.target.value);
-            setPreset("custom");
-          }}
-          placeholder="gpt-4o-mini or gemini-2.0-flash"
-          autoComplete="off"
-          spellCheck={false}
-          className="v2-input"
-          style={inputStyle}
-        />
+        {MODEL_OPTIONS[preset].length > 0 && (
+          <select
+            value={modelCustom ? CUSTOM_MODEL : model}
+            onChange={(event) => {
+              const value = event.target.value;
+              if (value === CUSTOM_MODEL) {
+                setModelCustom(true);
+              } else {
+                setModel(value);
+                setModelCustom(false);
+              }
+            }}
+            style={inputStyle}
+          >
+            {MODEL_OPTIONS[preset].map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+            <option value={CUSTOM_MODEL}>Custom…</option>
+          </select>
+        )}
+        {(modelCustom || MODEL_OPTIONS[preset].length === 0) && (
+          <input
+            value={model}
+            onChange={(event) => setModel(event.target.value)}
+            placeholder="Enter a model name"
+            autoComplete="off"
+            spellCheck={false}
+            className="v2-input"
+            style={{
+              ...inputStyle,
+              marginTop: MODEL_OPTIONS[preset].length > 0 ? 6 : 0,
+            }}
+          />
+        )}
       </Field>
 
-      {provider === "openai_compatible" && (
+      {preset === "custom" && (
         <Field label="Base URL">
           <input
             value={baseUrl}
-            onChange={(event) => {
-              setBaseUrl(event.target.value);
-              setPreset("custom");
-            }}
-            placeholder="https://openrouter.ai/api/v1"
+            onChange={(event) => setBaseUrl(event.target.value)}
+            placeholder="https://api.example.com/v1"
             autoComplete="off"
             spellCheck={false}
             className="v2-input"
@@ -517,30 +542,6 @@ export default function AiPanel({ onClose }: Props) {
           style={inputStyle}
         />
       </Field>
-
-      <Field label="Schema token budget">
-        <input
-          type="number"
-          min={500}
-          max={8000}
-          step={100}
-          value={schemaBudget}
-          onChange={(event) => setSchemaBudget(event.target.value)}
-          className="v2-input"
-          style={inputStyle}
-        />
-      </Field>
-      <p
-        style={{
-          margin: "-4px 0 0",
-          color: "var(--fa)",
-          fontSize: 10.5,
-          lineHeight: 1.45,
-        }}
-      >
-        All table names are always included. Columns are sent only for relevant
-        tables. Default 3000 tokens.
-      </p>
 
       {error && (
         <div
@@ -711,9 +712,7 @@ export default function AiPanel({ onClose }: Props) {
                   color: "var(--fa)",
                 }}
               >
-                {includeSchema
-                  ? `relevant only · ≤ ${Number(schemaBudget || 3000).toLocaleString("en-US")} est. tokens`
-                  : "not sent"}
+                {includeSchema ? "relevant tables only" : "not sent"}
               </span>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -1088,7 +1087,9 @@ export default function AiPanel({ onClose }: Props) {
                 cursor: "default",
               }}
             >
-              <span>{config ? PROVIDER_LABELS[config.provider] : "—"}</span>
+              <span>
+                {config ? AI_PRESETS[inferPreset(config)].label : "—"}
+              </span>
               <i
                 className="icon-chevrons-up-down"
                 style={{ fontSize: 11, color: "var(--fa)" }}
