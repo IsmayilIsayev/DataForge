@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - SSL/TLS settings for MySQL and PostgreSQL: disable, prefer, require, verify CA or verify full, with an optional CA certificate. `sslmode` / `ssl-mode` from a connection URL is applied to the dialog.
 
+### Fixed
+
+- Ctrl/Cmd+I opens the AI panel (and Ctrl/Cmd+K the command palette) even while typing in the SQL editor.
+
 ## [0.4.2] - 2026-10-23
 
 ### Added

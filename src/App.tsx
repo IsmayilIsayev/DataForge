@@ -368,12 +368,16 @@ export default function App() {
 
       if (mod && key === "k") {
         event.preventDefault();
+        event.stopPropagation();
         setPaletteOpen((open) => !open);
       } else if (mod && key === "b") {
         event.preventDefault();
+        event.stopPropagation();
         setSideOpen((open) => !open);
       } else if (mod && key === "i") {
+        // Capture + stop so Monaco (which binds Ctrl+I to "trigger suggest") never sees it.
         event.preventDefault();
+        event.stopPropagation();
         setAiOpen((open) => !open);
       } else if (event.key === "Escape") {
         setPaletteOpen(false);
@@ -382,8 +386,8 @@ export default function App() {
       }
     };
 
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
   }, []);
 
   useEffect(() => {
