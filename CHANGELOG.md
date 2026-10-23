@@ -9,11 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.4.4] - 2026-10-23
 
-## [0.4.3] - 2026-10-23
-
 ### Added
 
 - ER diagram (database right-click → ER diagram): tables with keys and foreign-key relations, automatic layout, pan/zoom/fit, drag tables (positions remembered), search, keys-only mode, PNG/SVG export.
+- Compare schemas (e.g. dev ↔ prod): differences per table and a migration script to make the target match the source; destructive steps are flagged and unticked by default, nothing runs automatically. PostgreSQL, MySQL and SQLite.
+- Live AI model list from your provider (OpenAI, Groq, OpenRouter, Gemini, Ollama, LM Studio); speech, TTS and guard models are filtered out. Click "Model" in the AI panel footer to switch models from a searchable dropdown.
+
+## [0.4.3] - 2026-10-23
 
 ### Added
 
