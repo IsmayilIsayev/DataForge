@@ -427,6 +427,22 @@ impl Driver for MssqlDriver {
         })
     }
 
+    fn stream_table<'a>(
+        &'a self,
+        sql: &'a str,
+        database: Option<String>,
+        batch_size: usize,
+        on_batch: &'a mut (dyn FnMut(Vec<Vec<Value>>) -> AppResult<bool> + Send),
+    ) -> BoxFuture<'a, AppResult<bool>> {
+        Box::pin(async move {
+            let requested = database
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| self.database.clone());
+            let mut client = self.client_for(&requested).await?;
+            stream_rows(&mut client, sql, batch_size, on_batch).await
+        })
+    }
+
     fn apply_transaction<'a>(
         &'a self,
         statements: &'a [String],
@@ -865,6 +881,35 @@ async fn execute_statement(
 
     let truncated = fetched.len() > limit as usize;
     Ok(build_result(columns, fetched, limit, truncated, started, None))
+}
+
+async fn stream_rows(
+    client: &mut MssqlClient,
+    sql: &str,
+    batch_size: usize,
+    on_batch: &mut (dyn FnMut(Vec<Vec<Value>>) -> AppResult<bool> + Send),
+) -> AppResult<bool> {
+    let body = trim_statement(sql);
+    let mut stream = client.simple_query(body).await.map_err(db_error)?;
+    let batch_size = batch_size.max(1);
+    let mut batch: Vec<Vec<Value>> = Vec::with_capacity(batch_size);
+
+    while let Some(item) = stream_next(&mut stream).await? {
+        if let QueryItem::Row(row) = item {
+            batch.push(row_to_json(&row));
+            if batch.len() >= batch_size {
+                if !on_batch(std::mem::take(&mut batch))? {
+                    return Ok(false);
+                }
+                batch = Vec::with_capacity(batch_size);
+            }
+        }
+    }
+
+    if !batch.is_empty() && !on_batch(batch)? {
+        return Ok(false);
+    }
+    Ok(true)
 }
 
 async fn stream_next(

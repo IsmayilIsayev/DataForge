@@ -1,5 +1,6 @@
 use std::time::{Duration, Instant};
 
+use futures::StreamExt;
 use serde_json::{Number, Value};
 
 use crate::core::drivers::{
@@ -183,6 +184,99 @@ impl ClickHouseDriver {
         Ok((text, summary))
     }
 
+    async fn stream_rows(
+        &self,
+        sql: &str,
+        database: Option<&str>,
+        batch_size: usize,
+        on_batch: &mut (dyn FnMut(Vec<Vec<Value>>) -> AppResult<bool> + Send),
+    ) -> AppResult<bool> {
+        let body = trim_statement(sql);
+        let request = build_request(
+            &self.base,
+            self.database(database),
+            None,
+            None,
+            &self.username,
+            &self.password,
+        )?;
+
+        let response = self
+            .client
+            .post(request.url.as_str())
+            .header("X-ClickHouse-User", &request.user)
+            .header("X-ClickHouse-Key", &request.key)
+            .header("Content-Type", "text/plain; charset=utf-8")
+            .body(body.to_string())
+            .send()
+            .await
+            .map_err(|error| AppError::Db(format!("ClickHouse HTTP: {error}")))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let text = response.text().await.unwrap_or_default();
+            let message = text.trim();
+            return Err(AppError::Db(format!(
+                "ClickHouse {}: {}",
+                status.as_u16(),
+                if message.is_empty() {
+                    status.canonical_reason().unwrap_or("request failed")
+                } else {
+                    message
+                }
+            )));
+        }
+
+        let batch_size = batch_size.max(1);
+        let mut batch: Vec<Vec<Value>> = Vec::with_capacity(batch_size);
+        let mut pending: Vec<u8> = Vec::new();
+        let mut header = 0u8;
+        let mut types: Vec<String> = Vec::new();
+        let mut stream = response.bytes_stream();
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk
+                .map_err(|error| AppError::Db(format!("ClickHouse HTTP body: {error}")))?;
+            pending.extend_from_slice(&chunk);
+
+            let mut start = 0usize;
+            while let Some(offset) = pending[start..].iter().position(|&byte| byte == b'\n') {
+                let end = start + offset;
+                let line = &pending[start..end];
+                start = end + 1;
+                let text = std::str::from_utf8(line)
+                    .map_err(|error| AppError::Db(format!("ClickHouse response: {error}")))?
+                    .trim_end_matches('\r');
+                if let Some(row) = parse_stream_line(text, &mut header, &mut types)? {
+                    batch.push(row);
+                    if batch.len() >= batch_size {
+                        if !on_batch(std::mem::take(&mut batch))? {
+                            return Ok(false);
+                        }
+                        batch = Vec::with_capacity(batch_size);
+                    }
+                }
+            }
+            if start > 0 {
+                pending.drain(..start);
+            }
+        }
+
+        if !pending.is_empty() {
+            let text = std::str::from_utf8(&pending)
+                .map_err(|error| AppError::Db(format!("ClickHouse response: {error}")))?
+                .trim_end_matches('\r');
+            if let Some(row) = parse_stream_line(text, &mut header, &mut types)? {
+                batch.push(row);
+            }
+        }
+
+        if !batch.is_empty() && !on_batch(batch)? {
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
     async fn tables_on(&self, database: &str) -> AppResult<Vec<TableInfo>> {
         let sql = format!(
             "SELECT name, engine FROM system.tables WHERE database = {} ORDER BY name",
@@ -273,6 +367,19 @@ impl Driver for ClickHouseDriver {
             }
 
             self.execute_statement(last, max_rows, database.as_deref(), None)
+                .await
+        })
+    }
+
+    fn stream_table<'a>(
+        &'a self,
+        sql: &'a str,
+        database: Option<String>,
+        batch_size: usize,
+        on_batch: &'a mut (dyn FnMut(Vec<Vec<Value>>) -> AppResult<bool> + Send),
+    ) -> BoxFuture<'a, AppResult<bool>> {
+        Box::pin(async move {
+            self.stream_rows(sql, database.as_deref(), batch_size, on_batch)
                 .await
         })
     }
@@ -569,6 +676,44 @@ fn build_request(
         user: username.to_string(),
         key: password.to_string(),
     })
+}
+
+fn parse_stream_line(
+    text: &str,
+    header: &mut u8,
+    types: &mut Vec<String>,
+) -> AppResult<Option<Vec<Value>>> {
+    if text.trim().is_empty() {
+        return Ok(None);
+    }
+
+    match *header {
+        0 => {
+            *header = 1;
+            Ok(None)
+        }
+        1 => {
+            *types = serde_json::from_str(text)
+                .map_err(|error| AppError::Db(format!("ClickHouse column types: {error}")))?;
+            *header = 2;
+            Ok(None)
+        }
+        _ => {
+            let values: Vec<Value> = serde_json::from_str(text)
+                .map_err(|error| AppError::Db(format!("ClickHouse row: {error}")))?;
+            let row = values
+                .into_iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    map_value(
+                        types.get(index).map(String::as_str).unwrap_or("String"),
+                        &value,
+                    )
+                })
+                .collect();
+            Ok(Some(row))
+        }
+    }
 }
 
 fn parse_response(body: &str) -> AppResult<(Vec<String>, Vec<String>, Vec<Vec<Value>>)> {

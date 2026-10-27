@@ -7,10 +7,11 @@ use std::sync::Arc;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use serde::Serialize;
+use serde_json::Value;
 use tauri::{Emitter, State};
 use tauri_plugin_dialog::DialogExt;
 
-use crate::commands::export::page_sql;
+use crate::commands::export::read_table;
 use crate::core::backup::{
     external_dump_command, external_tool, external_tool_name, supports_structure, timestamp_utc,
     DumpColumn, DumpMode, DumpOptions, SqlDumpWriter,
@@ -246,42 +247,30 @@ async fn run_builtin(
                 })
                 .collect();
             let names: Vec<String> = columns.iter().map(|column| column.name.clone()).collect();
-            let pk: Vec<String> = column_info
+            let pk_info: Vec<_> = column_info
                 .iter()
                 .filter(|column| column.key.as_deref() == Some("PRI"))
-                .map(|column| column.name.clone())
+                .collect();
+            let pk: Vec<String> = pk_info.iter().map(|column| column.name.clone()).collect();
+            let pk_types: Vec<String> = pk_info
+                .iter()
+                .map(|column| column.data_type.clone())
                 .collect();
 
             writer.begin_table(table, &columns).map_err(io_err)?;
 
-            let mut offset = 0i64;
-            loop {
-                if is_cancelled(state, id).await {
-                    cancelled = true;
-                    break;
+            let mut on_batch = |rows: Vec<Vec<Value>>| -> AppResult<bool> {
+                let cancelled = state
+                    .cancelled
+                    .try_read()
+                    .map(|guard| guard.contains(id))
+                    .unwrap_or(false);
+                if cancelled {
+                    return Ok(false);
                 }
 
-                let sql = page_sql(
-                    driver.dialect(),
-                    database,
-                    table,
-                    &names,
-                    &pk,
-                    PAGE_SIZE,
-                    offset,
-                );
-                let page = driver
-                    .run_statements(&[sql], PAGE_SIZE, Some(database.to_string()))
-                    .await?;
-                if page.rows.is_empty() {
-                    break;
-                }
-
-                writer.write_rows(&page.rows).map_err(io_err)?;
-                let fetched = page.rows.len() as i64;
-                total += fetched as u64;
-                offset += fetched;
-
+                writer.write_rows(&rows).map_err(io_err)?;
+                total += rows.len() as u64;
                 emit_progress(
                     app,
                     id,
@@ -292,14 +281,26 @@ async fn run_builtin(
                     false,
                     false,
                 );
+                Ok(true)
+            };
 
-                if fetched < PAGE_SIZE {
-                    break;
-                }
-            }
+            let completed = read_table(
+                driver.as_ref(),
+                driver.dialect(),
+                database,
+                table,
+                &names,
+                &pk,
+                &pk_types,
+                PAGE_SIZE,
+                &mut on_batch,
+            )
+            .await?;
+            drop(on_batch);
 
             writer.end_table().map_err(io_err)?;
-            if cancelled {
+            if !completed {
+                cancelled = true;
                 break;
             }
         }

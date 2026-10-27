@@ -328,6 +328,19 @@ impl Driver for SqliteDriver {
         })
     }
 
+    fn stream_table<'a>(
+        &'a self,
+        sql: &'a str,
+        _database: Option<String>,
+        batch_size: usize,
+        on_batch: &'a mut (dyn FnMut(Vec<Vec<Value>>) -> AppResult<bool> + Send),
+    ) -> BoxFuture<'a, AppResult<bool>> {
+        Box::pin(async move {
+            let mut conn = self.pool.acquire().await.map_err(db_error)?;
+            stream_rows(&mut conn, sql, batch_size, on_batch).await
+        })
+    }
+
     fn apply_transaction<'a>(
         &'a self,
         statements: &'a [String],
@@ -975,6 +988,49 @@ async fn execute_statement(
 
     let truncated = fetched.len() > limit as usize;
     Ok(build_result(columns, fetched, limit, truncated, started, None))
+}
+
+async fn stream_rows(
+    conn: &mut SqliteConnection,
+    sql: &str,
+    batch_size: usize,
+    on_batch: &mut (dyn FnMut(Vec<Vec<Value>>) -> AppResult<bool> + Send),
+) -> AppResult<bool> {
+    let body = trim_statement(sql);
+    let mut columns: Vec<String> = match (&mut *conn).prepare(body).await {
+        Ok(statement) => statement
+            .columns()
+            .iter()
+            .map(|column| column.name().to_string())
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+
+    let batch_size = batch_size.max(1);
+    let mut batch: Vec<Vec<Value>> = Vec::with_capacity(batch_size);
+    let mut stream = sqlx::query(body).fetch(&mut *conn);
+    while let Some(row) = stream.next().await {
+        let row = row.map_err(db_error)?;
+        if columns.is_empty() {
+            columns = row_columns(&row);
+        }
+        batch.push(
+            (0..columns.len())
+                .map(|index| cell_to_json(&row, index))
+                .collect(),
+        );
+        if batch.len() >= batch_size {
+            if !on_batch(std::mem::take(&mut batch))? {
+                return Ok(false);
+            }
+            batch = Vec::with_capacity(batch_size);
+        }
+    }
+
+    if !batch.is_empty() && !on_batch(batch)? {
+        return Ok(false);
+    }
+    Ok(true)
 }
 
 fn db_error(error: sqlx::Error) -> AppError {

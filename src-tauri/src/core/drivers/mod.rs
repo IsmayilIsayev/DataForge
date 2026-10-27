@@ -328,6 +328,17 @@ pub trait Driver: Send + Sync {
         max_rows: i64,
         database: Option<String>,
     ) -> BoxFuture<'a, AppResult<QueryResult>>;
+    /// Run one read query and consume every row as a stream, calling `on_batch`
+    /// with at most `batch_size` rows at a time. Returns `Ok(false)` when the
+    /// callback cancels the read. No OFFSET is used, so this reads a table in a
+    /// single pass.
+    fn stream_table<'a>(
+        &'a self,
+        sql: &'a str,
+        database: Option<String>,
+        batch_size: usize,
+        on_batch: &'a mut (dyn FnMut(Vec<Vec<serde_json::Value>>) -> AppResult<bool> + Send),
+    ) -> BoxFuture<'a, AppResult<bool>>;
     /// Run one read query with an optional per-statement time limit. Dialects
     /// without a server-side timeout ignore the limit. Postgres applies it with
     /// SET LOCAL inside a transaction so it only affects this query.

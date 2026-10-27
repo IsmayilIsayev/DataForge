@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Export and backup of large tables: constant speed per page (keyset pagination) and no skipped or duplicated rows on tables without a primary key (single streamed read).
+
 ## [0.4.8] - 2026-10-27
 
 ### Added

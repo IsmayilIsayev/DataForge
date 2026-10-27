@@ -8,7 +8,8 @@ use tauri::{Emitter, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::commands::edit::{quote_ident, quote_lit, table_ref};
-use crate::core::drivers::{Dialect, QueryResult};
+use crate::core::backup::value_literal;
+use crate::core::drivers::{Dialect, Driver};
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
@@ -562,14 +563,145 @@ fn write_loaded(
     sink.finish(path)
 }
 
-pub(crate) fn page_sql(
+#[derive(Debug)]
+pub(crate) struct KeysetPlan {
+    pub sql: String,
+    pub columns: Vec<String>,
+    pub pk_positions: Vec<usize>,
+}
+
+fn query_columns(columns: &[String], pk: &[String]) -> (Vec<String>, Vec<usize>) {
+    let mut query_columns = columns.to_vec();
+    let mut pk_positions = Vec::with_capacity(pk.len());
+    for name in pk {
+        match query_columns.iter().position(|column| column == name) {
+            Some(position) => pk_positions.push(position),
+            None => {
+                pk_positions.push(query_columns.len());
+                query_columns.push(name.clone());
+            }
+        }
+    }
+    (query_columns, pk_positions)
+}
+
+fn expanded_keyset_predicate(columns: &[String], literals: &[String]) -> String {
+    if columns.len() <= 1 {
+        return match (columns.first(), literals.first()) {
+            (Some(column), Some(value)) => format!("{column} > {value}"),
+            _ => "1 = 0".to_string(),
+        };
+    }
+
+    if columns.len() == 2 {
+        return format!(
+            "{} > {} OR ({} = {} AND {} > {})",
+            columns[0], literals[0], columns[0], literals[0], columns[1], literals[1],
+        );
+    }
+
+    let tail = expanded_keyset_predicate(&columns[1..], &literals[1..]);
+    format!(
+        "{} > {} OR ({} = {} AND ({}))",
+        columns[0], literals[0], columns[0], literals[0], tail,
+    )
+}
+
+fn keyset_predicate(
+    dialect: Dialect,
+    pk: &[String],
+    literals: &[String],
+) -> String {
+    let columns: Vec<String> = pk
+        .iter()
+        .map(|column| quote_ident(dialect, column))
+        .collect();
+
+    match columns.len() {
+        0 => "1 = 0".to_string(),
+        1 => format!("{} > {}", columns[0], literals[0]),
+        _ => match dialect {
+            Dialect::Postgres | Dialect::Mysql | Dialect::Sqlite => {
+                format!("({}) > ({})", columns.join(", "), literals.join(", "))
+            }
+            _ => expanded_keyset_predicate(&columns, literals),
+        },
+    }
+}
+
+/// Build a keyset page. `last` is the previous page's last primary-key values;
+/// `None` builds the first page. Returns `None` when a value is missing or NULL
+/// so the caller can fall back to a single streamed read.
+pub(crate) fn keyset_plan(
     dialect: Dialect,
     database: &str,
     table: &str,
     columns: &[String],
     pk: &[String],
+    pk_types: &[String],
+    last: Option<&[Value]>,
     limit: i64,
-    offset: i64,
+) -> Option<KeysetPlan> {
+    if pk.is_empty() {
+        return None;
+    }
+
+    let (query_columns, pk_positions) = query_columns(columns, pk);
+    let target = table_ref(dialect, database, table);
+    let column_list = query_columns
+        .iter()
+        .map(|column| quote_ident(dialect, column))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let order = pk
+        .iter()
+        .map(|column| quote_ident(dialect, column))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let filter = match last {
+        None => String::new(),
+        Some(values) => {
+            if values.len() != pk.len() || values.iter().any(|value| value.is_null()) {
+                return None;
+            }
+            let literals: Vec<String> = values
+                .iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    value_literal(
+                        dialect,
+                        pk_types.get(index).map(String::as_str).unwrap_or("text"),
+                        value,
+                    )
+                })
+                .collect();
+            format!(" WHERE {}", keyset_predicate(dialect, pk, &literals))
+        }
+    };
+
+    let sql = match dialect {
+        Dialect::Mssql => format!(
+            "SELECT {column_list} FROM {target}{filter} ORDER BY {order} \
+             OFFSET 0 ROWS FETCH NEXT {limit} ROWS ONLY"
+        ),
+        _ => format!(
+            "SELECT {column_list} FROM {target}{filter} ORDER BY {order} LIMIT {limit}"
+        ),
+    };
+
+    Some(KeysetPlan {
+        sql,
+        columns: query_columns,
+        pk_positions,
+    })
+}
+
+pub(crate) fn select_sql(
+    dialect: Dialect,
+    database: &str,
+    table: &str,
+    columns: &[String],
 ) -> String {
     let target = table_ref(dialect, database, table);
     let column_list = columns
@@ -577,32 +709,95 @@ pub(crate) fn page_sql(
         .map(|column| quote_ident(dialect, column))
         .collect::<Vec<_>>()
         .join(", ");
-    let order = if pk.is_empty() {
-        String::new()
-    } else {
-        format!(
-            " ORDER BY {}",
-            pk.iter()
-                .map(|column| quote_ident(dialect, column))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-    };
+    format!("SELECT {column_list} FROM {target}")
+}
 
-    match dialect {
-        Dialect::Mssql => {
-            let order = if order.is_empty() {
-                " ORDER BY (SELECT NULL)".to_string()
-            } else {
-                order
-            };
-            format!(
-                "SELECT {column_list} FROM {target}{order} OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY"
+/// Read every row of a table. Tables with a primary key are read with keyset
+/// pagination (constant cost per page); tables without one are read in a single
+/// streamed query so rows cannot be skipped or duplicated. Returns `Ok(false)`
+/// when the callback cancels.
+pub(crate) async fn read_table(
+    driver: &dyn Driver,
+    dialect: Dialect,
+    database: &str,
+    table: &str,
+    columns: &[String],
+    pk: &[String],
+    pk_types: &[String],
+    page_size: i64,
+    on_batch: &mut (dyn FnMut(Vec<Vec<Value>>) -> AppResult<bool> + Send),
+) -> AppResult<bool> {
+    let page_size = page_size.max(1);
+
+    if pk.is_empty() {
+        let sql = select_sql(dialect, database, table, columns);
+        return driver
+            .stream_table(
+                &sql,
+                Some(database.to_string()),
+                page_size as usize,
+                on_batch,
             )
+            .await;
+    }
+
+    let mut last: Option<Vec<Value>> = None;
+    loop {
+        let Some(plan) = keyset_plan(
+            dialect,
+            database,
+            table,
+            columns,
+            pk,
+            pk_types,
+            last.as_deref(),
+            page_size,
+        ) else {
+            // Restarting with a full read after pages were written would duplicate rows.
+            if last.is_some() {
+                return Err(AppError::Export(format!(
+                    "{table}: a primary key value could not be used for paging"
+                )));
+            }
+            let sql = select_sql(dialect, database, table, columns);
+            return driver
+                .stream_table(
+                    &sql,
+                    Some(database.to_string()),
+                    page_size as usize,
+                    on_batch,
+                )
+                .await;
+        };
+
+        let statements = [plan.sql];
+        let page = driver
+            .run_statements(&statements, page_size, Some(database.to_string()))
+            .await?;
+        if page.rows.is_empty() {
+            return Ok(true);
         }
-        _ => format!(
-            "SELECT {column_list} FROM {target}{order} LIMIT {limit} OFFSET {offset}"
-        ),
+
+        let fetched = page.rows.len() as i64;
+        let next = plan
+            .pk_positions
+            .iter()
+            .map(|&position| {
+                page.rows
+                    .last()
+                    .and_then(|row| row.get(position))
+                    .cloned()
+                    .unwrap_or(Value::Null)
+            })
+            .collect::<Vec<_>>();
+
+        if !on_batch(page.rows)? {
+            return Ok(false);
+        }
+        if fetched < page_size {
+            return Ok(true);
+        }
+        last = Some(next);
     }
 }
 
@@ -612,10 +807,6 @@ struct ExportProgress {
     rows: u64,
     done: bool,
     cancelled: bool,
-}
-
-async fn is_cancelled(state: &AppState, id: &str) -> bool {
-    state.cancelled.read().await.contains(id)
 }
 
 async fn clear_cancelled(state: &AppState, id: &str) {
@@ -721,9 +912,10 @@ pub async fn save_erd(
         .map(Some)
 }
 
-/// Export every row of a table in 5000-row pages, writing straight to disk.
-/// Returns the saved path, or None when the save dialog was cancelled or the
-/// operation was cancelled from the UI.
+/// Export every row of a table, writing straight to disk. Tables with a primary
+/// key use keyset pagination; tables without one are read in a single streamed
+/// query. Returns the saved path, or None when the save dialog was cancelled or
+/// the operation was cancelled from the UI.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn export_table(
     app: tauri::AppHandle,
@@ -744,10 +936,14 @@ pub async fn export_table(
         return Err(AppError::Config("nothing to export".into()));
     }
     let columns: Vec<String> = column_info.iter().map(|column| column.name.clone()).collect();
-    let pk: Vec<String> = column_info
+    let pk_info: Vec<_> = column_info
         .iter()
         .filter(|column| column.key.as_deref() == Some("PRI"))
-        .map(|column| column.name.clone())
+        .collect();
+    let pk: Vec<String> = pk_info.iter().map(|column| column.name.clone()).collect();
+    let pk_types: Vec<String> = pk_info
+        .iter()
+        .map(|column| column.data_type.clone())
         .collect();
 
     let default_name = format!("{table}.{}", format.extension());
@@ -768,38 +964,20 @@ pub async fn export_table(
         &table,
     )?;
 
-    let mut offset = 0i64;
     let mut total = 0u64;
-    let mut cancelled = false;
 
-    loop {
-        if is_cancelled(&state, &id).await {
-            cancelled = true;
-            break;
+    let mut on_batch = |rows: Vec<Vec<Value>>| -> AppResult<bool> {
+        let cancelled = state
+            .cancelled
+            .try_read()
+            .map(|guard| guard.contains(&id))
+            .unwrap_or(false);
+        if cancelled {
+            return Ok(false);
         }
 
-        let sql = page_sql(
-            dialect,
-            &database,
-            &table,
-            &columns,
-            &pk,
-            PAGE_SIZE,
-            offset,
-        );
-        let page: QueryResult = driver
-            .run_statements(&[sql], PAGE_SIZE, Some(database.clone()))
-            .await?;
-
-        if page.rows.is_empty() {
-            break;
-        }
-
-        sink.write_rows(&page.rows)?;
-        let fetched = page.rows.len() as i64;
-        total += fetched as u64;
-        offset += fetched;
-
+        sink.write_rows(&rows)?;
+        total += rows.len() as u64;
         let _ = app.emit(
             "export:progress",
             ExportProgress {
@@ -809,11 +987,23 @@ pub async fn export_table(
                 cancelled: false,
             },
         );
+        Ok(true)
+    };
 
-        if fetched < PAGE_SIZE {
-            break;
-        }
-    }
+    let completed = read_table(
+        driver.as_ref(),
+        dialect,
+        &database,
+        &table,
+        &columns,
+        &pk,
+        &pk_types,
+        PAGE_SIZE,
+        &mut on_batch,
+    )
+    .await?;
+    drop(on_batch);
+    let cancelled = !completed;
 
     clear_cancelled(&state, &id).await;
 
@@ -857,7 +1047,8 @@ pub async fn cancel_operation(
 #[cfg(test)]
 mod tests {
     use super::{
-        csv_text, guard_formula, insert_statements, json_object, sql_literal, ExportFormat,
+        csv_text, guard_formula, insert_statements, json_object, keyset_plan, sql_literal,
+        ExportFormat,
     };
     use crate::core::drivers::Dialect;
     use serde_json::Value;
@@ -946,5 +1137,219 @@ mod tests {
         assert_eq!(sql_literal(Dialect::Postgres, &Value::from(true)), "TRUE");
         assert_eq!(sql_literal(Dialect::Mysql, &Value::from(true)), "1");
         assert_eq!(sql_literal(Dialect::Sqlite, &Value::from("x")), "'x'");
+    }
+
+    fn names(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn keyset_first_and_next_page_for_single_numeric_pk() {
+        let columns = names(&["id", "name"]);
+        let pk = names(&["id"]);
+        let types = names(&["int"]);
+
+        let first =
+            keyset_plan(Dialect::Postgres, "", "users", &columns, &pk, &types, None, 100)
+                .expect("first page should build");
+        assert_eq!(
+            first.sql,
+            "SELECT \"id\", \"name\" FROM \"users\" ORDER BY \"id\" LIMIT 100"
+        );
+        assert!(!first.sql.contains(" WHERE "));
+
+        let last = vec![Value::from(42)];
+        let next = keyset_plan(
+            Dialect::Postgres,
+            "",
+            "users",
+            &columns,
+            &pk,
+            &types,
+            Some(&last),
+            100,
+        )
+        .expect("next page should build");
+        assert_eq!(
+            next.sql,
+            "SELECT \"id\", \"name\" FROM \"users\" WHERE \"id\" > 42 ORDER BY \"id\" LIMIT 100"
+        );
+    }
+
+    #[test]
+    fn keyset_uses_the_right_syntax_per_dialect() {
+        let columns = names(&["id", "name"]);
+        let pk = names(&["id"]);
+        let types = names(&["int"]);
+        let last = vec![Value::from(7)];
+
+        let mysql =
+            keyset_plan(Dialect::Mysql, "shop", "users", &columns, &pk, &types, Some(&last), 50)
+                .expect("mysql page should build");
+        assert_eq!(
+            mysql.sql,
+            "SELECT `id`, `name` FROM `shop`.`users` WHERE `id` > 7 ORDER BY `id` LIMIT 50"
+        );
+
+        let sqlite =
+            keyset_plan(Dialect::Sqlite, "", "users", &columns, &pk, &types, Some(&last), 50)
+                .expect("sqlite page should build");
+        assert_eq!(
+            sqlite.sql,
+            "SELECT \"id\", \"name\" FROM \"users\" WHERE \"id\" > 7 ORDER BY \"id\" LIMIT 50"
+        );
+
+        let mssql =
+            keyset_plan(Dialect::Mssql, "", "users", &columns, &pk, &types, Some(&last), 50)
+                .expect("mssql page should build");
+        assert_eq!(
+            mssql.sql,
+            "SELECT [id], [name] FROM [users] WHERE [id] > 7 ORDER BY [id] \
+             OFFSET 0 ROWS FETCH NEXT 50 ROWS ONLY"
+        );
+
+        let clickhouse = keyset_plan(
+            Dialect::Clickhouse,
+            "",
+            "users",
+            &columns,
+            &pk,
+            &types,
+            Some(&last),
+            50,
+        )
+        .expect("clickhouse page should build");
+        assert_eq!(
+            clickhouse.sql,
+            "SELECT `id`, `name` FROM `users` WHERE `id` > 7 ORDER BY `id` LIMIT 50"
+        );
+    }
+
+    #[test]
+    fn keyset_composite_pk_escapes_strings() {
+        let columns = names(&["tenant", "id", "name"]);
+        let pk = names(&["tenant", "id"]);
+        let types = names(&["text", "int"]);
+        let last = vec![Value::from("O'Brien"), Value::from(7)];
+
+        let first = keyset_plan(
+            Dialect::Postgres,
+            "",
+            "users",
+            &columns,
+            &pk,
+            &types,
+            None,
+            25,
+        )
+        .expect("first page should build");
+        assert_eq!(
+            first.sql,
+            "SELECT \"tenant\", \"id\", \"name\" FROM \"users\" \
+             ORDER BY \"tenant\", \"id\" LIMIT 25"
+        );
+
+        let postgres = keyset_plan(
+            Dialect::Postgres,
+            "",
+            "users",
+            &columns,
+            &pk,
+            &types,
+            Some(&last),
+            25,
+        )
+        .expect("postgres page should build");
+        assert_eq!(
+            postgres.sql,
+            "SELECT \"tenant\", \"id\", \"name\" FROM \"users\" \
+             WHERE (\"tenant\", \"id\") > (E'O''Brien', 7) \
+             ORDER BY \"tenant\", \"id\" LIMIT 25"
+        );
+
+        let mysql =
+            keyset_plan(Dialect::Mysql, "", "users", &columns, &pk, &types, Some(&last), 25)
+                .expect("mysql page should build");
+        assert_eq!(
+            mysql.sql,
+            "SELECT `tenant`, `id`, `name` FROM `users` \
+             WHERE (`tenant`, `id`) > ('O''Brien', 7) \
+             ORDER BY `tenant`, `id` LIMIT 25"
+        );
+
+        let sqlite =
+            keyset_plan(Dialect::Sqlite, "", "users", &columns, &pk, &types, Some(&last), 25)
+                .expect("sqlite page should build");
+        assert_eq!(
+            sqlite.sql,
+            "SELECT \"tenant\", \"id\", \"name\" FROM \"users\" \
+             WHERE (\"tenant\", \"id\") > ('O''Brien', 7) \
+             ORDER BY \"tenant\", \"id\" LIMIT 25"
+        );
+
+        let mssql =
+            keyset_plan(Dialect::Mssql, "", "users", &columns, &pk, &types, Some(&last), 25)
+                .expect("mssql page should build");
+        assert_eq!(
+            mssql.sql,
+            "SELECT [tenant], [id], [name] FROM [users] \
+             WHERE [tenant] > N'O''Brien' OR ([tenant] = N'O''Brien' AND [id] > 7) \
+             ORDER BY [tenant], [id] OFFSET 0 ROWS FETCH NEXT 25 ROWS ONLY"
+        );
+
+        let clickhouse = keyset_plan(
+            Dialect::Clickhouse,
+            "",
+            "users",
+            &columns,
+            &pk,
+            &types,
+            Some(&last),
+            25,
+        )
+        .expect("clickhouse page should build");
+        assert_eq!(
+            clickhouse.sql,
+            "SELECT `tenant`, `id`, `name` FROM `users` \
+             WHERE `tenant` > 'O''Brien' OR (`tenant` = 'O''Brien' AND `id` > 7) \
+             ORDER BY `tenant`, `id` LIMIT 25"
+        );
+    }
+
+    #[test]
+    fn keyset_adds_pk_columns_missing_from_the_export_selection() {
+        let columns = names(&["name"]);
+        let pk = names(&["id"]);
+        let types = names(&["int"]);
+
+        let plan =
+            keyset_plan(Dialect::Postgres, "", "users", &columns, &pk, &types, None, 100)
+                .expect("first page should build");
+        assert_eq!(plan.columns, names(&["name", "id"]));
+        assert_eq!(plan.pk_positions, vec![1]);
+        assert_eq!(
+            plan.sql,
+            "SELECT \"name\", \"id\" FROM \"users\" ORDER BY \"id\" LIMIT 100"
+        );
+    }
+
+    #[test]
+    fn keyset_null_pk_value_requests_the_stream_fallback() {
+        let columns = names(&["id", "name"]);
+        let pk = names(&["id"]);
+        let types = names(&["int"]);
+        let last = vec![Value::Null];
+
+        assert!(keyset_plan(
+            Dialect::Postgres,
+            "",
+            "users",
+            &columns,
+            &pk,
+            &types,
+            Some(&last),
+            100,
+        )
+        .is_none());
     }
 }
