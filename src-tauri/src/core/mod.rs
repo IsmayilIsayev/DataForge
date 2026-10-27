@@ -1,3 +1,4 @@
+pub mod backup;
 pub mod drivers;
 pub mod pool;
 pub mod test_data;

@@ -44,6 +44,7 @@ import type {
 const StructureDialog = lazy(() => import("./StructureDialog"));
 const ImportCsvDialog = lazy(() => import("./ImportCsvDialog"));
 const GenerateTestDataDialog = lazy(() => import("./GenerateTestDataDialog"));
+const BackupDialog = lazy(() => import("./BackupDialog"));
 
 const dialogFallback = (
   <div style={{ position: "fixed", inset: 0 }} aria-hidden="true" />
@@ -469,6 +470,10 @@ export default function Sidebar({
     connection: ConnectionMeta;
     database: string;
     table: string;
+  } | null>(null);
+  const [backupFor, setBackupFor] = useState<{
+    connection: ConnectionMeta;
+    database: string;
   } | null>(null);
   const [dropBusy, setDropBusy] = useState(false);
   const [loading, setLoading] = useState<Record<string, boolean>>({});
@@ -2013,6 +2018,18 @@ export default function Sidebar({
                   }}
                 />
                 <MenuItem
+                  icon="icon-download"
+                  label="Backup…"
+                  onClick={() => {
+                    const menu = contextMenu;
+                    setContextMenu(null);
+                    setBackupFor({
+                      connection: contextConnection,
+                      database: menu.database,
+                    });
+                  }}
+                />
+                <MenuItem
                   icon="icon-table-2"
                   label="Create table…"
                   onClick={() => {
@@ -2354,6 +2371,16 @@ export default function Sidebar({
                 generateFor.table,
               )
             }
+          />
+        </Suspense>
+      )}
+
+      {backupFor && (
+        <Suspense fallback={dialogFallback}>
+          <BackupDialog
+            connection={backupFor.connection}
+            database={backupFor.database}
+            onClose={() => setBackupFor(null)}
           />
         </Suspense>
       )}

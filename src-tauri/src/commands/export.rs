@@ -562,7 +562,7 @@ fn write_loaded(
     sink.finish(path)
 }
 
-fn page_sql(
+pub(crate) fn page_sql(
     dialect: Dialect,
     database: &str,
     table: &str,

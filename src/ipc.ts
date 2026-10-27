@@ -6,6 +6,8 @@ import type {
   AiModelList,
   AiOptimizeResult,
   AiProvider,
+  BackupCapabilities,
+  BackupMode,
   CellRef,
   CellValue,
   ChatMessage,
@@ -300,6 +302,34 @@ export const exportTable = (
 
 export const cancelOperation = (operationId: string) =>
   invoke<void>("cancel_operation", { operation_id: operationId });
+
+export const backupCapabilities = (connId: string) =>
+  invoke<BackupCapabilities>("backup_capabilities", { conn_id: connId });
+
+export interface BackupRequest {
+  connId: string;
+  database: string;
+  tables: string[];
+  mode: BackupMode;
+  includeDrop: boolean;
+  rowsPerInsert: number;
+  gzip: boolean;
+  useExternal: boolean;
+  backupId: string;
+}
+
+export const backupDatabase = (request: BackupRequest) =>
+  invoke<string | null>("backup_database", {
+    conn_id: request.connId,
+    database: request.database,
+    tables: request.tables,
+    mode: request.mode,
+    include_drop: request.includeDrop,
+    rows_per_insert: request.rowsPerInsert,
+    gzip: request.gzip,
+    use_external: request.useExternal,
+    backup_id: request.backupId,
+  });
 
 export interface CsvPreview {
   delimiter: string;

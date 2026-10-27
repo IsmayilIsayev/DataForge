@@ -464,3 +464,20 @@ export interface GenerateProgress {
   generated: number;
   total: number;
 }
+
+export type BackupMode = "structure" | "data" | "both";
+
+export interface BackupCapabilities {
+  structure_supported: boolean;
+  external_tool: string | null;
+}
+
+export interface BackupProgress {
+  id: string;
+  table?: string | null;
+  table_index: number;
+  tables_total: number;
+  rows: number;
+  done: boolean;
+  cancelled: boolean;
+}

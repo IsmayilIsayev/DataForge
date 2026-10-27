@@ -356,7 +356,7 @@ fn narrowing_reason(dialect: Dialect, from: &str, to: &str) -> Option<String> {
     None
 }
 
-fn column_definition(dialect: Dialect, column: &ColumnSchema) -> String {
+pub(crate) fn column_definition(dialect: Dialect, column: &ColumnSchema) -> String {
     let mut sql = format!("{} {}", quote(dialect, &column.name), column.data_type.trim());
 
     match dialect {
@@ -397,7 +397,7 @@ fn column_definition(dialect: Dialect, column: &ColumnSchema) -> String {
     sql
 }
 
-fn create_table_sql(
+pub(crate) fn create_table_sql(
     dialect: Dialect,
     table: &TableSchema,
     foreign_keys: &[ForeignKeySchema],
@@ -480,7 +480,7 @@ fn drop_index_sql(dialect: Dialect, table: &str, index: &str) -> String {
     }
 }
 
-fn add_index_sql(dialect: Dialect, table: &str, index: &IndexSchema) -> String {
+pub(crate) fn add_index_sql(dialect: Dialect, table: &str, index: &IndexSchema) -> String {
     format!(
         "CREATE {}INDEX {} ON {} ({})",
         if index.unique { "UNIQUE " } else { "" },
@@ -490,7 +490,7 @@ fn add_index_sql(dialect: Dialect, table: &str, index: &IndexSchema) -> String {
     )
 }
 
-fn add_foreign_key_sql(dialect: Dialect, fk: &ForeignKeySchema) -> String {
+pub(crate) fn add_foreign_key_sql(dialect: Dialect, fk: &ForeignKeySchema) -> String {
     format!(
         "ALTER TABLE {} ADD CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {} ({})",
         quote(dialect, &fk.from_table),
