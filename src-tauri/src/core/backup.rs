@@ -94,7 +94,7 @@ fn binary_hex(value: &Value) -> Option<String> {
             } else if trimmed.starts_with("\\x") {
                 (true, &trimmed[2..])
             } else {
-                (false, trimmed.as_str())
+                (false, trimmed)
             };
 
             if marker && !payload.is_empty() && payload.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -735,7 +735,7 @@ pub fn external_dump_command(
 
 #[cfg(test)]
 mod tests {
-    use std::io::Read;
+    use std::io::{Read, Write};
 
     use flate2::read::GzDecoder;
     use flate2::write::GzEncoder;
