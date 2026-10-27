@@ -942,24 +942,25 @@ async fn run_transaction(
     Ok(affected)
 }
 
-fn bind_values(params: &[BoundParam]) -> Vec<ColumnData<'static>> {
+// ColumnData is not ToSql; owned std values are.
+fn bind_values(params: &[BoundParam]) -> Vec<Box<dyn tiberius::ToSql>> {
     params
         .iter()
-        .map(|param| match &param.value {
-            ParamValue::Text(value) => ColumnData::String(Some(std::borrow::Cow::Owned(
-                value.clone(),
-            ))),
-            ParamValue::Number(value) => {
-                if let Ok(integer) = value.parse::<i64>() {
-                    ColumnData::I64(Some(integer))
-                } else if let Ok(float) = value.parse::<f64>() {
-                    ColumnData::F64(Some(float))
-                } else {
-                    ColumnData::String(Some(std::borrow::Cow::Owned(value.clone())))
+        .map(|param| -> Box<dyn tiberius::ToSql> {
+            match &param.value {
+                ParamValue::Text(value) => Box::new(value.clone()),
+                ParamValue::Number(value) => {
+                    if let Ok(integer) = value.parse::<i64>() {
+                        Box::new(integer)
+                    } else if let Ok(float) = value.parse::<f64>() {
+                        Box::new(float)
+                    } else {
+                        Box::new(value.clone())
+                    }
                 }
+                ParamValue::Boolean(value) => Box::new(*value),
+                ParamValue::Null => Box::new(None::<String>),
             }
-            ParamValue::Boolean(value) => ColumnData::Bit(Some(*value)),
-            ParamValue::Null => ColumnData::String(None),
         })
         .collect()
 }
@@ -1014,7 +1015,7 @@ async fn execute_statement(
     let bindings = bind_values(params);
     let refs: Vec<&dyn tiberius::ToSql> = bindings
         .iter()
-        .map(|value| value as &dyn tiberius::ToSql)
+        .map(|value| value.as_ref())
         .collect();
 
     if !row_returning {
