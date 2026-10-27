@@ -15,6 +15,7 @@ use crate::core::drivers::{
     SchemaSnapshot, SchemaTable, SslMode, TableInfo, TableKind, TxError, TxInput, TxRowError,
     TxStreamOutcome, ER_TABLE_LIMIT,
 };
+use crate::core::query_cancel::{postgres_cancel_sql, CancelTarget, RunCancel};
 use crate::core::schema_diff::{
     ColumnSchema, ForeignKeySchema, IndexSchema, SchemaData, TableSchema, ViewSchema,
     DIFF_TABLE_LIMIT,
@@ -303,6 +304,48 @@ impl Driver for PostgresDriver {
                     .await?;
                 execute_batch(&mut conn, statements, max_rows).await
             }
+        })
+    }
+
+    fn run_statements_cancellable<'a>(
+        &'a self,
+        statements: &'a [String],
+        max_rows: i64,
+        database: Option<String>,
+        run: &'a RunCancel,
+    ) -> BoxFuture<'a, AppResult<QueryResult>> {
+        Box::pin(async move {
+            let requested = database.filter(|value| !value.trim().is_empty());
+            // Use a dedicated connection so cancelling can drop it without
+            // returning a still-running statement to the pool.
+            let mut conn = self
+                .connect_to(requested.as_deref().unwrap_or(&self.database))
+                .await?;
+
+            let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+                .fetch_one(&mut conn)
+                .await
+                .map_err(db_error)?;
+            run.set_target(CancelTarget::Postgres(pid));
+            if run.is_cancelled() {
+                return Err(AppError::Cancelled("Query cancelled".to_string()));
+            }
+
+            execute_batch(&mut conn, statements, max_rows).await
+        })
+    }
+
+    fn cancel_query<'a>(&'a self, target: CancelTarget) -> BoxFuture<'a, AppResult<()>> {
+        Box::pin(async move {
+            let CancelTarget::Postgres(pid) = target else {
+                return Ok(());
+            };
+            let mut conn = self.pool.acquire().await.map_err(db_error)?;
+            sqlx::query(&postgres_cancel_sql(pid))
+                .execute(&mut *conn)
+                .await
+                .map_err(db_error)?;
+            Ok(())
         })
     }
 

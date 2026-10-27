@@ -14,6 +14,8 @@ pub enum AppError {
     Config(String),
     #[error("ixrac xətası: {0}")]
     Export(String),
+    #[error("{0}")]
+    Cancelled(String),
     #[error("daxili xəta: {0}")]
     Internal(String),
 }

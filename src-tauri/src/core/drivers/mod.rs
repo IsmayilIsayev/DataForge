@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::core::query_cancel::{CancelTarget, RunCancel};
 use crate::core::schema_diff::SchemaData;
 use crate::core::ssh::{self, SshConfig, SshTunnel};
 use crate::error::{AppError, AppResult};
@@ -342,6 +343,23 @@ pub trait Driver: Send + Sync {
         max_rows: i64,
         database: Option<String>,
     ) -> BoxFuture<'a, AppResult<QueryResult>>;
+    /// Like `run_statements`, but records how the server-side statement can be
+    /// cancelled. The default ignores cancellation for drivers that do not
+    /// support it.
+    fn run_statements_cancellable<'a>(
+        &'a self,
+        statements: &'a [String],
+        max_rows: i64,
+        database: Option<String>,
+        run: &'a RunCancel,
+    ) -> BoxFuture<'a, AppResult<QueryResult>> {
+        let _ = run;
+        self.run_statements(statements, max_rows, database)
+    }
+    /// Ask the database server to stop the query described by `target`.
+    fn cancel_query<'a>(&'a self, _target: CancelTarget) -> BoxFuture<'a, AppResult<()>> {
+        Box::pin(async move { Ok(()) })
+    }
     /// Run one read query and consume every row as a stream, calling `on_batch`
     /// with at most `batch_size` rows at a time. Returns `Ok(false)` when the
     /// callback cancels the read. No OFFSET is used, so this reads a table in a

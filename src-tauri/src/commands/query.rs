@@ -1,9 +1,14 @@
+use std::sync::Arc;
+use std::time::Duration;
+
 use tauri::State;
+use uuid::Uuid;
 
 pub(crate) use crate::core::restore::split_statements;
 use crate::core::drivers::{
     ColumnInfo, DatabaseTable, ErSchema, QueryResult, TableInfo,
 };
+use crate::core::query_cancel::{RunCancel, RunningQuery};
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
@@ -15,6 +20,7 @@ pub async fn run_query(
     max_rows: Option<i64>,
     database: Option<String>,
     order_by: Option<String>,
+    run_id: Option<String>,
 ) -> AppResult<QueryResult> {
     let sql = trim_sql(&sql);
     if sql.is_empty() {
@@ -37,7 +43,64 @@ pub async fn run_query(
     }
 
     let limit = max_rows.unwrap_or(1000).clamp(1, 100_000);
-    driver.run_statements(&statements, limit, database).await
+    let run_id = run_id
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    let Some(run_id) = run_id else {
+        return driver.run_statements(&statements, limit, database).await;
+    };
+    if Uuid::parse_str(&run_id).is_err() {
+        return Err(AppError::Config("invalid run id".to_string()));
+    }
+
+    let cancel = Arc::new(RunCancel::new(run_id.clone()));
+    let run = Arc::new(RunningQuery::new(cancel.clone(), Some(driver.clone())));
+    let _guard = state.runs.register(run_id, run.clone());
+
+    let execution = driver.run_statements_cancellable(&statements, limit, database, &cancel);
+    tokio::pin!(execution);
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => {
+            // Stop polling the query, then ask the server to cancel it on a
+            // different connection. The request is bounded so the UI never
+            // hangs on a slow/unreachable cancel.
+            let _ = tokio::time::timeout(
+                Duration::from_millis(750),
+                run.cancel_on_server(),
+            )
+            .await;
+            Err(AppError::Cancelled(cancelled_message(driver.dialect(), &statements)))
+        }
+        result = &mut execution => result,
+    }
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn cancel_query(state: State<'_, AppState>, run_id: String) -> AppResult<bool> {
+    Ok(state.runs.cancel(&run_id))
+}
+
+fn cancelled_message(
+    dialect: crate::core::drivers::Dialect,
+    statements: &[String],
+) -> String {
+    let explicit_transaction = statements.iter().any(|statement| {
+        let first = statement
+            .trim_start()
+            .split(|c: char| c.is_whitespace() || c == ';' || c == '(')
+            .next()
+            .unwrap_or("")
+            .to_ascii_uppercase();
+        first == "BEGIN" || first == "START"
+    });
+
+    if dialect == crate::core::drivers::Dialect::Postgres && explicit_transaction {
+        "Query cancelled — the transaction was rolled back by the server".to_string()
+    } else {
+        "Query cancelled".to_string()
+    }
 }
 
 fn trim_sql(sql: &str) -> &str {

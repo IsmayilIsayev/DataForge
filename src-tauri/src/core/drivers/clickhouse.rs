@@ -8,6 +8,7 @@ use crate::core::drivers::{
     Dialect, Driver, ErColumn, ErSchema, ErTable, QueryResult, SchemaSnapshot, SchemaTable,
     SslMode, TableInfo, TableKind, TxError, TxInput, TxRowError, TxStreamOutcome, ER_TABLE_LIMIT,
 };
+use crate::core::query_cancel::{clickhouse_cancel_sql, CancelTarget, RunCancel};
 use crate::core::restore::truncate_preview;
 use crate::error::{AppError, AppResult};
 
@@ -75,6 +76,18 @@ impl ClickHouseDriver {
         database: Option<&str>,
         timeout_ms: Option<u64>,
     ) -> AppResult<QueryResult> {
+        self.execute_statement_with_id(sql, max_rows, database, timeout_ms, None)
+            .await
+    }
+
+    async fn execute_statement_with_id(
+        &self,
+        sql: &str,
+        max_rows: i64,
+        database: Option<&str>,
+        timeout_ms: Option<u64>,
+        query_id: Option<&str>,
+    ) -> AppResult<QueryResult> {
         let started = Instant::now();
         let body = trim_statement(sql);
         if body.is_empty() {
@@ -93,7 +106,7 @@ impl ClickHouseDriver {
 
         if !row_returning {
             let (_, summary) = self
-                .http_query(body, self.database(database), None, timeout_ms)
+                .http_query(body, self.database(database), None, timeout_ms, query_id)
                 .await?;
             return Ok(QueryResult {
                 columns: Vec::new(),
@@ -116,6 +129,7 @@ impl ClickHouseDriver {
                 self.database(database),
                 Some(fetched_limit),
                 timeout_ms,
+                query_id,
             )
             .await?;
         let (columns, _, mut rows) = parse_response(&text)?;
@@ -137,14 +151,16 @@ impl ClickHouseDriver {
         database: &str,
         max_result_rows: Option<i64>,
         timeout_ms: Option<u64>,
+        query_id: Option<&str>,
     ) -> AppResult<(String, Option<String>)> {
-        let request = build_request(
+        let request = build_request_with_query_id(
             &self.base,
             database,
             max_result_rows,
             timeout_ms,
             &self.username,
             &self.password,
+            query_id,
         )?;
 
         let response = self
@@ -429,6 +445,59 @@ impl Driver for ClickHouseDriver {
         })
     }
 
+    fn run_statements_cancellable<'a>(
+        &'a self,
+        statements: &'a [String],
+        max_rows: i64,
+        database: Option<String>,
+        run: &'a RunCancel,
+    ) -> BoxFuture<'a, AppResult<QueryResult>> {
+        Box::pin(async move {
+            let query_id = run.run_id().to_string();
+            run.set_target(CancelTarget::Clickhouse(query_id.clone()));
+            let (last, earlier) = statements
+                .split_last()
+                .ok_or_else(|| AppError::Config("SQL boşdur".to_string()))?;
+
+            for statement in earlier {
+                if trim_statement(statement).is_empty() {
+                    continue;
+                }
+                self.execute_statement_with_id(
+                    statement,
+                    max_rows,
+                    database.as_deref(),
+                    None,
+                    Some(&query_id),
+                )
+                .await?;
+            }
+
+            self.execute_statement_with_id(
+                last,
+                max_rows,
+                database.as_deref(),
+                None,
+                Some(&query_id),
+            )
+            .await
+        })
+    }
+
+    fn cancel_query<'a>(&'a self, target: CancelTarget) -> BoxFuture<'a, AppResult<()>> {
+        Box::pin(async move {
+            let CancelTarget::Clickhouse(query_id) = target else {
+                return Ok(());
+            };
+            let Some(sql) = clickhouse_cancel_sql(&query_id) else {
+                return Ok(());
+            };
+            self.http_query(&sql, &self.database, None, None, None)
+                .await?;
+            Ok(())
+        })
+    }
+
     fn stream_table<'a>(
         &'a self,
         sql: &'a str,
@@ -684,12 +753,35 @@ fn build_request(
     username: &str,
     password: &str,
 ) -> AppResult<HttpRequest> {
+    build_request_with_query_id(
+        base,
+        database,
+        max_result_rows,
+        timeout_ms,
+        username,
+        password,
+        None,
+    )
+}
+
+fn build_request_with_query_id(
+    base: &str,
+    database: &str,
+    max_result_rows: Option<i64>,
+    timeout_ms: Option<u64>,
+    username: &str,
+    password: &str,
+    query_id: Option<&str>,
+) -> AppResult<HttpRequest> {
     let mut url = reqwest::Url::parse(&format!("{}/", base.trim_end_matches('/')))
         .map_err(|error| AppError::Config(format!("ClickHouse URL: {error}")))?;
     {
         let mut query = url.query_pairs_mut();
         query.append_pair("database", database);
         query.append_pair("default_format", RESPONSE_FORMAT);
+        if let Some(query_id) = query_id {
+            query.append_pair("query_id", query_id);
+        }
         if let Some(limit) = max_result_rows {
             query.append_pair("max_result_rows", &limit.to_string());
             query.append_pair("result_overflow_mode", "break");

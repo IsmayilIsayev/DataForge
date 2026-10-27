@@ -12,6 +12,7 @@ use crate::core::drivers::{
     ErColumn, ErSchema, ErTable, ForeignKeyRow, QueryResult, SchemaSnapshot, SchemaTable, TableInfo,
     TableKind, TxError, TxInput, TxRowError, TxStreamOutcome, ER_TABLE_LIMIT,
 };
+use crate::core::query_cancel::{CancelTarget, RunCancel};
 use crate::core::schema_diff::{
     ColumnSchema, ForeignKeySchema, IndexSchema, SchemaData, TableSchema, ViewSchema,
     DIFF_TABLE_LIMIT,
@@ -204,6 +205,7 @@ fn build_result(
 
 pub struct SqliteDriver {
     pool: SqlitePool,
+    options: SqliteConnectOptions,
 }
 
 impl SqliteDriver {
@@ -224,11 +226,11 @@ impl SqliteDriver {
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
             .acquire_timeout(Duration::from_secs(10))
-            .connect_with(options)
+            .connect_with(options.clone())
             .await
             .map_err(db_error)?;
 
-        Ok(Self { pool })
+        Ok(Self { pool, options })
     }
 
     async fn tables(&self, database: &str) -> AppResult<Vec<TableInfo>> {
@@ -325,6 +327,29 @@ impl Driver for SqliteDriver {
     ) -> BoxFuture<'a, AppResult<QueryResult>> {
         Box::pin(async move {
             let mut conn = self.pool.acquire().await.map_err(db_error)?;
+            execute_batch(&mut conn, statements, max_rows).await
+        })
+    }
+
+    fn run_statements_cancellable<'a>(
+        &'a self,
+        statements: &'a [String],
+        max_rows: i64,
+        database: Option<String>,
+        run: &'a RunCancel,
+    ) -> BoxFuture<'a, AppResult<QueryResult>> {
+        Box::pin(async move {
+            let _ = database;
+            // SQLite has no separate server connection to cancel. A dedicated
+            // connection is dropped with the cancelled task, which closes the
+            // database handle and rolls back the interrupted statement.
+            let mut conn = SqliteConnection::connect_with(&self.options)
+                .await
+                .map_err(db_error)?;
+            run.set_target(CancelTarget::AbortOnly);
+            if run.is_cancelled() {
+                return Err(AppError::Cancelled("Query cancelled".to_string()));
+            }
             execute_batch(&mut conn, statements, max_rows).await
         })
     }

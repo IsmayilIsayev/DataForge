@@ -8,6 +8,7 @@ use tokio::sync::RwLock;
 use crate::ai::AiSettings;
 use crate::core::drivers::{self, ConnectionMeta, Driver};
 use crate::core::pool::PoolRegistry;
+use crate::core::query_cancel::RunRegistry;
 use crate::core::secrets;
 use crate::error::{AppError, AppResult};
 
@@ -114,6 +115,8 @@ pub struct AppState {
     ai_path: PathBuf,
     pub config_dir: PathBuf,
     pub pool: PoolRegistry,
+    /// Running queries that can be cancelled by `cancel_query`.
+    pub runs: RunRegistry,
     pub connections: RwLock<ConnectionStore>,
     /// Operation ids (export/import) the user asked to cancel.
     pub cancelled: RwLock<HashSet<String>>,
@@ -135,6 +138,7 @@ impl AppState {
             ai_path,
             config_dir: config_dir.clone(),
             pool: PoolRegistry::default(),
+            runs: RunRegistry::default(),
             connections: RwLock::new(ConnectionStore::load(config_dir.join("connections.json"))),
             cancelled: RwLock::new(HashSet::new()),
         })

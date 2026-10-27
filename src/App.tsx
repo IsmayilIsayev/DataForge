@@ -28,6 +28,8 @@ import {
   aiFixError,
   aiHasKey,
   aiOptimize,
+  cancelQuery,
+  cancelledQueryMessage,
   connectConnection,
   errorMessage,
   explainPlan,
@@ -96,6 +98,21 @@ const UI_LANGUAGE = detectUiLanguage();
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
+}
+
+function formatSeconds(milliseconds: number) {
+  return `${(Math.max(0, milliseconds) / 1000).toFixed(1)} s`;
+}
+
+function newRunId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (character) => {
+    const random = Math.floor(Math.random() * 16);
+    const value = character === "x" ? random : (random & 0x3) | 0x8;
+    return value.toString(16);
+  });
 }
 
 const FLAVOR_SHORT: Record<string, string> = {
@@ -344,6 +361,26 @@ export default function App() {
   // Monotonic per-tab execution id: a slow earlier run must never overwrite the
   // result of a newer run in the same tab.
   const requestIdsRef = useRef<Record<string, number>>({});
+  const runIdsRef = useRef<Record<string, string>>({});
+  const runStartedRef = useRef<Record<string, number>>({});
+  const [clock, setClock] = useState(() => performance.now());
+  const [cancelledRun, setCancelledRun] = useState<{
+    tabId: string;
+    ms: number;
+  } | null>(null);
+
+  const handleCancel = useCallback(async () => {
+    const store = useAppStore.getState();
+    const target = store.activeTabId;
+    if (!store.tabStates[target]?.running) return;
+    const runId = runIdsRef.current[target];
+    if (!runId) return;
+    try {
+      await cancelQuery(runId);
+    } catch (cancelError) {
+      useAppStore.getState().setError(errorMessage(cancelError), target);
+    }
+  }, []);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
@@ -545,6 +582,77 @@ export default function App() {
     };
   }, []);
 
+  // The status bar elapsed clock only ticks while the active tab has a query.
+  useEffect(() => {
+    if (!running) return;
+    const timer = window.setInterval(() => setClock(performance.now()), 100);
+    return () => window.clearInterval(timer);
+  }, [running]);
+
+  // Esc / Ctrl-Cmd-. stops a run, but only from the editor/results area and
+  // never while a dialog, menu or palette is open.
+  useEffect(() => {
+    if (!running) return;
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      const stopKey =
+        event.key === "Escape" ||
+        ((event.ctrlKey || event.metaKey) && event.key === ".");
+      if (!stopKey || event.defaultPrevented) return;
+      if (
+        paletteOpen ||
+        goToOpen ||
+        menu ||
+        aboutOpen ||
+        dialogOpen ||
+        findOpen ||
+        historyOpen ||
+        savedQueryDialog ||
+        connectionsTransfer ||
+        compareOpen ||
+        whatsNew ||
+        updateInfo
+      ) {
+        return;
+      }
+      if (
+        document.querySelector(
+          '[role="dialog"],[role="alertdialog"],[aria-modal="true"]',
+        )
+      ) {
+        return;
+      }
+      const target = event.target;
+      if (
+        !(target instanceof Element) ||
+        !target.closest("[data-run-shortcut-zone]")
+      ) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      void handleCancel();
+    };
+
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [
+    running,
+    handleCancel,
+    paletteOpen,
+    goToOpen,
+    menu,
+    aboutOpen,
+    dialogOpen,
+    findOpen,
+    historyOpen,
+    savedQueryDialog,
+    connectionsTransfer,
+    compareOpen,
+    whatsNew,
+    updateInfo,
+  ]);
+
   useEffect(() => {
     let cancelled = false;
     const unlisteners: UnlistenFn[] = [];
@@ -655,6 +763,14 @@ export default function App() {
         return;
       }
 
+      const runId = newRunId();
+      runIdsRef.current[target] = runId;
+      runStartedRef.current[target] = started;
+      setClock(started);
+      setCancelledRun((current) =>
+        current?.tabId === target ? null : current,
+      );
+
       store.setRunning(true, target);
       store.setError(null, target);
       store.setExecutedSql(query, target);
@@ -668,6 +784,7 @@ export default function App() {
           maxRows,
           database,
           orderBy,
+          runId,
         );
         if (!isCurrent()) return;
         useAppStore
@@ -682,6 +799,18 @@ export default function App() {
         }
       } catch (runError) {
         if (!isCurrent()) return;
+        const cancelled = cancelledQueryMessage(runError);
+        if (cancelled) {
+          useAppStore
+            .getState()
+            .setResult(null, target, connId, database ?? null);
+          useAppStore.getState().setError(null, target);
+          setCancelledRun({
+            tabId: target,
+            ms: performance.now() - started,
+          });
+          return;
+        }
         useAppStore.getState().setResult(null, target, connId, database ?? null);
         useAppStore.getState().setError(errorMessage(runError), target);
         const elapsed = Math.round(performance.now() - started);
@@ -690,6 +819,7 @@ export default function App() {
         }
       } finally {
         if (isCurrent()) {
+          delete runIdsRef.current[target];
           useAppStore.getState().setRunning(false, target);
         }
       }
@@ -976,6 +1106,14 @@ export default function App() {
     }
     void handleRun();
   }, [handleRun, handleTableRefresh]);
+
+  const handleRunStop = useCallback(() => {
+    if (running) {
+      void handleCancel();
+    } else {
+      handleTopRun();
+    }
+  }, [running, handleCancel, handleTopRun]);
 
   const handleFormat = useCallback(() => {
       const store = useAppStore.getState();
@@ -1745,9 +1883,9 @@ export default function App() {
         <button
           type="button"
           className="df2-run"
-          onClick={handleTopRun}
-          disabled={running}
-          title="Run (⌘↵)"
+          onClick={handleRunStop}
+          aria-label={running ? "Stop query" : "Run query"}
+          title={running ? "Stop (Esc / ⌘.)" : "Run (⌘↵)"}
           style={{
             height: 24,
             display: "flex",
@@ -1758,12 +1896,14 @@ export default function App() {
             borderRadius: 4,
             color: "#fff",
             fontWeight: 500,
-            cursor: running ? "not-allowed" : "default",
-            opacity: running ? 0.6 : 1,
+            cursor: "default",
           }}
         >
-          <i className="icon-play" style={{ fontSize: 12 }} />
-          <span>Run</span>
+          <i
+            className={running ? "icon-square" : "icon-play"}
+            style={{ fontSize: 12 }}
+          />
+          <span>{running ? "Stop" : "Run"}</span>
           <span
             style={{
               fontFamily: "var(--mono)",
@@ -1771,7 +1911,7 @@ export default function App() {
               opacity: 0.7,
             }}
           >
-            ⌘↵
+            {running ? "Esc" : "⌘↵"}
           </span>
         </button>
         <div
@@ -1886,6 +2026,7 @@ export default function App() {
         )}
 
         <main
+          data-run-shortcut-zone=""
           style={{
             flex: 1,
             minWidth: 0,
@@ -2038,8 +2179,9 @@ export default function App() {
                 <button
                   type="button"
                   className="df2-quiet"
-                  onClick={() => void handleRun()}
-                  disabled={running}
+                  onClick={handleRunStop}
+                  aria-label={running ? "Stop query" : "Run query"}
+                  title={running ? "Stop (Esc / ⌘.)" : "Run (⌘↵)"}
                   style={{
                     height: 24,
                     display: "flex",
@@ -2048,15 +2190,17 @@ export default function App() {
                     padding: "0 8px",
                     border: 0,
                     borderRadius: 4,
-                    cursor: running ? "not-allowed" : "default",
-                    opacity: running ? 0.6 : 1,
+                    cursor: "default",
                   }}
                 >
                   <i
-                    className="icon-play"
-                    style={{ fontSize: 12, color: "var(--ac)" }}
+                    className={running ? "icon-square" : "icon-play"}
+                    style={{
+                      fontSize: 12,
+                      color: running ? "var(--er)" : "var(--ac)",
+                    }}
                   />
-                  <span>Run</span>
+                  <span>{running ? "Stop" : "Run"}</span>
                 </button>
                 <button
                   type="button"
@@ -2472,6 +2616,29 @@ export default function App() {
           </span>
         </span>
         <div style={{ flex: 1 }} />
+        {running && runStartedRef.current[activeTabId] != null && (
+          <span
+            style={{
+              fontFamily: "var(--mono)",
+              fontSize: 11,
+              color: "var(--ac)",
+            }}
+          >
+            Running…{" "}
+            {formatSeconds(clock - runStartedRef.current[activeTabId])}
+          </span>
+        )}
+        {!running && cancelledRun?.tabId === activeTabId && (
+          <span
+            style={{
+              fontFamily: "var(--mono)",
+              fontSize: 11,
+              color: "var(--fa)",
+            }}
+          >
+            Cancelled after {formatSeconds(cancelledRun.ms)}
+          </span>
+        )}
         <span
           style={{
             fontFamily: "var(--mono)",

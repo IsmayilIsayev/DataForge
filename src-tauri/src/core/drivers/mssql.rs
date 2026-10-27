@@ -12,6 +12,7 @@ use crate::core::drivers::{
     SchemaSnapshot, SchemaTable, TableInfo, TableKind, TxError, TxInput, TxRowError,
     TxStreamOutcome, ER_TABLE_LIMIT,
 };
+use crate::core::query_cancel::{mssql_cancel_sql, CancelTarget, RunCancel};
 use crate::core::restore::truncate_preview;
 use crate::error::{AppError, AppResult};
 
@@ -425,6 +426,60 @@ impl Driver for MssqlDriver {
                 .unwrap_or_else(|| self.database.clone());
             let mut client = self.client_for(&requested).await?;
             execute_batch(&mut client, statements, max_rows).await
+        })
+    }
+
+    fn run_statements_cancellable<'a>(
+        &'a self,
+        statements: &'a [String],
+        max_rows: i64,
+        database: Option<String>,
+        run: &'a RunCancel,
+    ) -> BoxFuture<'a, AppResult<QueryResult>> {
+        Box::pin(async move {
+            let requested = database
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| self.database.clone());
+            let mut client = self.client_for(&requested).await?;
+
+            let rows = client
+                .simple_query("SELECT CAST(@@SPID AS INT) AS spid")
+                .await
+                .map_err(db_error)?
+                .into_first_result()
+                .await
+                .map_err(db_error)?;
+            let spid = rows
+                .first()
+                .and_then(|row| row.try_get::<i32, _>(0).ok().flatten())
+                .ok_or_else(|| {
+                    AppError::Db("SQL Server did not return @@SPID".to_string())
+                })?;
+            run.set_target(CancelTarget::Mssql(spid));
+            if run.is_cancelled() {
+                return Err(AppError::Cancelled("Query cancelled".to_string()));
+            }
+
+            execute_batch(&mut client, statements, max_rows).await
+        })
+    }
+
+    fn cancel_query<'a>(&'a self, target: CancelTarget) -> BoxFuture<'a, AppResult<()>> {
+        Box::pin(async move {
+            let CancelTarget::Mssql(spid) = target else {
+                return Ok(());
+            };
+            // KILL ends the session. The query runs on its own fresh client
+            // (never a pool), so dropping the cancelled task discards it.
+            let mut client = self.client_for(&self.database).await?;
+            client
+                .simple_query(mssql_cancel_sql(spid))
+                .await
+                .map_err(db_error)?
+                .into_first_result()
+                .await
+                .map_err(db_error)?;
+            Ok(())
         })
     }
 

@@ -275,6 +275,7 @@ pub fn run() {
             commands::connection::pick_ssh_key_file,
             commands::connection::pick_ca_certificate_file,
             commands::query::run_query,
+            commands::query::cancel_query,
             commands::query::list_databases,
             commands::query::list_tables,
             commands::query::list_all_tables,

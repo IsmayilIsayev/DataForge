@@ -14,6 +14,7 @@ use crate::core::drivers::{
     QueryResult, SchemaSnapshot, SchemaTable, SslMode, TableInfo, TableKind, TxError, TxInput,
     TxRowError, TxStreamOutcome, ER_TABLE_LIMIT,
 };
+use crate::core::query_cancel::{mysql_cancel_sql, CancelTarget, RunCancel};
 use crate::core::schema_diff::{
     ColumnSchema, ForeignKeySchema, IndexSchema, SchemaData, TableSchema, ViewSchema,
     DIFF_TABLE_LIMIT,
@@ -548,6 +549,66 @@ impl Driver for MySqlDriver {
                 }
                 execute_batch(&mut conn, statements, max_rows).await
             }
+        })
+    }
+
+    fn run_statements_cancellable<'a>(
+        &'a self,
+        statements: &'a [String],
+        max_rows: i64,
+        database: Option<String>,
+        run: &'a RunCancel,
+    ) -> BoxFuture<'a, AppResult<QueryResult>> {
+        Box::pin(async move {
+            let requested = database.filter(|value| !value.trim().is_empty());
+            let options = match requested {
+                Some(database) => self.options.clone().database(database),
+                None => self.options.clone(),
+            };
+            // A dedicated connection is dropped when the run future is
+            // cancelled, so it never goes back to the pool mid-statement.
+            let mut conn = MySqlConnection::connect_with(&options)
+                .await
+                .map_err(db_error)?;
+            if self.read_only {
+                sqlx::query("SET SESSION TRANSACTION READ ONLY")
+                    .execute(&mut conn)
+                    .await
+                    .map_err(db_error)?;
+            }
+
+            let connection_id: u64 = sqlx::query_scalar("SELECT CONNECTION_ID()")
+                .fetch_one(&mut conn)
+                .await
+                .map_err(db_error)?;
+            run.set_target(CancelTarget::Mysql(connection_id));
+            if run.is_cancelled() {
+                return Err(AppError::Cancelled("Query cancelled".to_string()));
+            }
+
+            execute_batch(&mut conn, statements, max_rows).await
+        })
+    }
+
+    fn cancel_query<'a>(&'a self, target: CancelTarget) -> BoxFuture<'a, AppResult<()>> {
+        Box::pin(async move {
+            let CancelTarget::Mysql(connection_id) = target else {
+                return Ok(());
+            };
+            let mut conn = MySqlConnection::connect_with(&self.options)
+                .await
+                .map_err(db_error)?;
+            if self.read_only {
+                sqlx::query("SET SESSION TRANSACTION READ ONLY")
+                    .execute(&mut conn)
+                    .await
+                    .map_err(db_error)?;
+            }
+            sqlx::raw_sql(&mysql_cancel_sql(connection_id))
+                .execute(&mut conn)
+                .await
+                .map_err(db_error)?;
+            Ok(())
         })
     }
 

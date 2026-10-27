@@ -106,6 +106,7 @@ export const runQuery = (
   maxRows = 1000,
   database?: string,
   orderBy = "",
+  runId?: string,
 ) =>
   invoke<QueryResult>("run_query", {
     conn_id: connId,
@@ -113,7 +114,34 @@ export const runQuery = (
     max_rows: maxRows,
     database: database ?? null,
     order_by: orderBy.trim() ? orderBy : null,
+    run_id: runId ?? null,
   });
+
+export const cancelQuery = (runId: string) =>
+  invoke<boolean>("cancel_query", { run_id: runId });
+
+/** Returns the message for a cancelled run, or null for any other error. */
+export function cancelledQueryMessage(error: unknown): string | null {
+  if (typeof error === "string") {
+    return error.includes("Query cancelled") ? error : null;
+  }
+
+  if (error instanceof Error && error.message.includes("Query cancelled")) {
+    return error.message;
+  }
+
+  if (error && typeof error === "object") {
+    const value = (error as Record<string, unknown>).Cancelled;
+    if (typeof value === "string") return value;
+
+    const message = Object.values(error as Record<string, unknown>).find(
+      (item) => typeof item === "string" && item.includes("Query cancelled"),
+    );
+    if (typeof message === "string") return message;
+  }
+
+  return null;
+}
 
 export const explainPlan = (
   connId: string,
