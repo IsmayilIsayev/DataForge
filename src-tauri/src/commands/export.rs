@@ -566,6 +566,7 @@ fn write_loaded(
 #[derive(Debug)]
 pub(crate) struct KeysetPlan {
     pub sql: String,
+    #[cfg_attr(not(test), allow(dead_code))] // asserted by tests; export always selects every column
     pub columns: Vec<String>,
     pub pk_positions: Vec<usize>,
 }
