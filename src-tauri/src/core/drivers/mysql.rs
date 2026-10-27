@@ -562,7 +562,7 @@ impl Driver for MySqlDriver {
         Box::pin(async move {
             let requested = database.filter(|value| !value.trim().is_empty());
             let options = match requested {
-                Some(database) => self.options.clone().database(database),
+                Some(database) => self.options.clone().database(&database),
                 None => self.options.clone(),
             };
             // A dedicated connection is dropped when the run future is
@@ -604,7 +604,9 @@ impl Driver for MySqlDriver {
                     .await
                     .map_err(db_error)?;
             }
-            sqlx::raw_sql(&mysql_cancel_sql(connection_id))
+            // KILL is allowed as a prepared statement; raw_sql's executor bound breaks the boxed future.
+            let sql = mysql_cancel_sql(connection_id);
+            sqlx::query(&sql)
                 .execute(&mut conn)
                 .await
                 .map_err(db_error)?;
