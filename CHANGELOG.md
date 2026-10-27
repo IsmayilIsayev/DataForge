@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.9] - 2026-10-27
+
 ### Added
 
 - Restore: run a .sql or .sql.gz dump against a database with preview, progress, cancel and stop-on-error (transactional on PostgreSQL and SQLite).
