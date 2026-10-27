@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.8] - 2026-10-27
+
 ### Added
 
 - Backup: dump a database (structure, data or both) to .sql or .sql.gz from the database context menu, with progress and cancel; optionally uses pg_dump/mysqldump when installed.
