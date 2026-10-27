@@ -4,9 +4,10 @@ use futures::StreamExt;
 use serde_json::{Number, Value};
 
 use crate::core::drivers::{
-    all_tables_sql, int_json, uint_json, BoxFuture, ColumnInfo, ConnectionInput, DatabaseTable,
-    Dialect, Driver, ErColumn, ErSchema, ErTable, QueryResult, SchemaSnapshot, SchemaTable,
-    SslMode, TableInfo, TableKind, TxError, TxInput, TxRowError, TxStreamOutcome, ER_TABLE_LIMIT,
+    all_tables_sql, int_json, uint_json, BatchResult, BoxFuture, ColumnInfo, ConnectionInput,
+    DatabaseTable, Dialect, Driver, ErColumn, ErSchema, ErTable, QueryResult, SchemaSnapshot,
+    SchemaTable, SslMode, StatementResult, TableInfo, TableKind, TxError, TxInput, TxRowError,
+    TxStreamOutcome, ER_TABLE_LIMIT,
 };
 use crate::core::query_cancel::{clickhouse_cancel_sql, CancelTarget, RunCancel};
 use crate::core::restore::truncate_preview;
@@ -143,6 +144,37 @@ impl ClickHouseDriver {
             elapsed_ms: started.elapsed().as_millis() as u64,
             truncated,
         })
+    }
+
+    async fn execute_batch(
+        &self,
+        statements: &[String],
+        max_rows: i64,
+        database: Option<&str>,
+        query_id: Option<&str>,
+    ) -> AppResult<BatchResult> {
+        if statements.is_empty() {
+            return Err(AppError::Config("SQL boşdur".to_string()));
+        }
+
+        let mut results = Vec::new();
+        for (index, statement) in statements.iter().enumerate() {
+            if trim_statement(statement).is_empty() {
+                continue;
+            }
+
+            match self
+                .execute_statement_with_id(statement, max_rows, database, None, query_id)
+                .await
+            {
+                Ok(result) => results.push(StatementResult::new(statement, result)),
+                Err(error) => {
+                    return Ok(BatchResult::failure(results, index, statement, error));
+                }
+            }
+        }
+
+        Ok(BatchResult::success(results))
     }
 
     async fn http_query(
@@ -421,66 +453,30 @@ impl Driver for ClickHouseDriver {
         Box::pin(async move { self.execute_statement(sql, max_rows, None, None).await })
     }
 
-    fn run_statements<'a>(
+    fn run_statements_batch<'a>(
         &'a self,
         statements: &'a [String],
         max_rows: i64,
         database: Option<String>,
-    ) -> BoxFuture<'a, AppResult<QueryResult>> {
+    ) -> BoxFuture<'a, AppResult<BatchResult>> {
         Box::pin(async move {
-            let (last, earlier) = statements
-                .split_last()
-                .ok_or_else(|| AppError::Config("SQL boşdur".to_string()))?;
-
-            for statement in earlier {
-                if trim_statement(statement).is_empty() {
-                    continue;
-                }
-                self.execute_statement(statement, max_rows, database.as_deref(), None)
-                    .await?;
-            }
-
-            self.execute_statement(last, max_rows, database.as_deref(), None)
+            self.execute_batch(statements, max_rows, database.as_deref(), None)
                 .await
         })
     }
 
-    fn run_statements_cancellable<'a>(
+    fn run_statements_cancellable_batch<'a>(
         &'a self,
         statements: &'a [String],
         max_rows: i64,
         database: Option<String>,
         run: &'a RunCancel,
-    ) -> BoxFuture<'a, AppResult<QueryResult>> {
+    ) -> BoxFuture<'a, AppResult<BatchResult>> {
         Box::pin(async move {
             let query_id = run.run_id().to_string();
             run.set_target(CancelTarget::Clickhouse(query_id.clone()));
-            let (last, earlier) = statements
-                .split_last()
-                .ok_or_else(|| AppError::Config("SQL boşdur".to_string()))?;
-
-            for statement in earlier {
-                if trim_statement(statement).is_empty() {
-                    continue;
-                }
-                self.execute_statement_with_id(
-                    statement,
-                    max_rows,
-                    database.as_deref(),
-                    None,
-                    Some(&query_id),
-                )
-                .await?;
-            }
-
-            self.execute_statement_with_id(
-                last,
-                max_rows,
-                database.as_deref(),
-                None,
-                Some(&query_id),
-            )
-            .await
+            self.execute_batch(statements, max_rows, database.as_deref(), Some(&query_id))
+                .await
         })
     }
 

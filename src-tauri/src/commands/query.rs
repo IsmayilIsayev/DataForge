@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 pub(crate) use crate::core::restore::split_statements;
 use crate::core::drivers::{
-    ColumnInfo, DatabaseTable, ErSchema, QueryResult, TableInfo,
+    BatchResult, ColumnInfo, DatabaseTable, ErSchema, TableInfo,
 };
 use crate::core::query_cancel::{RunCancel, RunningQuery};
 use crate::error::{AppError, AppResult};
@@ -21,7 +21,7 @@ pub async fn run_query(
     database: Option<String>,
     order_by: Option<String>,
     run_id: Option<String>,
-) -> AppResult<QueryResult> {
+) -> AppResult<BatchResult> {
     let sql = trim_sql(&sql);
     if sql.is_empty() {
         return Err(AppError::Config("SQL boşdur".to_string()));
@@ -48,7 +48,9 @@ pub async fn run_query(
         .filter(|value| !value.is_empty());
 
     let Some(run_id) = run_id else {
-        return driver.run_statements(&statements, limit, database).await;
+        return driver
+            .run_statements_batch(&statements, limit, database)
+            .await;
     };
     if Uuid::parse_str(&run_id).is_err() {
         return Err(AppError::Config("invalid run id".to_string()));
@@ -58,7 +60,7 @@ pub async fn run_query(
     let run = Arc::new(RunningQuery::new(cancel.clone(), Some(driver.clone())));
     let _guard = state.runs.register(run_id, run.clone());
 
-    let execution = driver.run_statements_cancellable(&statements, limit, database, &cancel);
+    let execution = driver.run_statements_cancellable_batch(&statements, limit, database, &cancel);
     tokio::pin!(execution);
     tokio::select! {
         biased;

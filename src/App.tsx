@@ -21,6 +21,7 @@ import SqlEditor from "./components/SqlEditor";
 import type { SqlEditorHandle } from "./components/SqlEditor";
 import TableDataView from "./components/TableDataView";
 import EnvironmentBadge from "./components/EnvironmentBadge";
+import ResultTabs, { ResultMessages } from "./components/ResultTabs";
 import WhatsNewDialog from "./components/WhatsNewDialog";
 import { compareVersions, parseVersionSection } from "./changelog";
 import {
@@ -80,6 +81,8 @@ const dialogFallback = (
 );
 
 type Theme = "dark" | "light";
+
+const MESSAGES_TAB = -1;
 
 function detectUiLanguage(): "az" | "en" {
   let stored: string | null = null;
@@ -198,6 +201,16 @@ export default function App() {
       : null;
   const showPlan =
     !!activePlan && (activeView?.resultTab ?? "results") === "plan";
+  const activeResults = activeView?.results ?? [];
+  const activeResultIndex = activeView?.activeResult ?? 0;
+  const showMessages =
+    activeResults.length > 1 && activeResultIndex === MESSAGES_TAB;
+  const activeResultSql =
+    activeResults.length > 1 && activeResultIndex >= 0
+      ? (activeResults[activeResultIndex]?.statement ??
+        activeView?.executedSql ??
+        undefined)
+      : (activeView?.executedSql ?? undefined);
 
   const [theme, setTheme] = useState<Theme>(() =>
     localStorage.getItem("dataforge-theme") === "light" ? "light" : "dark",
@@ -787,10 +800,24 @@ export default function App() {
           runId,
         );
         if (!isCurrent()) return;
-        useAppStore
-          .getState()
-          .setResult(result, target, connId, database ?? null);
+        const state = useAppStore.getState();
+        state.setRunResult(result, target, connId, database ?? null);
         const elapsed = Math.round(performance.now() - started);
+        if (result.error) {
+          state.setError(
+            `Statement ${result.error.statement + 1}: ${errorMessage(
+              result.error.message,
+            )}`,
+            target,
+          );
+          if (queryTab && elapsed >= 1500) {
+            void notify(
+              "Query failed",
+              `After ${elapsed} ms — ${errorMessage(result.error.message)}`,
+            );
+          }
+          return;
+        }
         if (queryTab && elapsed >= 1500) {
           const rows = result.rows.length
             ? `${result.rows.length.toLocaleString("en-US")} rows`
@@ -2494,6 +2521,17 @@ export default function App() {
                   })}
                 </div>
               )}
+              {!showPlan && activeResults.length > 1 && (
+                <ResultTabs
+                  results={activeResults}
+                  active={activeResultIndex}
+                  onChange={(index) =>
+                    useAppStore
+                      .getState()
+                      .setActiveResult(index, activeTab.id)
+                  }
+                />
+              )}
               {showPlan && activePlan ? (
                 <Suspense fallback={<div style={{ flex: 1 }} />}>
                   <PlanView
@@ -2506,15 +2544,20 @@ export default function App() {
                     onAskAi={() => void handleAskAiIndexes()}
                   />
                 </Suspense>
+              ) : showMessages ? (
+                <ResultMessages
+                  results={activeResults}
+                  error={activeView?.runError}
+                />
               ) : (
                 <DataGrid
-                  key={activeTab.id}
+                  key={`${activeTab.id}:${activeResultIndex}`}
                   tabId={activeTab.id}
-                  viewKey={`${activeTab.id}:${activeView?.resultVersion ?? 0}`}
+                  viewKey={`${activeTab.id}:${activeView?.resultVersion ?? 0}:${activeResultIndex}`}
                   dialect={activeConnection?.dialect ?? "mysql"}
                   database={activeDb}
                   connId={activeView?.connId ?? activeConnId ?? undefined}
-                  sql={activeView?.executedSql ?? undefined}
+                  sql={activeResultSql}
                   theme={theme}
                   onExplainResult={handleExplainResult}
                 />

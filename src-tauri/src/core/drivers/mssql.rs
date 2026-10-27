@@ -7,10 +7,10 @@ use tokio::net::TcpStream;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
 use crate::core::drivers::{
-    er, group_foreign_keys, int_json, mssql_all_tables_sql, BoxFuture, ColumnInfo, ConnectionInput,
-    DatabaseTable, Dialect, Driver, ErColumn, ErSchema, ErTable, ForeignKeyRow, QueryResult,
-    SchemaSnapshot, SchemaTable, TableInfo, TableKind, TxError, TxInput, TxRowError,
-    TxStreamOutcome, ER_TABLE_LIMIT,
+    er, group_foreign_keys, int_json, mssql_all_tables_sql, BatchResult, BoxFuture, ColumnInfo,
+    ConnectionInput, DatabaseTable, Dialect, Driver, ErColumn, ErSchema, ErTable, ForeignKeyRow,
+    QueryResult, SchemaSnapshot, SchemaTable, StatementResult, TableInfo, TableKind, TxError,
+    TxInput, TxRowError, TxStreamOutcome, ER_TABLE_LIMIT,
 };
 use crate::core::query_cancel::{mssql_cancel_sql, CancelTarget, RunCancel};
 use crate::core::restore::truncate_preview;
@@ -414,12 +414,12 @@ impl Driver for MssqlDriver {
         })
     }
 
-    fn run_statements<'a>(
+    fn run_statements_batch<'a>(
         &'a self,
         statements: &'a [String],
         max_rows: i64,
         database: Option<String>,
-    ) -> BoxFuture<'a, AppResult<QueryResult>> {
+    ) -> BoxFuture<'a, AppResult<BatchResult>> {
         Box::pin(async move {
             let requested = database
                 .filter(|value| !value.trim().is_empty())
@@ -429,13 +429,13 @@ impl Driver for MssqlDriver {
         })
     }
 
-    fn run_statements_cancellable<'a>(
+    fn run_statements_cancellable_batch<'a>(
         &'a self,
         statements: &'a [String],
         max_rows: i64,
         database: Option<String>,
         run: &'a RunCancel,
-    ) -> BoxFuture<'a, AppResult<QueryResult>> {
+    ) -> BoxFuture<'a, AppResult<BatchResult>> {
         Box::pin(async move {
             let requested = database
                 .filter(|value| !value.trim().is_empty())
@@ -944,21 +944,27 @@ async fn execute_batch(
     client: &mut MssqlClient,
     statements: &[String],
     max_rows: i64,
-) -> AppResult<QueryResult> {
-    let (last, earlier) = statements
-        .split_last()
-        .ok_or_else(|| AppError::Config("SQL boşdur".to_string()))?;
+) -> AppResult<BatchResult> {
+    if statements.is_empty() {
+        return Err(AppError::Config("SQL boşdur".to_string()));
+    }
 
-    for statement in earlier {
-        let statement = trim_statement(statement);
-        if statement.is_empty() {
+    let mut results = Vec::new();
+    for (index, statement) in statements.iter().enumerate() {
+        let body = trim_statement(statement);
+        if body.is_empty() {
             continue;
         }
 
-        client.execute(statement, &[]).await.map_err(db_error)?;
+        match execute_statement(client, body, max_rows).await {
+            Ok(result) => results.push(StatementResult::new(statement, result)),
+            Err(error) => {
+                return Ok(BatchResult::failure(results, index, statement, error));
+            }
+        }
     }
 
-    execute_statement(client, last, max_rows).await
+    Ok(BatchResult::success(results))
 }
 
 async fn execute_statement(

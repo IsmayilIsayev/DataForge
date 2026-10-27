@@ -81,6 +81,28 @@ export interface QueryResult {
   truncated: boolean;
 }
 
+/** One statement of a multi-statement run, in execution order. */
+export interface StatementResult extends QueryResult {
+  /** First 200 characters of the statement. */
+  statement: string;
+  /** Set when the statement ran but its result exceeded the result-set cap. */
+  note?: string;
+}
+
+export interface RunQueryError {
+  /** Zero-based index of the statement that failed. */
+  statement: number;
+  /** First 200 characters of the failing statement. */
+  sql: string;
+  message: string;
+}
+
+/** Response of `run_query`: all results plus the last one on the top level. */
+export interface RunQueryResult extends QueryResult {
+  results: StatementResult[];
+  error?: RunQueryError;
+}
+
 export interface TableInfo {
   name: string;
   kind: "table" | "view";

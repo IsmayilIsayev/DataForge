@@ -8,9 +8,10 @@ use sqlx::sqlite::{
 use sqlx::{Column, Connection, Executor, Row, Statement, TypeInfo, ValueRef};
 
 use crate::core::drivers::{
-    er, group_foreign_keys, int_json, BoxFuture, ColumnInfo, ConnectionInput, Dialect, Driver,
-    ErColumn, ErSchema, ErTable, ForeignKeyRow, QueryResult, SchemaSnapshot, SchemaTable, TableInfo,
-    TableKind, TxError, TxInput, TxRowError, TxStreamOutcome, ER_TABLE_LIMIT,
+    er, group_foreign_keys, int_json, BatchResult, BoxFuture, ColumnInfo, ConnectionInput, Dialect,
+    Driver, ErColumn, ErSchema, ErTable, ForeignKeyRow, QueryResult, SchemaSnapshot, SchemaTable,
+    StatementResult, TableInfo, TableKind, TxError, TxInput, TxRowError, TxStreamOutcome,
+    ER_TABLE_LIMIT,
 };
 use crate::core::query_cancel::{CancelTarget, RunCancel};
 use crate::core::schema_diff::{
@@ -319,25 +320,25 @@ impl Driver for SqliteDriver {
         })
     }
 
-    fn run_statements<'a>(
+    fn run_statements_batch<'a>(
         &'a self,
         statements: &'a [String],
         max_rows: i64,
         _database: Option<String>,
-    ) -> BoxFuture<'a, AppResult<QueryResult>> {
+    ) -> BoxFuture<'a, AppResult<BatchResult>> {
         Box::pin(async move {
             let mut conn = self.pool.acquire().await.map_err(db_error)?;
             execute_batch(&mut conn, statements, max_rows).await
         })
     }
 
-    fn run_statements_cancellable<'a>(
+    fn run_statements_cancellable_batch<'a>(
         &'a self,
         statements: &'a [String],
         max_rows: i64,
         database: Option<String>,
         run: &'a RunCancel,
-    ) -> BoxFuture<'a, AppResult<QueryResult>> {
+    ) -> BoxFuture<'a, AppResult<BatchResult>> {
         Box::pin(async move {
             let _ = database;
             // SQLite has no separate server connection to cancel. A dedicated
@@ -1007,24 +1008,27 @@ async fn execute_batch(
     conn: &mut SqliteConnection,
     statements: &[String],
     max_rows: i64,
-) -> AppResult<QueryResult> {
-    let (last, earlier) = statements
-        .split_last()
-        .ok_or_else(|| AppError::Config("SQL boşdur".to_string()))?;
+) -> AppResult<BatchResult> {
+    if statements.is_empty() {
+        return Err(AppError::Config("SQL boşdur".to_string()));
+    }
 
-    for statement in earlier {
-        let statement = trim_statement(statement);
-        if statement.is_empty() {
+    let mut results = Vec::new();
+    for (index, statement) in statements.iter().enumerate() {
+        let body = trim_statement(statement);
+        if body.is_empty() {
             continue;
         }
 
-        sqlx::query(statement)
-            .execute(&mut *conn)
-            .await
-            .map_err(db_error)?;
+        match execute_statement(conn, body, max_rows).await {
+            Ok(result) => results.push(StatementResult::new(statement, result)),
+            Err(error) => {
+                return Ok(BatchResult::failure(results, index, statement, error));
+            }
+        }
     }
 
-    execute_statement(conn, last, max_rows).await
+    Ok(BatchResult::success(results))
 }
 
 async fn execute_statement(

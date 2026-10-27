@@ -25,9 +25,9 @@ import type {
   ExplainPlan,
   GenerateSummary,
   Nl2SqlResult,
-  QueryResult,
   RestorePreview,
   RestoreSummary,
+  RunQueryResult,
   SavedQueriesFile,
   SchemaDiff,
   TableInfo,
@@ -108,7 +108,7 @@ export const runQuery = (
   orderBy = "",
   runId?: string,
 ) =>
-  invoke<QueryResult>("run_query", {
+  invoke<RunQueryResult>("run_query", {
     conn_id: connId,
     sql,
     max_rows: maxRows,

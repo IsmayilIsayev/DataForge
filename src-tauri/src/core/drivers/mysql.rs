@@ -9,10 +9,10 @@ use sqlx::types::chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use sqlx::{Column, Connection, Executor, Row, Statement, TypeInfo, ValueRef};
 
 use crate::core::drivers::{
-    all_tables_sql, er, group_foreign_keys, int_json, uint_json, BoxFuture, ColumnInfo,
-    ConnectionInput, DatabaseTable, Dialect, Driver, ErColumn, ErSchema, ErTable, ForeignKeyRow,
-    QueryResult, SchemaSnapshot, SchemaTable, SslMode, TableInfo, TableKind, TxError, TxInput,
-    TxRowError, TxStreamOutcome, ER_TABLE_LIMIT,
+    all_tables_sql, er, group_foreign_keys, int_json, uint_json, BatchResult, BoxFuture,
+    ColumnInfo, ConnectionInput, DatabaseTable, Dialect, Driver, ErColumn, ErSchema, ErTable,
+    ForeignKeyRow, QueryResult, SchemaSnapshot, SchemaTable, SslMode, StatementResult, TableInfo,
+    TableKind, TxError, TxInput, TxRowError, TxStreamOutcome, ER_TABLE_LIMIT,
 };
 use crate::core::query_cancel::{mysql_cancel_sql, CancelTarget, RunCancel};
 use crate::core::schema_diff::{
@@ -378,24 +378,27 @@ async fn execute_batch(
     conn: &mut MySqlConnection,
     statements: &[String],
     max_rows: i64,
-) -> AppResult<QueryResult> {
-    let (last, earlier) = statements
-        .split_last()
-        .ok_or_else(|| AppError::Config("SQL boşdur".to_string()))?;
+) -> AppResult<BatchResult> {
+    if statements.is_empty() {
+        return Err(AppError::Config("SQL boşdur".to_string()));
+    }
 
-    for statement in earlier {
-        let statement = trim_statement(statement);
-        if statement.is_empty() {
+    let mut results = Vec::new();
+    for (index, statement) in statements.iter().enumerate() {
+        let body = trim_statement(statement);
+        if body.is_empty() {
             continue;
         }
 
-        sqlx::query(statement)
-            .execute(&mut *conn)
-            .await
-            .map_err(db_error)?;
+        match execute_statement(conn, body, max_rows).await {
+            Ok(result) => results.push(StatementResult::new(statement, result)),
+            Err(error) => {
+                return Ok(BatchResult::failure(results, index, statement, error));
+            }
+        }
     }
 
-    execute_statement(conn, last, max_rows).await
+    Ok(BatchResult::success(results))
 }
 
 async fn execute_statement(
@@ -521,12 +524,12 @@ impl Driver for MySqlDriver {
         })
     }
 
-    fn run_statements<'a>(
+    fn run_statements_batch<'a>(
         &'a self,
         statements: &'a [String],
         max_rows: i64,
         database: Option<String>,
-    ) -> BoxFuture<'a, AppResult<QueryResult>> {
+    ) -> BoxFuture<'a, AppResult<BatchResult>> {
         Box::pin(async move {
             let requested = database.filter(|value| !value.trim().is_empty());
 
@@ -552,13 +555,13 @@ impl Driver for MySqlDriver {
         })
     }
 
-    fn run_statements_cancellable<'a>(
+    fn run_statements_cancellable_batch<'a>(
         &'a self,
         statements: &'a [String],
         max_rows: i64,
         database: Option<String>,
         run: &'a RunCancel,
-    ) -> BoxFuture<'a, AppResult<QueryResult>> {
+    ) -> BoxFuture<'a, AppResult<BatchResult>> {
         Box::pin(async move {
             let requested = database.filter(|value| !value.trim().is_empty());
             let options = match requested {

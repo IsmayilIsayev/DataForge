@@ -292,6 +292,111 @@ pub struct QueryResult {
     pub truncated: bool,
 }
 
+impl QueryResult {
+    pub(crate) fn empty() -> Self {
+        Self {
+            columns: Vec::new(),
+            rows: Vec::new(),
+            rows_affected: None,
+            elapsed_ms: 0,
+            truncated: false,
+        }
+    }
+}
+
+/// How many result sets keep their rows in one run. Later statements still run
+/// and report their status, but their result data is dropped.
+pub const MAX_RESULT_SETS: usize = 20;
+pub const RESULT_LIMIT_NOTE: &str = "result not shown (limit 20)";
+
+/// One statement of a multi-statement run, in execution order.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatementResult {
+    /// First 200 characters of the statement.
+    pub statement: String,
+    #[serde(flatten)]
+    pub result: QueryResult,
+    /// Set when the statement ran but its result was not kept (result-set cap).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+impl StatementResult {
+    pub fn new(statement: &str, result: QueryResult) -> Self {
+        Self {
+            statement: crate::core::restore::truncate_preview(statement.trim(), 200),
+            result,
+            note: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchError {
+    /// Zero-based index of the statement that failed.
+    pub statement: usize,
+    /// First 200 characters of the failing statement.
+    pub sql: String,
+    pub message: String,
+}
+
+/// All result sets from one run. The last result is also flattened onto the
+/// top level so existing callers keep the old single-result shape.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchResult {
+    #[serde(flatten)]
+    pub last: QueryResult,
+    pub results: Vec<StatementResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<BatchError>,
+}
+
+impl BatchResult {
+    pub fn success(results: Vec<StatementResult>) -> Self {
+        let last = results
+            .last()
+            .map(|entry| entry.result.clone())
+            .unwrap_or_else(QueryResult::empty);
+        let mut results = results;
+        for (index, entry) in results.iter_mut().enumerate() {
+            if index >= MAX_RESULT_SETS {
+                entry.note = Some(RESULT_LIMIT_NOTE.to_string());
+                entry.result.columns.clear();
+                entry.result.rows.clear();
+                entry.result.truncated = false;
+            }
+        }
+        Self {
+            last,
+            results,
+            error: None,
+        }
+    }
+
+    pub fn failure(
+        results: Vec<StatementResult>,
+        statement: usize,
+        sql: &str,
+        error: AppError,
+    ) -> Self {
+        let mut batch = Self::success(results);
+        batch.error = Some(BatchError {
+            statement,
+            sql: crate::core::restore::truncate_preview(sql.trim(), 200),
+            message: error.to_string(),
+        });
+        batch
+    }
+
+    /// Old single-result shape for callers that only need the last statement.
+    pub fn into_result(self) -> AppResult<QueryResult> {
+        match self.error {
+            Some(error) => Err(AppError::Db(error.message)),
+            None => Ok(self.last),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TableKind {
@@ -337,15 +442,41 @@ pub trait Driver: Send + Sync {
     fn dialect(&self) -> Dialect;
     fn dialect_name(&self) -> &'static str;
     fn query<'a>(&'a self, sql: &'a str, max_rows: i64) -> BoxFuture<'a, AppResult<QueryResult>>;
+    /// Run every statement and return all result sets in order. Implemented by
+    /// each driver through its shared `execute_batch` helper.
+    fn run_statements_batch<'a>(
+        &'a self,
+        statements: &'a [String],
+        max_rows: i64,
+        database: Option<String>,
+    ) -> BoxFuture<'a, AppResult<BatchResult>>;
+    /// Single-result view of `run_statements_batch` (last result or error).
     fn run_statements<'a>(
         &'a self,
         statements: &'a [String],
         max_rows: i64,
         database: Option<String>,
-    ) -> BoxFuture<'a, AppResult<QueryResult>>;
-    /// Like `run_statements`, but records how the server-side statement can be
-    /// cancelled. The default ignores cancellation for drivers that do not
-    /// support it.
+    ) -> BoxFuture<'a, AppResult<QueryResult>> {
+        Box::pin(async move {
+            self.run_statements_batch(statements, max_rows, database)
+                .await?
+                .into_result()
+        })
+    }
+    /// Like `run_statements_batch`, but records how the server-side statement
+    /// can be cancelled. The default ignores cancellation for drivers that do
+    /// not support it.
+    fn run_statements_cancellable_batch<'a>(
+        &'a self,
+        statements: &'a [String],
+        max_rows: i64,
+        database: Option<String>,
+        run: &'a RunCancel,
+    ) -> BoxFuture<'a, AppResult<BatchResult>> {
+        let _ = run;
+        self.run_statements_batch(statements, max_rows, database)
+    }
+    /// Single-result view of `run_statements_cancellable_batch`.
     fn run_statements_cancellable<'a>(
         &'a self,
         statements: &'a [String],
@@ -353,8 +484,11 @@ pub trait Driver: Send + Sync {
         database: Option<String>,
         run: &'a RunCancel,
     ) -> BoxFuture<'a, AppResult<QueryResult>> {
-        let _ = run;
-        self.run_statements(statements, max_rows, database)
+        Box::pin(async move {
+            self.run_statements_cancellable_batch(statements, max_rows, database, run)
+                .await?
+                .into_result()
+        })
     }
     /// Ask the database server to stop the query described by `target`.
     fn cancel_query<'a>(&'a self, _target: CancelTarget) -> BoxFuture<'a, AppResult<()>> {
@@ -783,5 +917,70 @@ mod all_tables_tests {
         let sql = mssql_all_tables_sql(&[]);
         assert!(sql.contains("DB_NAME()"));
         assert!(!sql.contains("UNION ALL"));
+    }
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use super::{
+        BatchResult, QueryResult, StatementResult, MAX_RESULT_SETS, RESULT_LIMIT_NOTE,
+    };
+    use crate::error::AppError;
+    use serde_json::Value;
+
+    fn statement_result(sql: &str, rows: usize) -> StatementResult {
+        let mut result = QueryResult::empty();
+        result.columns = vec!["n".to_string()];
+        result.rows = (0..rows)
+            .map(|index| vec![Value::from(index as i64)])
+            .collect();
+        StatementResult::new(sql, result)
+    }
+
+    #[test]
+    fn caps_full_result_sets_at_twenty_but_keeps_later_status() {
+        let entries = (0..MAX_RESULT_SETS + 2)
+            .map(|index| statement_result(&format!("SELECT {index}"), 1))
+            .collect();
+        let batch = BatchResult::success(entries);
+
+        assert_eq!(batch.results.len(), MAX_RESULT_SETS + 2);
+        assert_eq!(batch.results[MAX_RESULT_SETS - 1].result.rows.len(), 1);
+        assert!(batch.results[MAX_RESULT_SETS - 1].note.is_none());
+        assert_eq!(batch.results[MAX_RESULT_SETS].result.rows.len(), 0);
+        assert_eq!(
+            batch.results[MAX_RESULT_SETS].note.as_deref(),
+            Some(RESULT_LIMIT_NOTE)
+        );
+        assert_eq!(
+            batch.results[MAX_RESULT_SETS + 1].note.as_deref(),
+            Some(RESULT_LIMIT_NOTE)
+        );
+        // The legacy top-level result is still the real last result set.
+        assert_eq!(batch.last.rows.len(), 1);
+        assert_eq!(
+            batch.results[MAX_RESULT_SETS + 1].statement,
+            format!("SELECT {}", MAX_RESULT_SETS + 1)
+        );
+    }
+
+    #[test]
+    fn error_keeps_results_before_the_failing_statement() {
+        let batch = BatchResult::failure(
+            vec![statement_result("SELECT 1", 1), statement_result("SELECT 2", 2)],
+            2,
+            "SELECT broken",
+            AppError::Db("boom".to_string()),
+        );
+
+        assert_eq!(batch.results.len(), 2);
+        assert_eq!(batch.results[0].result.rows.len(), 1);
+        assert_eq!(batch.results[1].result.rows.len(), 2);
+        assert_eq!(batch.last.rows.len(), 2);
+
+        let error = batch.error.expect("error is recorded");
+        assert_eq!(error.statement, 2);
+        assert_eq!(error.sql, "SELECT broken");
+        assert!(error.message.contains("boom"));
     }
 }

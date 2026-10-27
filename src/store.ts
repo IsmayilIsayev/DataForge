@@ -12,7 +12,10 @@ import type {
   DatabaseTable,
   ExplainPlan,
   QueryResult,
+  RunQueryError,
+  RunQueryResult,
   SavedQueriesFile,
+  StatementResult,
 } from "./types";
 
 export interface ConnPref {
@@ -306,6 +309,11 @@ export type ResultView = "grid" | "chart";
 
 export interface TabViewState {
   result: QueryResult | null;
+  /** Every result set from the last run, in statement order. */
+  results: StatementResult[];
+  /** Index of the shown result, or -1 for the Messages tab. */
+  activeResult: number;
+  runError: RunQueryError | null;
   error: string | null;
   running: boolean;
   connId: string | null;
@@ -442,6 +450,13 @@ interface AppStore {
     connId?: string,
     database?: string | null,
   ) => void;
+  setRunResult: (
+    batch: RunQueryResult,
+    tabId?: string,
+    connId?: string,
+    database?: string | null,
+  ) => void;
+  setActiveResult: (index: number, tabId?: string) => void;
   setError: (error: string | null, tabId?: string) => void;
   setRunning: (running: boolean, tabId?: string) => void;
   setExecutedSql: (sql: string | null, tabId?: string) => void;
@@ -459,6 +474,9 @@ interface AppStore {
 function emptyView(): TabViewState {
   return {
     result: null,
+    results: [],
+    activeResult: 0,
+    runError: null,
     error: null,
     running: false,
     connId: null,
@@ -1022,14 +1040,29 @@ export const useAppStore = create<AppStore>((set, get) => ({
       // In-place row edits/deletes call setResult without it, so the grid can
       // keep its sort, column order and selection.
       const isExecution = connId !== undefined;
+      const clearBatch = isExecution && result === null;
+      // Keep the active result-set entry in sync with in-place edits.
+      const results =
+        !isExecution && result && view.results.length > 0
+          ? view.results.map((entry, index) =>
+              index === view.activeResult
+                ? { ...entry, ...result }
+                : entry,
+            )
+          : clearBatch
+            ? []
+            : view.results;
       const nextView: TabViewState = {
         ...view,
         result,
+        results,
+        activeResult: clearBatch ? 0 : view.activeResult,
         ...(isExecution
           ? {
               connId,
               database: database ?? null,
               resultVersion: view.resultVersion + 1,
+              runError: null,
             }
           : {}),
       };
@@ -1037,6 +1070,60 @@ export const useAppStore = create<AppStore>((set, get) => ({
         tabStates: {
           ...state.tabStates,
           [target]: nextView,
+        },
+        ...(target === state.activeTabId ? { result } : {}),
+      };
+    }),
+  setRunResult: (batch, tabId, connId, database) =>
+    set((state) => {
+      const target = tabId ?? state.activeTabId;
+      const view = state.tabStates[target] ?? emptyView();
+      const results = batch.results ?? [];
+      const activeResult = results.length > 0 ? results.length - 1 : 0;
+      const result: QueryResult =
+        results.length > 0
+          ? results[activeResult]
+          : {
+              columns: batch.columns,
+              rows: batch.rows,
+              rows_affected: batch.rows_affected,
+              elapsed_ms: batch.elapsed_ms,
+              truncated: batch.truncated,
+            };
+      const nextView: TabViewState = {
+        ...view,
+        result,
+        results,
+        activeResult,
+        connId: connId ?? null,
+        database: database ?? null,
+        resultVersion: view.resultVersion + 1,
+        chartConfig: null,
+        runError: batch.error ?? null,
+      };
+      return {
+        tabStates: {
+          ...state.tabStates,
+          [target]: nextView,
+        },
+        ...(target === state.activeTabId ? { result } : {}),
+      };
+    }),
+  setActiveResult: (index, tabId) =>
+    set((state) => {
+      const target = tabId ?? state.activeTabId;
+      const view = state.tabStates[target] ?? emptyView();
+      if (index < -1 || index >= view.results.length) return {};
+      const result = index === -1 ? null : (view.results[index] ?? null);
+      return {
+        tabStates: {
+          ...state.tabStates,
+          [target]: {
+            ...view,
+            activeResult: index,
+            result,
+            chartConfig: null,
+          },
         },
         ...(target === state.activeTabId ? { result } : {}),
       };
