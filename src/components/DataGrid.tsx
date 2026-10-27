@@ -31,6 +31,8 @@ import {
   rowMatchesFilters,
 } from "../gridFilter";
 import type { ColumnFilter, FilterOperator } from "../gridFilter";
+import { findMatches } from "../find";
+import type { FindMatch } from "../find";
 import { quoteIdentifier, sqliteBooleanLiteral, stringLiteral } from "../sql";
 import { isProduction } from "../environment";
 import { guardSqlExecution, readOnlyWriteError } from "../prodGuard";
@@ -49,6 +51,7 @@ const MIN_VIEWER_WIDTH = 280;
 const MIN_VIEWER_HEIGHT = 120;
 const VIEWER_MAX_RATIO = 0.7;
 const VIEWER_RESIZE_STEP = 16;
+const FIND_DEBOUNCE_MS = 120;
 
 interface Props {
   viewKey: string;
@@ -128,6 +131,7 @@ function cellType(value: CellValue): string {
 }
 
 const EMPTY_FILTERS: ColumnFilter[] = [];
+const EMPTY_FIND_MATCHES: FindMatch[] = [];
 const EMPTY_PENDING: PendingChange[] = [];
 
 function toChangeInput(change: PendingChange): ChangeInput {
@@ -259,6 +263,205 @@ function operationId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+interface FindBarProps {
+  matchCase: boolean;
+  filterRows: boolean;
+  current: number;
+  total: number;
+  focusToken: number;
+  onQuery: (query: string) => void;
+  onToggleCase: () => void;
+  onToggleFilter: () => void;
+  onNext: () => void;
+  onPrevious: () => void;
+  onClose: () => void;
+}
+
+function FindBar({
+  matchCase,
+  filterRows,
+  current,
+  total,
+  focusToken,
+  onQuery,
+  onToggleCase,
+  onToggleFilter,
+  onNext,
+  onPrevious,
+  onClose,
+}: FindBarProps) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [draft, setDraft] = useState("");
+  const onQueryRef = useRef(onQuery);
+
+  useEffect(() => {
+    onQueryRef.current = onQuery;
+  }, [onQuery]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(
+      () => onQueryRef.current(draft),
+      FIND_DEBOUNCE_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [draft]);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, [focusToken]);
+
+  const keyHint = total === 0 ? "0 / 0" : `${current + 1} / ${total}`;
+  const buttonStyle = (active: boolean): CSSProperties => ({
+    height: 28,
+    minWidth: 28,
+    flex: "none",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: "0 6px",
+    border: 0,
+    borderRadius: 4,
+    background: active ? "var(--acs)" : "transparent",
+    color: active ? "var(--ac)" : "var(--mu)",
+    cursor: "default",
+    fontFamily: "var(--mono)",
+    fontSize: 11.5,
+  });
+
+  return (
+    <div
+      role="search"
+      aria-label="Find in results"
+      style={{
+        position: "absolute",
+        top: 6,
+        right: 8,
+        zIndex: 20,
+        display: "flex",
+        alignItems: "center",
+        gap: 2,
+        height: 36,
+        padding: "0 4px",
+        border: "1px solid var(--bd2)",
+        borderRadius: 6,
+        background: "var(--sf)",
+        boxShadow: "var(--sh)",
+        fontFamily: "var(--ui)",
+        fontSize: 12,
+      }}
+    >
+      <input
+        ref={inputRef}
+        className="v2-input"
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onKeyDown={(event) => {
+          const mod = event.metaKey || event.ctrlKey;
+          if (event.key === "Escape") {
+            event.preventDefault();
+            onClose();
+          } else if (event.key === "Enter") {
+            event.preventDefault();
+            if (event.shiftKey) onPrevious();
+            else onNext();
+          } else if (event.key === "F3") {
+            event.preventDefault();
+            if (event.shiftKey) onPrevious();
+            else onNext();
+          } else if (mod && event.key.toLowerCase() === "f") {
+            event.preventDefault();
+            inputRef.current?.select();
+          }
+        }}
+        placeholder="Find in results"
+        aria-label="Find in results"
+        spellCheck={false}
+        style={{
+          width: 170,
+          height: 28,
+          flex: "none",
+          padding: "0 7px",
+          border: "1px solid var(--bd2)",
+          borderRadius: 4,
+          background: "var(--bg)",
+          color: "var(--tx)",
+          fontFamily: "var(--mono)",
+          fontSize: 12,
+        }}
+      />
+      <span
+        aria-live="polite"
+        style={{
+          minWidth: 54,
+          flex: "none",
+          color: total > 0 ? "var(--tx)" : "var(--fa)",
+          textAlign: "center",
+          fontFamily: "var(--mono)",
+          fontSize: 11,
+          whiteSpace: "nowrap",
+        }}
+      >
+        {keyHint}
+      </span>
+      <button
+        type="button"
+        className="v2-icon-btn"
+        onClick={onPrevious}
+        disabled={total === 0}
+        aria-label="Previous match"
+        title="Previous match (Shift+Enter, Shift+F3)"
+        style={buttonStyle(false)}
+      >
+        <i className="icon-arrow-up" style={{ fontSize: 13 }} />
+      </button>
+      <button
+        type="button"
+        className="v2-icon-btn"
+        onClick={onNext}
+        disabled={total === 0}
+        aria-label="Next match"
+        title="Next match (Enter, F3)"
+        style={buttonStyle(false)}
+      >
+        <i className="icon-arrow-down" style={{ fontSize: 13 }} />
+      </button>
+      <button
+        type="button"
+        className="v2-icon-btn"
+        onClick={onToggleCase}
+        aria-pressed={matchCase}
+        aria-label="Match case"
+        title="Match case"
+        style={buttonStyle(matchCase)}
+      >
+        Aa
+      </button>
+      <button
+        type="button"
+        className="v2-icon-btn"
+        onClick={onToggleFilter}
+        aria-pressed={filterRows}
+        aria-label="Filter rows with matches"
+        title="Filter rows"
+        style={{ ...buttonStyle(filterRows), minWidth: 0 }}
+      >
+        Filter rows
+      </button>
+      <button
+        type="button"
+        className="v2-icon-btn"
+        onClick={onClose}
+        aria-label="Close find"
+        title="Close (Esc)"
+        style={buttonStyle(false)}
+      >
+        <i className="icon-x" style={{ fontSize: 13 }} />
+      </button>
+    </div>
+  );
+}
+
 export default function DataGrid({
   viewKey,
   tabId,
@@ -319,6 +522,7 @@ export default function DataGrid({
   const [failedChangeId, setFailedChangeId] = useState<string | null>(null);
   const [previewSql, setPreviewSql] = useState<string[] | null>(null);
 
+  const sectionRef = useRef<HTMLElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
   const resizingRef = useRef(false);
   const [anchor, setAnchor] = useState<Position | null>(null);
@@ -363,6 +567,12 @@ export default function DataGrid({
   const [copied, setCopied] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [gridFindOpen, setGridFindOpen] = useState(false);
+  const [gridFindQuery, setGridFindQuery] = useState("");
+  const [gridFindCase, setGridFindCase] = useState(false);
+  const [gridFindFilter, setGridFindFilter] = useState(false);
+  const [gridFindIndex, setGridFindIndex] = useState(0);
+  const [gridFindFocus, setGridFindFocus] = useState(0);
 
   useEffect(() => {
     const columns = result?.columns.length ?? 0;
@@ -383,6 +593,11 @@ export default function DataGrid({
     setConfirmDelete(null);
     setFailedChangeId(null);
     setPreviewSql(null);
+    setGridFindOpen(false);
+    setGridFindQuery("");
+    setGridFindCase(false);
+    setGridFindFilter(false);
+    setGridFindIndex(0);
   }, [viewKey, serverSide]);
 
   useEffect(() => {
@@ -479,6 +694,46 @@ export default function DataGrid({
   const columns = result?.columns ?? [];
   const rows = result?.rows ?? [];
 
+  // One pass per result object: the text the grid shows, plus its lowercase
+  // form for the hot substring search.
+  const searchIndex = useMemo(() => {
+    if (!result) return null;
+    const text: string[][] = [];
+    const lower: string[][] = [];
+    for (const row of result.rows) {
+      const rowText: string[] = [];
+      const rowLower: string[] = [];
+      for (const value of row) {
+        const cell = displayValue(value);
+        rowText.push(cell);
+        rowLower.push(cell.toLowerCase());
+      }
+      text.push(rowText);
+      lower.push(rowLower);
+    }
+    return { text, lower };
+  }, [result]);
+
+  const findActive = gridFindOpen && gridFindQuery.length > 0;
+  const findResults = useMemo(() => {
+    if (!findActive || !searchIndex) return EMPTY_FIND_MATCHES;
+    return findMatches(
+      gridFindCase ? searchIndex.text : searchIndex.lower,
+      gridFindQuery,
+      gridFindCase,
+    );
+  }, [findActive, searchIndex, gridFindCase, gridFindQuery]);
+  const findMatchKeys = useMemo(
+    () => new Set(findResults.map((match) => `${match.row}:${match.col}`)),
+    [findResults],
+  );
+  const findMatchedRows = useMemo(
+    () => new Set(findResults.map((match) => match.row)),
+    [findResults],
+  );
+  const currentFindMatch: FindMatch | null =
+    findResults[gridFindIndex] ?? null;
+
   const sourceRows = useMemo(() => {
     const indexed = rows.map((row, index) => ({ row, index }));
     if (serverSide || filters.length === 0) return indexed;
@@ -487,7 +742,7 @@ export default function DataGrid({
     );
   }, [rows, columns, filters, serverSide]);
 
-  const sortedRows = useMemo(() => {
+  const sortedSourceRows = useMemo(() => {
     if (!sort) return sourceRows;
     return [...sourceRows].sort((a, b) => {
       const left = a.row[sort.col];
@@ -505,6 +760,88 @@ export default function DataGrid({
       return compared * (sort.dir === "asc" ? 1 : -1);
     });
   }, [sourceRows, sort]);
+
+  const sortedRows = useMemo(() => {
+    if (!findActive || !gridFindFilter) return sortedSourceRows;
+    return sortedSourceRows.filter((item) =>
+      findMatchedRows.has(item.index),
+    );
+  }, [sortedSourceRows, findActive, gridFindFilter, findMatchedRows]);
+
+  // Row numbers come from the grid before the find filter, so hidden rows do
+  // not renumber the visible ones.
+  const findRowNumbers = useMemo(() => {
+    if (!findActive || !gridFindFilter) return null;
+    const numbers = new Map<number, number>();
+    sortedSourceRows.forEach((item, index) =>
+      numbers.set(item.index, index + 1),
+    );
+    return numbers;
+  }, [sortedSourceRows, findActive, gridFindFilter]);
+
+  useEffect(() => {
+    setGridFindIndex((current) =>
+      findResults.length === 0
+        ? 0
+        : Math.min(current, findResults.length - 1),
+    );
+  }, [findResults.length]);
+
+  useEffect(() => {
+    if (!gridFindOpen || !currentFindMatch) return;
+    const displayRow = sortedRows.findIndex(
+      (item) => item.index === currentFindMatch.row,
+    );
+    const displayCol = order.indexOf(currentFindMatch.col);
+    if (displayRow < 0 || displayCol < 0) return;
+    const frame = window.requestAnimationFrame(() => {
+      gridRef.current
+        ?.querySelector<HTMLElement>(
+          `[data-cell="${displayRow}:${displayCol}"]`,
+        )
+        ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [gridFindOpen, currentFindMatch, sortedRows, order]);
+
+  useEffect(() => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      const target = event.target;
+      const active = document.activeElement;
+      const inResults =
+        (target instanceof Node && sectionRef.current?.contains(target)) ||
+        (active instanceof Element &&
+          active.closest('[role="tablist"][aria-label="Query results"]') !==
+            null);
+      if (!inResults) return;
+
+      const mod = event.metaKey || event.ctrlKey;
+      const key = event.key.toLowerCase();
+      if (mod && key === "f") {
+        if (resultView !== "grid" || columns.length === 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        openGridFind();
+        return;
+      }
+      if (key === "f3" && gridFindOpen) {
+        event.preventDefault();
+        event.stopPropagation();
+        stepGridFind(event.shiftKey ? -1 : 1);
+        return;
+      }
+      const editingCell =
+        target instanceof Element &&
+        target.closest("[data-cell] input") !== null;
+      if (event.key === "Escape" && gridFindOpen && !editingCell) {
+        event.preventDefault();
+        event.stopPropagation();
+        closeGridFind();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [resultView, columns.length, gridFindOpen, findResults.length]);
 
   const numericColumns = useMemo(() => {
     return columns.map((_, index) => {
@@ -1098,6 +1435,41 @@ export default function DataGrid({
     }
   }
 
+  function openGridFind() {
+    setGridMenu(null);
+    setExportMenu(null);
+    setHeaderMenu(null);
+    setFilterMenu(null);
+    setGridFindOpen(true);
+    setGridFindFocus((current) => current + 1);
+  }
+
+  function updateGridFindQuery(query: string) {
+    setGridFindQuery(query);
+    setGridFindIndex(0);
+  }
+
+  function toggleGridFindCase() {
+    setGridFindCase((current) => !current);
+    setGridFindIndex(0);
+  }
+
+  function closeGridFind() {
+    setGridFindOpen(false);
+    setGridFindQuery("");
+    setGridFindCase(false);
+    setGridFindFilter(false);
+    setGridFindIndex(0);
+    gridRef.current?.focus({ preventScroll: true });
+  }
+
+  function stepGridFind(delta: number) {
+    if (findResults.length === 0) return;
+    setGridFindIndex(
+      (current) => (current + delta + findResults.length) % findResults.length,
+    );
+  }
+
   function handleGridKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     const mod = event.metaKey || event.ctrlKey;
     const key = event.key.toLowerCase();
@@ -1410,6 +1782,7 @@ export default function DataGrid({
 
   return (
     <section
+      ref={sectionRef}
       style={{
         flex: 1,
         minHeight: 0,
@@ -1601,18 +1974,26 @@ export default function DataGrid({
             </Suspense>
           ) : (
           <div
-            ref={gridRef}
-            tabIndex={0}
-            onKeyDown={handleGridKeyDown}
-            onMouseDown={() => setGridMenu(null)}
             style={{
               flex: 1,
               minWidth: 0,
-              overflow: "auto",
+              display: "flex",
               position: "relative",
-              outline: "none",
             }}
           >
+            <div
+              ref={gridRef}
+              tabIndex={0}
+              onKeyDown={handleGridKeyDown}
+              onMouseDown={() => setGridMenu(null)}
+              style={{
+                flex: 1,
+                minWidth: 0,
+                overflow: "auto",
+                position: "relative",
+                outline: "none",
+              }}
+            >
             <div
               style={{
                 width: gridWidth,
@@ -1854,7 +2235,7 @@ export default function DataGrid({
                         userSelect: "none",
                       }}
                     >
-                      {rowIndex + 1}
+                      {findRowNumbers?.get(source.index) ?? rowIndex + 1}
                     </div>
                     {order.map((column, columnPosition) => {
                       const queued = latestPendingUpdate(
@@ -1871,6 +2252,13 @@ export default function DataGrid({
                         columnPosition >= selection.left &&
                         columnPosition <= selection.right;
                       const numeric = numericColumns[column];
+                      const matchKey = `${source.index}:${column}`;
+                      const matched = findActive && findMatchKeys.has(matchKey);
+                      const currentMatch =
+                        matched &&
+                        currentFindMatch !== null &&
+                        currentFindMatch.row === source.index &&
+                        currentFindMatch.col === column;
                       return (
                         <div
                           key={column}
@@ -1926,11 +2314,17 @@ export default function DataGrid({
                               ? "var(--acs)"
                               : queued
                                 ? "var(--edits)"
-                                : "transparent",
-                            outline: selected
-                              ? "1px solid var(--ac)"
-                              : "none",
-                            outlineOffset: -1,
+                                : currentMatch
+                                  ? "var(--find-cur-bg)"
+                                  : matched
+                                    ? "var(--find-bg)"
+                                    : "transparent",
+                            outline: currentMatch
+                              ? "2px solid var(--find-cur)"
+                              : selected
+                                ? "1px solid var(--ac)"
+                                : "none",
+                            outlineOffset: currentMatch ? -2 : -1,
                             cursor: "default",
                             userSelect: "text",
                           }}
@@ -2046,7 +2440,25 @@ export default function DataGrid({
                   </div>
                 );
               })}
+              </div>
             </div>
+            {gridFindOpen && (
+              <FindBar
+                matchCase={gridFindCase}
+                filterRows={gridFindFilter}
+                current={gridFindIndex}
+                total={findResults.length}
+                focusToken={gridFindFocus}
+                onQuery={updateGridFindQuery}
+                onToggleCase={toggleGridFindCase}
+                onToggleFilter={() =>
+                  setGridFindFilter((current) => !current)
+                }
+                onNext={() => stepGridFind(1)}
+                onPrevious={() => stepGridFind(-1)}
+                onClose={closeGridFind}
+              />
+            )}
           </div>
           )
         ) : hasResult && !hasColumns ? (

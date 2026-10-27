@@ -7,6 +7,7 @@
   --bg:#0f1115; --sf:#15181d; --sf2:#1a1e24; --bd:#24282f; --bd2:#2f343c;
   --tx:#dfe3e8; --mu:#8b929c; --fa:#5c636d;
   --ac:#5b8def; --acd:#3f6fd1; --acs:rgba(91,141,239,.14);
+  --find-bg:rgba(240,196,90,.18); --find-cur-bg:rgba(240,196,90,.36); --find-cur:#f0c45a;
   --ok:#43b581; --er:#e5534b; --wn:#caa23a; --ers:rgba(229,83,75,.09);
   --env-dev:#43b581; --env-dev-bg:rgba(67,181,129,.14);
   --env-test:#caa23a; --env-test-bg:rgba(202,162,58,.15);
@@ -27,6 +28,7 @@
   --bg:#ffffff; --sf:#fbfbfc; --sf2:#f4f5f7; --bd:#e6e8ec; --bd2:#d7dade;
   --tx:#1a1d21; --mu:#616770; --fa:#8a9099;
   --ac:#2f6fd1; --acd:#2a62b8; --acs:rgba(47,111,209,.11);
+  --find-bg:rgba(169,131,28,.16); --find-cur-bg:rgba(169,131,28,.30); --find-cur:#a9831c;
   --ok:#2f9a68; --er:#cf4038; --wn:#a9831c; --ers:rgba(207,64,56,.07);
   --env-dev:#2f9a68; --env-dev-bg:rgba(47,154,104,.11);
   --env-test:#a9831c; --env-test-bg:rgba(169,131,28,.13);
@@ -44,6 +46,7 @@
     --bg:#ffffff; --sf:#fbfbfc; --sf2:#f4f5f7; --bd:#e6e8ec; --bd2:#d7dade;
     --tx:#1a1d21; --mu:#616770; --fa:#8a9099;
     --ac:#2f6fd1; --acd:#2a62b8; --acs:rgba(47,111,209,.11);
+    --find-bg:rgba(169,131,28,.16); --find-cur-bg:rgba(169,131,28,.30); --find-cur:#a9831c;
     --ok:#2f9a68; --er:#cf4038; --wn:#a9831c; --ers:rgba(207,64,56,.07);
     --env-dev:#2f9a68; --env-dev-bg:rgba(47,154,104,.11);
     --env-test:#a9831c; --env-test-bg:rgba(169,131,28,.13);
