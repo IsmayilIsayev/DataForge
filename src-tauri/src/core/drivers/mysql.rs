@@ -9,10 +9,10 @@ use sqlx::types::chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use sqlx::{Column, Connection, Executor, Row, Statement, TypeInfo, ValueRef};
 
 use crate::core::drivers::{
-    all_tables_sql, er, group_foreign_keys, int_json, uint_json, BatchResult, BoxFuture,
+    all_tables_sql, er, group_foreign_keys, int_json, uint_json, BatchResult, BoundParam, BoxFuture,
     ColumnInfo, ConnectionInput, DatabaseTable, Dialect, Driver, ErColumn, ErSchema, ErTable,
-    ForeignKeyRow, QueryResult, SchemaSnapshot, SchemaTable, SslMode, StatementResult, TableInfo,
-    TableKind, TxError, TxInput, TxRowError, TxStreamOutcome, ER_TABLE_LIMIT,
+    ForeignKeyRow, ParamValue, QueryResult, SchemaSnapshot, SchemaTable, SslMode, StatementResult,
+    TableInfo, TableKind, TxError, TxInput, TxRowError, TxStreamOutcome, ER_TABLE_LIMIT,
 };
 use crate::core::query_cancel::{mysql_cancel_sql, CancelTarget, RunCancel};
 use crate::core::schema_diff::{
@@ -377,6 +377,7 @@ async fn run_stream_restore(
 async fn execute_batch(
     conn: &mut MySqlConnection,
     statements: &[String],
+    params: &[Vec<BoundParam>],
     max_rows: i64,
 ) -> AppResult<BatchResult> {
     if statements.is_empty() {
@@ -390,7 +391,8 @@ async fn execute_batch(
             continue;
         }
 
-        match execute_statement(conn, body, max_rows).await {
+        let statement_params = params.get(index).map(Vec::as_slice).unwrap_or(&[]);
+        match execute_statement(conn, body, statement_params, max_rows).await {
             Ok(result) => results.push(StatementResult::new(statement, result)),
             Err(error) => {
                 return Ok(BatchResult::failure(results, index, statement, error));
@@ -404,6 +406,7 @@ async fn execute_batch(
 async fn execute_statement(
     conn: &mut MySqlConnection,
     sql: &str,
+    params: &[BoundParam],
     max_rows: i64,
 ) -> AppResult<QueryResult> {
     let started = Instant::now();
@@ -419,10 +422,24 @@ async fn execute_statement(
     );
 
     if !row_returning {
-        let result = sqlx::query(body)
-            .execute(&mut *conn)
-            .await
-            .map_err(db_error)?;
+        let mut query = sqlx::query(body);
+        for param in params {
+            query = match &param.value {
+                ParamValue::Text(value) => query.bind(value.clone()),
+                ParamValue::Number(value) => {
+                    if let Ok(integer) = value.parse::<i64>() {
+                        query.bind(integer)
+                    } else if let Ok(float) = value.parse::<f64>() {
+                        query.bind(float)
+                    } else {
+                        query.bind(value.clone())
+                    }
+                }
+                ParamValue::Boolean(value) => query.bind(*value),
+                ParamValue::Null => query.bind(None::<String>),
+            };
+        }
+        let result = query.execute(&mut *conn).await.map_err(db_error)?;
 
         return Ok(QueryResult {
             columns: Vec::new(),
@@ -448,7 +465,24 @@ async fn execute_statement(
     // with duplicate column names, CTEs and parenthesised SELECTs all work.
     let mut fetched: Vec<MySqlRow> = Vec::new();
     {
-        let mut stream = sqlx::query(body).fetch(&mut *conn);
+        let mut query = sqlx::query(body);
+        for param in params {
+            query = match &param.value {
+                ParamValue::Text(value) => query.bind(value.clone()),
+                ParamValue::Number(value) => {
+                    if let Ok(integer) = value.parse::<i64>() {
+                        query.bind(integer)
+                    } else if let Ok(float) = value.parse::<f64>() {
+                        query.bind(float)
+                    } else {
+                        query.bind(value.clone())
+                    }
+                }
+                ParamValue::Boolean(value) => query.bind(*value),
+                ParamValue::Null => query.bind(None::<String>),
+            };
+        }
+        let mut stream = query.fetch(&mut *conn);
         while let Some(row) = stream.next().await {
             let row = row.map_err(db_error)?;
             if columns.is_empty() {
@@ -520,13 +554,14 @@ impl Driver for MySqlDriver {
     fn query<'a>(&'a self, sql: &'a str, max_rows: i64) -> BoxFuture<'a, AppResult<QueryResult>> {
         Box::pin(async move {
             let mut conn = self.pool.acquire().await.map_err(db_error)?;
-            execute_statement(&mut conn, sql, max_rows).await
+            execute_statement(&mut conn, sql, &[], max_rows).await
         })
     }
 
     fn run_statements_batch<'a>(
         &'a self,
         statements: &'a [String],
+        params: Vec<Vec<BoundParam>>,
         max_rows: i64,
         database: Option<String>,
     ) -> BoxFuture<'a, AppResult<BatchResult>> {
@@ -535,7 +570,7 @@ impl Driver for MySqlDriver {
 
             if requested.is_none() || requested.as_deref() == Some(self.database.as_str()) {
                 let mut conn = self.pool.acquire().await.map_err(db_error)?;
-                execute_batch(&mut conn, statements, max_rows).await
+                execute_batch(&mut conn, statements, &params, max_rows).await
             } else {
                 let options = self
                     .options
@@ -550,7 +585,7 @@ impl Driver for MySqlDriver {
                         .await
                         .map_err(db_error)?;
                 }
-                execute_batch(&mut conn, statements, max_rows).await
+                execute_batch(&mut conn, statements, &params, max_rows).await
             }
         })
     }
@@ -558,6 +593,7 @@ impl Driver for MySqlDriver {
     fn run_statements_cancellable_batch<'a>(
         &'a self,
         statements: &'a [String],
+        params: Vec<Vec<BoundParam>>,
         max_rows: i64,
         database: Option<String>,
         run: &'a RunCancel,
@@ -589,7 +625,7 @@ impl Driver for MySqlDriver {
                 return Err(AppError::Cancelled("Query cancelled".to_string()));
             }
 
-            execute_batch(&mut conn, statements, max_rows).await
+            execute_batch(&mut conn, statements, &params, max_rows).await
         })
     }
 

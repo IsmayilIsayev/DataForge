@@ -11,6 +11,7 @@ import type {
   ConnectionState,
   DatabaseTable,
   ExplainPlan,
+  QueryParam,
   QueryResult,
   RunQueryError,
   RunQueryResult,
@@ -196,11 +197,42 @@ function confirmDiscard(count: number): boolean {
 const QUERY_HISTORY_KEY = "df-query-history";
 const QUERY_HISTORY_MAX = 100;
 const QUERY_HISTORY_SECRET = /(IDENTIFIED\s+BY|PASSWORD|SECRET|TOKEN|API_KEY)/i;
+const PARAM_SECRET = /pass|secret|token|key/i;
+const PARAM_TYPES = new Set(["Text", "Number", "Boolean", "NULL"]);
 
 export interface QueryHistoryEntry {
   sql: string;
   connId?: string;
   database?: string;
+  params?: QueryParam[];
+}
+
+function loadHistoryParams(value: unknown): QueryParam[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const params = value.flatMap((item): QueryParam[] => {
+    if (!item || typeof item !== "object") return [];
+    const param = item as {
+      name?: unknown;
+      type?: unknown;
+      value?: unknown;
+    };
+    if (
+      typeof param.name !== "string" ||
+      typeof param.type !== "string" ||
+      !PARAM_TYPES.has(param.type) ||
+      (param.value !== null && typeof param.value !== "string")
+    ) {
+      return [];
+    }
+    return [
+      {
+        name: param.name,
+        type: param.type as QueryParam["type"],
+        value: param.value as string | null,
+      },
+    ];
+  });
+  return params.length > 0 ? params : undefined;
 }
 
 function loadQueryHistory(): QueryHistoryEntry[] {
@@ -220,7 +252,9 @@ function loadQueryHistory(): QueryHistoryEntry[] {
           sql: string;
           connId?: unknown;
           database?: unknown;
+          params?: unknown;
         };
+        const params = loadHistoryParams(entry.params);
         return [
           {
             sql: entry.sql,
@@ -230,6 +264,7 @@ function loadQueryHistory(): QueryHistoryEntry[] {
             ...(typeof entry.database === "string"
               ? { database: entry.database }
               : {}),
+            ...(params ? { params } : {}),
           },
         ];
       }
@@ -406,7 +441,12 @@ interface AppStore {
   groupStars: Record<string, boolean>;
   toggleGroupStar: (group: string) => void;
   queryHistory: QueryHistoryEntry[];
-  pushQueryHistory: (sql: string, connId?: string, database?: string) => void;
+  pushQueryHistory: (
+    sql: string,
+    connId?: string,
+    database?: string,
+    params?: QueryParam[],
+  ) => void;
   clearQueryHistory: () => void;
   savedQueries: SavedQueriesFile;
   setSavedQueries: (document: SavedQueriesFile) => void;
@@ -701,14 +741,25 @@ export const useAppStore = create<AppStore>((set, get) => ({
       }
       return { groupStars: next };
     }),
-  pushQueryHistory: (sql, connId, database) =>
+  pushQueryHistory: (sql, connId, database, params) =>
     set((state) => {
       const trimmed = sql.trim();
-      if (!trimmed || QUERY_HISTORY_SECRET.test(trimmed)) return {};
+      const parameterized = !!params && params.length > 0;
+      if (!trimmed || (!parameterized && QUERY_HISTORY_SECRET.test(trimmed))) {
+        return {};
+      }
+      const storedParams = params?.map((param) =>
+        PARAM_SECRET.test(param.name)
+          ? { ...param, value: "••••" }
+          : param,
+      );
       const entry: QueryHistoryEntry = {
         sql: trimmed,
         ...(connId ? { connId } : {}),
         ...(database ? { database } : {}),
+        ...(storedParams && storedParams.length > 0
+          ? { params: storedParams }
+          : {}),
       };
       // Newest first, no earlier duplicate of the same SQL, capped.
       const next = [

@@ -115,7 +115,13 @@ export default function HistoryDialog({ onClose, onPick }: Props) {
                 key={index}
                 className="df2-row"
                 onDoubleClick={() => pick(item)}
-                title="Double-click to load into the editor"
+                title={
+                  item.params && item.params.length > 0
+                    ? `Double-click to load into the editor\n${item.params
+                        .map((param) => `${param.name} = ${param.value ?? "NULL"}`)
+                        .join(", ")}`
+                    : "Double-click to load into the editor"
+                }
                 style={{
                   display: "flex",
                   alignItems: "center",

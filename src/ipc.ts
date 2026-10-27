@@ -25,6 +25,7 @@ import type {
   ExplainPlan,
   GenerateSummary,
   Nl2SqlResult,
+  QueryParam,
   RestorePreview,
   RestoreSummary,
   RunQueryResult,
@@ -107,6 +108,7 @@ export const runQuery = (
   database?: string,
   orderBy = "",
   runId?: string,
+  params?: QueryParam[],
 ) =>
   invoke<RunQueryResult>("run_query", {
     conn_id: connId,
@@ -115,6 +117,7 @@ export const runQuery = (
     database: database ?? null,
     order_by: orderBy.trim() ? orderBy : null,
     run_id: runId ?? null,
+    params: params && params.length > 0 ? params : null,
   });
 
 export const cancelQuery = (runId: string) =>

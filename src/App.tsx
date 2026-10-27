@@ -42,6 +42,7 @@ import {
   saveSavedQueries,
 } from "./ipc";
 import { notify } from "./notifications";
+import { findParams, guessParamType } from "./params";
 import { formatSql, selectAllSql } from "./sql";
 import { environmentColor, isProtectedEnvironment } from "./environment";
 import { guardSqlExecution } from "./prodGuard";
@@ -55,6 +56,7 @@ import type {
   ChatRequest,
   ChatResultContext,
   ConnectionMeta,
+  QueryParam,
   SavedQuery,
   SavedQueryFolder,
 } from "./types";
@@ -67,6 +69,7 @@ const ConnectionDialog = lazy(() => import("./components/ConnectionDialog"));
 const FindDialog = lazy(() => import("./components/FindDialog"));
 const GoToPalette = lazy(() => import("./components/GoToPalette"));
 const HistoryDialog = lazy(() => import("./components/HistoryDialog"));
+const ParamsDialog = lazy(() => import("./components/ParamsDialog"));
 const SavedQueryDialog = lazy(() => import("./components/SavedQueryDialog"));
 const PortableConnectionsDialog = lazy(
   () => import("./components/PortableConnectionsDialog"),
@@ -239,6 +242,12 @@ export default function App() {
     table?: string;
   } | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [paramPrompt, setParamPrompt] = useState<{
+    tabId: string;
+    names: string[];
+    resolve: (params: QueryParam[] | null) => void;
+  } | null>(null);
+  const paramMemoryRef = useRef<Record<string, string>>({});
   const [savedQueryDialog, setSavedQueryDialog] = useState<{
     query: SavedQuery | null;
     sql: string;
@@ -761,6 +770,7 @@ export default function App() {
       tabId: string | undefined,
       maxRows = 1000,
       orderBy = "",
+      params?: QueryParam[],
     ) => {
       const store = useAppStore.getState();
       const target = tabId ?? store.activeTabId;
@@ -798,6 +808,7 @@ export default function App() {
           database,
           orderBy,
           runId,
+          params,
         );
         if (!isCurrent()) return;
         const state = useAppStore.getState();
@@ -901,6 +912,14 @@ export default function App() {
     [executeSql],
   );
 
+  const promptParams = useCallback(
+    (tabId: string, names: string[]) =>
+      new Promise<QueryParam[] | null>((resolve) => {
+        setParamPrompt({ tabId, names, resolve });
+      }),
+    [],
+  );
+
   const handleRun = useCallback(
     async (sqlOverride?: string) => {
       const store = useAppStore.getState();
@@ -930,15 +949,31 @@ export default function App() {
         return;
       }
 
-      store.pushQueryHistory(query, store.activeConnId, store.activeDb ?? undefined);
+      let params: QueryParam[] | undefined;
+      const names = findParams(query).map((param) => param.name);
+      if (names.length > 0) {
+        const values = await promptParams(tab.id, names);
+        if (!values) return;
+        params = values;
+      }
+
+      store.pushQueryHistory(
+        query,
+        store.activeConnId,
+        store.activeDb ?? undefined,
+        params,
+      );
       await executeSql(
         store.activeConnId,
         query,
         store.activeDb ?? undefined,
         tab.id,
+        1000,
+        "",
+        params,
       );
     },
-    [executeSql],
+    [executeSql, promptParams],
   );
 
   const handleRunChatSql = useCallback(
@@ -3138,6 +3173,39 @@ export default function App() {
               } else {
                 store.addQueryTab(entry.sql);
               }
+            }}
+          />
+        </Suspense>
+      )}
+
+      {paramPrompt && (
+        <Suspense fallback={dialogFallback}>
+          <ParamsDialog
+            names={paramPrompt.names}
+            initial={Object.fromEntries(
+              paramPrompt.names.map((name) => {
+                const remembered =
+                  paramMemoryRef.current[`${paramPrompt.tabId}::${name}`] ?? "";
+                return [
+                  name,
+                  { value: remembered, type: guessParamType(remembered) },
+                ];
+              }),
+            )}
+            onRun={(params) => {
+              for (const param of params) {
+                paramMemoryRef.current[
+                  `${paramPrompt.tabId}::${param.name}`
+                ] = param.value ?? "";
+              }
+              const resolve = paramPrompt.resolve;
+              setParamPrompt(null);
+              resolve(params);
+            }}
+            onCancel={() => {
+              const resolve = paramPrompt.resolve;
+              setParamPrompt(null);
+              resolve(null);
             }}
           />
         </Suspense>

@@ -66,6 +66,15 @@ export interface AiModelList {
 
 export type CellValue = string | number | boolean | null;
 
+export type QueryParamType = "Text" | "Number" | "Boolean" | "NULL";
+
+/** One named `:param` value sent with a query as a real bind parameter. */
+export interface QueryParam {
+  name: string;
+  type: QueryParamType;
+  value: string | null;
+}
+
 /** One column reference with its value, used for primary-key WHERE clauses and
  * INSERT payloads. `value: null` means SQL NULL. */
 export interface CellRef {

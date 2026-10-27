@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Query parameters: `:name` placeholders prompt for values and are sent as bind parameters.
 - Stop a running query (Stop button, Esc or Ctrl/Cmd+.); the query is cancelled on the server for PostgreSQL, MySQL, SQL Server and ClickHouse.
 - Multiple result tabs: each statement that returns rows gets its own tab, plus a Messages tab with per-statement status and timing.
 - Find in results (Ctrl/Cmd+F): highlight, jump between matches, optional row filter.

@@ -4,10 +4,10 @@ use futures::StreamExt;
 use serde_json::{Number, Value};
 
 use crate::core::drivers::{
-    all_tables_sql, int_json, uint_json, BatchResult, BoxFuture, ColumnInfo, ConnectionInput,
-    DatabaseTable, Dialect, Driver, ErColumn, ErSchema, ErTable, QueryResult, SchemaSnapshot,
-    SchemaTable, SslMode, StatementResult, TableInfo, TableKind, TxError, TxInput, TxRowError,
-    TxStreamOutcome, ER_TABLE_LIMIT,
+    all_tables_sql, int_json, uint_json, BatchResult, BoundParam, BoxFuture, ColumnInfo,
+    ConnectionInput, DatabaseTable, Dialect, Driver, ErColumn, ErSchema, ErTable, QueryResult,
+    SchemaSnapshot, SchemaTable, SslMode, StatementResult, TableInfo, TableKind, TxError, TxInput,
+    TxRowError, TxStreamOutcome, ER_TABLE_LIMIT,
 };
 use crate::core::query_cancel::{clickhouse_cancel_sql, CancelTarget, RunCancel};
 use crate::core::restore::truncate_preview;
@@ -77,7 +77,7 @@ impl ClickHouseDriver {
         database: Option<&str>,
         timeout_ms: Option<u64>,
     ) -> AppResult<QueryResult> {
-        self.execute_statement_with_id(sql, max_rows, database, timeout_ms, None)
+        self.execute_statement_with_id(sql, max_rows, database, timeout_ms, None, &[])
             .await
     }
 
@@ -88,6 +88,7 @@ impl ClickHouseDriver {
         database: Option<&str>,
         timeout_ms: Option<u64>,
         query_id: Option<&str>,
+        params: &[BoundParam],
     ) -> AppResult<QueryResult> {
         let started = Instant::now();
         let body = trim_statement(sql);
@@ -107,7 +108,7 @@ impl ClickHouseDriver {
 
         if !row_returning {
             let (_, summary) = self
-                .http_query(body, self.database(database), None, timeout_ms, query_id)
+                .http_query(body, self.database(database), None, timeout_ms, query_id, params)
                 .await?;
             return Ok(QueryResult {
                 columns: Vec::new(),
@@ -131,6 +132,7 @@ impl ClickHouseDriver {
                 Some(fetched_limit),
                 timeout_ms,
                 query_id,
+                params,
             )
             .await?;
         let (columns, _, mut rows) = parse_response(&text)?;
@@ -149,6 +151,7 @@ impl ClickHouseDriver {
     async fn execute_batch(
         &self,
         statements: &[String],
+        params: &[Vec<BoundParam>],
         max_rows: i64,
         database: Option<&str>,
         query_id: Option<&str>,
@@ -163,8 +166,16 @@ impl ClickHouseDriver {
                 continue;
             }
 
+            let statement_params = params.get(index).map(Vec::as_slice).unwrap_or(&[]);
             match self
-                .execute_statement_with_id(statement, max_rows, database, None, query_id)
+                .execute_statement_with_id(
+                    statement,
+                    max_rows,
+                    database,
+                    None,
+                    query_id,
+                    statement_params,
+                )
                 .await
             {
                 Ok(result) => results.push(StatementResult::new(statement, result)),
@@ -184,6 +195,7 @@ impl ClickHouseDriver {
         max_result_rows: Option<i64>,
         timeout_ms: Option<u64>,
         query_id: Option<&str>,
+        params: &[BoundParam],
     ) -> AppResult<(String, Option<String>)> {
         let request = build_request_with_query_id(
             &self.base,
@@ -193,6 +205,7 @@ impl ClickHouseDriver {
             &self.username,
             &self.password,
             query_id,
+            params,
         )?;
 
         let response = self
@@ -456,11 +469,12 @@ impl Driver for ClickHouseDriver {
     fn run_statements_batch<'a>(
         &'a self,
         statements: &'a [String],
+        params: Vec<Vec<BoundParam>>,
         max_rows: i64,
         database: Option<String>,
     ) -> BoxFuture<'a, AppResult<BatchResult>> {
         Box::pin(async move {
-            self.execute_batch(statements, max_rows, database.as_deref(), None)
+            self.execute_batch(statements, &params, max_rows, database.as_deref(), None)
                 .await
         })
     }
@@ -468,6 +482,7 @@ impl Driver for ClickHouseDriver {
     fn run_statements_cancellable_batch<'a>(
         &'a self,
         statements: &'a [String],
+        params: Vec<Vec<BoundParam>>,
         max_rows: i64,
         database: Option<String>,
         run: &'a RunCancel,
@@ -475,8 +490,14 @@ impl Driver for ClickHouseDriver {
         Box::pin(async move {
             let query_id = run.run_id().to_string();
             run.set_target(CancelTarget::Clickhouse(query_id.clone()));
-            self.execute_batch(statements, max_rows, database.as_deref(), Some(&query_id))
-                .await
+            self.execute_batch(
+                statements,
+                &params,
+                max_rows,
+                database.as_deref(),
+                Some(&query_id),
+            )
+            .await
         })
     }
 
@@ -488,7 +509,7 @@ impl Driver for ClickHouseDriver {
             let Some(sql) = clickhouse_cancel_sql(&query_id) else {
                 return Ok(());
             };
-            self.http_query(&sql, &self.database, None, None, None)
+            self.http_query(&sql, &self.database, None, None, None, &[])
                 .await?;
             Ok(())
         })
@@ -757,6 +778,7 @@ fn build_request(
         username,
         password,
         None,
+        &[],
     )
 }
 
@@ -768,6 +790,7 @@ fn build_request_with_query_id(
     username: &str,
     password: &str,
     query_id: Option<&str>,
+    params: &[BoundParam],
 ) -> AppResult<HttpRequest> {
     let mut url = reqwest::Url::parse(&format!("{}/", base.trim_end_matches('/')))
         .map_err(|error| AppError::Config(format!("ClickHouse URL: {error}")))?;
@@ -785,6 +808,17 @@ fn build_request_with_query_id(
         if let Some(timeout_ms) = timeout_ms {
             let seconds = timeout_ms.div_ceil(1000).max(1);
             query.append_pair("max_execution_time", &seconds.to_string());
+        }
+        let mut seen = std::collections::HashSet::new();
+        for param in params {
+            if !seen.insert(param.name.as_str()) {
+                continue;
+            }
+            let value = match &param.value {
+                crate::core::drivers::ParamValue::Null => "\\N".to_string(),
+                other => other.as_text(),
+            };
+            query.append_pair(&format!("param_{}", param.name), &value);
         }
     }
 

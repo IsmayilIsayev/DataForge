@@ -7,10 +7,10 @@ use tokio::net::TcpStream;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
 use crate::core::drivers::{
-    er, group_foreign_keys, int_json, mssql_all_tables_sql, BatchResult, BoxFuture, ColumnInfo,
-    ConnectionInput, DatabaseTable, Dialect, Driver, ErColumn, ErSchema, ErTable, ForeignKeyRow,
-    QueryResult, SchemaSnapshot, SchemaTable, StatementResult, TableInfo, TableKind, TxError,
-    TxInput, TxRowError, TxStreamOutcome, ER_TABLE_LIMIT,
+    er, group_foreign_keys, int_json, mssql_all_tables_sql, BatchResult, BoundParam, BoxFuture,
+    ColumnInfo, ConnectionInput, DatabaseTable, Dialect, Driver, ErColumn, ErSchema, ErTable,
+    ForeignKeyRow, ParamValue, QueryResult, SchemaSnapshot, SchemaTable, StatementResult, TableInfo,
+    TableKind, TxError, TxInput, TxRowError, TxStreamOutcome, ER_TABLE_LIMIT,
 };
 use crate::core::query_cancel::{mssql_cancel_sql, CancelTarget, RunCancel};
 use crate::core::restore::truncate_preview;
@@ -410,13 +410,14 @@ impl Driver for MssqlDriver {
     fn query<'a>(&'a self, sql: &'a str, max_rows: i64) -> BoxFuture<'a, AppResult<QueryResult>> {
         Box::pin(async move {
             let mut client = self.client_for(&self.database).await?;
-            execute_statement(&mut client, sql, max_rows).await
+            execute_statement(&mut client, sql, &[], max_rows).await
         })
     }
 
     fn run_statements_batch<'a>(
         &'a self,
         statements: &'a [String],
+        params: Vec<Vec<BoundParam>>,
         max_rows: i64,
         database: Option<String>,
     ) -> BoxFuture<'a, AppResult<BatchResult>> {
@@ -425,13 +426,14 @@ impl Driver for MssqlDriver {
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or_else(|| self.database.clone());
             let mut client = self.client_for(&requested).await?;
-            execute_batch(&mut client, statements, max_rows).await
+            execute_batch(&mut client, statements, &params, max_rows).await
         })
     }
 
     fn run_statements_cancellable_batch<'a>(
         &'a self,
         statements: &'a [String],
+        params: Vec<Vec<BoundParam>>,
         max_rows: i64,
         database: Option<String>,
         run: &'a RunCancel,
@@ -460,7 +462,7 @@ impl Driver for MssqlDriver {
                 return Err(AppError::Cancelled("Query cancelled".to_string()));
             }
 
-            execute_batch(&mut client, statements, max_rows).await
+            execute_batch(&mut client, statements, &params, max_rows).await
         })
     }
 
@@ -940,9 +942,32 @@ async fn run_transaction(
     Ok(affected)
 }
 
+fn bind_values(params: &[BoundParam]) -> Vec<ColumnData<'static>> {
+    params
+        .iter()
+        .map(|param| match &param.value {
+            ParamValue::Text(value) => ColumnData::String(Some(std::borrow::Cow::Owned(
+                value.clone(),
+            ))),
+            ParamValue::Number(value) => {
+                if let Ok(integer) = value.parse::<i64>() {
+                    ColumnData::I64(Some(integer))
+                } else if let Ok(float) = value.parse::<f64>() {
+                    ColumnData::F64(Some(float))
+                } else {
+                    ColumnData::String(Some(std::borrow::Cow::Owned(value.clone())))
+                }
+            }
+            ParamValue::Boolean(value) => ColumnData::Bit(Some(*value)),
+            ParamValue::Null => ColumnData::String(None),
+        })
+        .collect()
+}
+
 async fn execute_batch(
     client: &mut MssqlClient,
     statements: &[String],
+    params: &[Vec<BoundParam>],
     max_rows: i64,
 ) -> AppResult<BatchResult> {
     if statements.is_empty() {
@@ -956,7 +981,8 @@ async fn execute_batch(
             continue;
         }
 
-        match execute_statement(client, body, max_rows).await {
+        let statement_params = params.get(index).map(Vec::as_slice).unwrap_or(&[]);
+        match execute_statement(client, body, statement_params, max_rows).await {
             Ok(result) => results.push(StatementResult::new(statement, result)),
             Err(error) => {
                 return Ok(BatchResult::failure(results, index, statement, error));
@@ -970,6 +996,7 @@ async fn execute_batch(
 async fn execute_statement(
     client: &mut MssqlClient,
     sql: &str,
+    params: &[BoundParam],
     max_rows: i64,
 ) -> AppResult<QueryResult> {
     let started = Instant::now();
@@ -984,8 +1011,14 @@ async fn execute_statement(
         "SELECT" | "WITH" | "EXEC" | "EXECUTE" | "VALUES" | "TABLE"
     );
 
+    let bindings = bind_values(params);
+    let refs: Vec<&dyn tiberius::ToSql> = bindings
+        .iter()
+        .map(|value| value as &dyn tiberius::ToSql)
+        .collect();
+
     if !row_returning {
-        let result = client.execute(body, &[]).await.map_err(db_error)?;
+        let result = client.execute(body, &refs).await.map_err(db_error)?;
         return Ok(QueryResult {
             columns: Vec::new(),
             rows: Vec::new(),
@@ -996,7 +1029,10 @@ async fn execute_statement(
     }
 
     let limited = apply_row_limit(body, limit);
-    let mut stream = client.simple_query(limited).await.map_err(db_error)?;
+    let mut stream = client
+        .query(&limited, &refs)
+        .await
+        .map_err(db_error)?;
     let columns = stream
         .columns()
         .await

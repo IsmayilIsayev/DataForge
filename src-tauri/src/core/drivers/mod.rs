@@ -438,6 +438,42 @@ pub struct SchemaSnapshot {
     pub tables: Vec<SchemaTable>,
 }
 
+/// One `:name` value supplied by the frontend for a run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunParam {
+    pub name: String,
+    #[serde(rename = "type", default)]
+    pub param_type: String,
+    #[serde(default)]
+    pub value: Option<String>,
+}
+
+/// A value ready to bind, after the SQL was rewritten to a native placeholder.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ParamValue {
+    Text(String),
+    Number(String),
+    Boolean(bool),
+    Null,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoundParam {
+    pub name: String,
+    pub value: ParamValue,
+}
+
+impl ParamValue {
+    /// Text form used by drivers that pass values as strings (ClickHouse HTTP).
+    pub fn as_text(&self) -> String {
+        match self {
+            ParamValue::Text(value) | ParamValue::Number(value) => value.clone(),
+            ParamValue::Boolean(value) => value.to_string(),
+            ParamValue::Null => String::new(),
+        }
+    }
+}
+
 pub trait Driver: Send + Sync {
     fn dialect(&self) -> Dialect;
     fn dialect_name(&self) -> &'static str;
@@ -447,6 +483,7 @@ pub trait Driver: Send + Sync {
     fn run_statements_batch<'a>(
         &'a self,
         statements: &'a [String],
+        params: Vec<Vec<BoundParam>>,
         max_rows: i64,
         database: Option<String>,
     ) -> BoxFuture<'a, AppResult<BatchResult>>;
@@ -458,7 +495,8 @@ pub trait Driver: Send + Sync {
         database: Option<String>,
     ) -> BoxFuture<'a, AppResult<QueryResult>> {
         Box::pin(async move {
-            self.run_statements_batch(statements, max_rows, database)
+            let params = vec![Vec::new(); statements.len()];
+            self.run_statements_batch(statements, params, max_rows, database)
                 .await?
                 .into_result()
         })
@@ -469,12 +507,13 @@ pub trait Driver: Send + Sync {
     fn run_statements_cancellable_batch<'a>(
         &'a self,
         statements: &'a [String],
+        params: Vec<Vec<BoundParam>>,
         max_rows: i64,
         database: Option<String>,
         run: &'a RunCancel,
     ) -> BoxFuture<'a, AppResult<BatchResult>> {
         let _ = run;
-        self.run_statements_batch(statements, max_rows, database)
+        self.run_statements_batch(statements, params, max_rows, database)
     }
     /// Single-result view of `run_statements_cancellable_batch`.
     fn run_statements_cancellable<'a>(
@@ -485,7 +524,8 @@ pub trait Driver: Send + Sync {
         run: &'a RunCancel,
     ) -> BoxFuture<'a, AppResult<QueryResult>> {
         Box::pin(async move {
-            self.run_statements_cancellable_batch(statements, max_rows, database, run)
+            let params = vec![Vec::new(); statements.len()];
+            self.run_statements_cancellable_batch(statements, params, max_rows, database, run)
                 .await?
                 .into_result()
         })

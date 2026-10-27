@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -6,7 +7,8 @@ use uuid::Uuid;
 
 pub(crate) use crate::core::restore::split_statements;
 use crate::core::drivers::{
-    BatchResult, ColumnInfo, DatabaseTable, ErSchema, TableInfo,
+    BatchResult, BoundParam, ColumnInfo, DatabaseTable, Dialect, ErSchema, ParamValue, RunParam,
+    TableInfo,
 };
 use crate::core::query_cancel::{RunCancel, RunningQuery};
 use crate::error::{AppError, AppResult};
@@ -21,6 +23,7 @@ pub async fn run_query(
     database: Option<String>,
     order_by: Option<String>,
     run_id: Option<String>,
+    params: Option<Vec<RunParam>>,
 ) -> AppResult<BatchResult> {
     let sql = trim_sql(&sql);
     if sql.is_empty() {
@@ -42,6 +45,16 @@ pub async fn run_query(
         }
     }
 
+    let params = params.unwrap_or_default();
+    let mut rewritten = Vec::with_capacity(statements.len());
+    let mut statement_params = Vec::with_capacity(statements.len());
+    for statement in &statements {
+        let (sql, bound) = rewrite_params(statement, driver.dialect(), &params)?;
+        rewritten.push(sql);
+        statement_params.push(bound);
+    }
+    let statements = rewritten;
+
     let limit = max_rows.unwrap_or(1000).clamp(1, 100_000);
     let run_id = run_id
         .map(|value| value.trim().to_string())
@@ -49,7 +62,7 @@ pub async fn run_query(
 
     let Some(run_id) = run_id else {
         return driver
-            .run_statements_batch(&statements, limit, database)
+            .run_statements_batch(&statements, statement_params, limit, database)
             .await;
     };
     if Uuid::parse_str(&run_id).is_err() {
@@ -60,7 +73,8 @@ pub async fn run_query(
     let run = Arc::new(RunningQuery::new(cancel.clone(), Some(driver.clone())));
     let _guard = state.runs.register(run_id, run.clone());
 
-    let execution = driver.run_statements_cancellable_batch(&statements, limit, database, &cancel);
+    let execution =
+        driver.run_statements_cancellable_batch(&statements, statement_params, limit, database, &cancel);
     tokio::pin!(execution);
     tokio::select! {
         biased;
@@ -82,6 +96,269 @@ pub async fn run_query(
 #[tauri::command(rename_all = "snake_case")]
 pub async fn cancel_query(state: State<'_, AppState>, run_id: String) -> AppResult<bool> {
     Ok(state.runs.cancel(&run_id))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ParamScanState {
+    Normal,
+    SingleQuote,
+    DoubleQuote,
+    Backtick,
+    Bracket,
+    LineComment,
+    BlockComment,
+    Dollar,
+}
+
+fn is_tag_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+/// The `$tag$` opener at `index`, with its length, or `None`.
+fn dollar_tag_at(bytes: &[u8], index: usize) -> Option<(&[u8], usize)> {
+    if bytes.get(index) != Some(&b'$') {
+        return None;
+    }
+    if index > 0 && is_tag_byte(bytes[index - 1]) {
+        return None;
+    }
+    let mut end = index + 1;
+    if bytes.get(end) == Some(&b'$') {
+        return Some((&bytes[index..=end], end + 1 - index));
+    }
+    if !bytes
+        .get(end)
+        .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'_')
+    {
+        return None;
+    }
+    end += 1;
+    while end < bytes.len() && is_tag_byte(bytes[end]) {
+        end += 1;
+    }
+    if bytes.get(end) == Some(&b'$') {
+        return Some((&bytes[index..=end], end + 1 - index));
+    }
+    None
+}
+
+fn param_value(param: &RunParam) -> ParamValue {
+    let raw = param.value.clone().unwrap_or_default();
+    if param.param_type.eq_ignore_ascii_case("number") {
+        ParamValue::Number(raw.trim().to_string())
+    } else if param.param_type.eq_ignore_ascii_case("boolean") {
+        let value = raw.trim().to_ascii_lowercase();
+        ParamValue::Boolean(matches!(value.as_str(), "true" | "1" | "yes" | "on"))
+    } else if param.param_type.eq_ignore_ascii_case("null") {
+        ParamValue::Null
+    } else {
+        ParamValue::Text(raw)
+    }
+}
+
+fn clickhouse_type(value: &ParamValue) -> &'static str {
+    match value {
+        ParamValue::Text(_) => "String",
+        ParamValue::Number(value) => {
+            if value.parse::<i64>().is_ok() {
+                "Int64"
+            } else {
+                "Float64"
+            }
+        }
+        ParamValue::Boolean(_) => "Bool",
+        ParamValue::Null => "Nullable(String)",
+    }
+}
+
+/// Rewrite `:name` placeholders to the driver's native style and return the
+/// values to bind, in the order the placeholders appear. The scan mirrors the
+/// frontend `findParams` and the restore statement splitter: strings, quoted
+/// identifiers, comments, `$$` bodies and bracketed sections are skipped.
+pub(crate) fn rewrite_params(
+    sql: &str,
+    dialect: Dialect,
+    params: &[RunParam],
+) -> AppResult<(String, Vec<BoundParam>)> {
+    if params.is_empty() {
+        return Ok((sql.to_string(), Vec::new()));
+    }
+
+    let lookup: HashMap<&str, &RunParam> = params
+        .iter()
+        .map(|param| (param.name.as_str(), param))
+        .collect();
+    let bytes = sql.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(sql.len());
+    let mut bound = Vec::new();
+    let mut counter = 0usize;
+    let mut index = 0usize;
+    let mut state = ParamScanState::Normal;
+    let mut dollar_tag: Vec<u8> = Vec::new();
+
+    while index < bytes.len() {
+        let current = bytes[index];
+        match state {
+            ParamScanState::Normal => {
+                if current == b'\'' {
+                    state = ParamScanState::SingleQuote;
+                    out.push(current);
+                    index += 1;
+                } else if current == b'"' {
+                    state = ParamScanState::DoubleQuote;
+                    out.push(current);
+                    index += 1;
+                } else if current == b'`' {
+                    state = ParamScanState::Backtick;
+                    out.push(current);
+                    index += 1;
+                } else if current == b'[' {
+                    // Array slices (`[1:2]`) and bracketed identifiers.
+                    state = ParamScanState::Bracket;
+                    out.push(current);
+                    index += 1;
+                } else if current == b'$' && dialect == Dialect::Postgres {
+                    if let Some((tag, length)) = dollar_tag_at(bytes, index) {
+                        out.extend_from_slice(tag);
+                        dollar_tag = tag.to_vec();
+                        state = ParamScanState::Dollar;
+                        index += length;
+                    } else {
+                        out.push(current);
+                        index += 1;
+                    }
+                } else if current == b'-' && bytes.get(index + 1) == Some(&b'-') {
+                    out.extend_from_slice(b"--");
+                    state = ParamScanState::LineComment;
+                    index += 2;
+                } else if current == b'#' && dialect == Dialect::Mysql {
+                    out.push(current);
+                    state = ParamScanState::LineComment;
+                    index += 1;
+                } else if current == b'/' && bytes.get(index + 1) == Some(&b'*') {
+                    out.extend_from_slice(b"/*");
+                    state = ParamScanState::BlockComment;
+                    index += 2;
+                } else if current == b':' {
+                    let next = bytes.get(index + 1).copied();
+                    let previous = index.checked_sub(1).map(|at| bytes[at]);
+                    let name_start = next.is_some_and(|byte| {
+                        byte.is_ascii_alphabetic() || byte == b'_'
+                    });
+                    let previous_word = previous.is_some_and(|byte| {
+                        byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$'
+                    });
+                    if next != Some(b':')
+                        && next != Some(b'=')
+                        && previous != Some(b':')
+                        && !previous_word
+                        && name_start
+                    {
+                        let mut end = index + 2;
+                        while end < bytes.len()
+                            && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_')
+                        {
+                            end += 1;
+                        }
+                        let name = std::str::from_utf8(&bytes[index + 1..end])
+                            .unwrap_or_default()
+                            .to_string();
+                        let Some(param) = lookup.get(name.as_str()) else {
+                            return Err(AppError::Config(format!(
+                                "Missing value for parameter :{name}"
+                            )));
+                        };
+                        let value = param_value(param);
+                        let placeholder = match dialect {
+                            Dialect::Postgres => {
+                                counter += 1;
+                                format!("${counter}")
+                            }
+                            Dialect::Mysql | Dialect::Sqlite => "?".to_string(),
+                            Dialect::Mssql => {
+                                counter += 1;
+                                format!("@P{counter}")
+                            }
+                            Dialect::Clickhouse => {
+                                format!("{{{}:{}}}", name, clickhouse_type(&value))
+                            }
+                            Dialect::Mongodb => "?".to_string(),
+                        };
+                        out.extend_from_slice(placeholder.as_bytes());
+                        bound.push(BoundParam { name, value });
+                        index = end;
+                    } else {
+                        out.push(current);
+                        index += 1;
+                    }
+                } else {
+                    out.push(current);
+                    index += 1;
+                }
+            }
+            ParamScanState::SingleQuote
+            | ParamScanState::DoubleQuote
+            | ParamScanState::Backtick
+            | ParamScanState::Bracket => {
+                let quote = match state {
+                    ParamScanState::SingleQuote => b'\'',
+                    ParamScanState::DoubleQuote => b'"',
+                    ParamScanState::Bracket => b']',
+                    _ => b'`',
+                };
+                let backslash_escapes = state != ParamScanState::Bracket;
+                if backslash_escapes && current == b'\\' && index + 1 < bytes.len() {
+                    out.push(current);
+                    out.push(bytes[index + 1]);
+                    index += 2;
+                } else if current == quote {
+                    if bytes.get(index + 1) == Some(&quote) {
+                        out.push(current);
+                        out.push(quote);
+                        index += 2;
+                    } else {
+                        out.push(current);
+                        state = ParamScanState::Normal;
+                        index += 1;
+                    }
+                } else {
+                    out.push(current);
+                    index += 1;
+                }
+            }
+            ParamScanState::LineComment => {
+                out.push(current);
+                if current == b'\n' {
+                    state = ParamScanState::Normal;
+                }
+                index += 1;
+            }
+            ParamScanState::BlockComment => {
+                if current == b'*' && bytes.get(index + 1) == Some(&b'/') {
+                    out.extend_from_slice(b"*/");
+                    state = ParamScanState::Normal;
+                    index += 2;
+                } else {
+                    out.push(current);
+                    index += 1;
+                }
+            }
+            ParamScanState::Dollar => {
+                if bytes[index..].starts_with(&dollar_tag) {
+                    out.extend_from_slice(&dollar_tag);
+                    index += dollar_tag.len();
+                    state = ParamScanState::Normal;
+                } else {
+                    out.push(current);
+                    index += 1;
+                }
+            }
+        }
+    }
+
+    let rewritten = String::from_utf8(out)
+        .map_err(|_| AppError::Config("SQL is not valid UTF-8".to_string()))?;
+    Ok((rewritten, bound))
 }
 
 fn cancelled_message(
@@ -204,6 +481,120 @@ mod dollar_tests {
     fn hash_is_not_a_comment_outside_mysql() {
         let parts = split_statements("SELECT 5 # 3; SELECT 2", Dialect::Postgres);
         assert_eq!(parts.len(), 2, "{parts:?}");
+    }
+}
+
+#[cfg(test)]
+mod param_tests {
+    use super::rewrite_params;
+    use crate::core::drivers::{BoundParam, Dialect, ParamValue, RunParam};
+
+    fn param(name: &str, kind: &str, value: Option<&str>) -> RunParam {
+        RunParam {
+            name: name.to_string(),
+            param_type: kind.to_string(),
+            value: value.map(str::to_string),
+        }
+    }
+
+    fn values(bound: &[BoundParam]) -> Vec<(&str, ParamValue)> {
+        bound
+            .iter()
+            .map(|item| (item.name.as_str(), item.value.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn postgres_numbers_placeholders_and_repeats_values_in_order() {
+        let sql = "SELECT * FROM users WHERE id = :id AND status = :status AND id = :id";
+        let params = [param("id", "Number", Some("7")), param("status", "Text", Some("active"))];
+        let (rewritten, bound) = rewrite_params(sql, Dialect::Postgres, &params).unwrap();
+        assert_eq!(
+            rewritten,
+            "SELECT * FROM users WHERE id = $1 AND status = $2 AND id = $3"
+        );
+        assert_eq!(
+            values(&bound),
+            vec![
+                ("id", ParamValue::Number("7".to_string())),
+                ("status", ParamValue::Text("active".to_string())),
+                ("id", ParamValue::Number("7".to_string())),
+            ]
+        );
+    }
+
+    #[test]
+    fn mysql_and_sqlite_use_question_marks_in_appearance_order() {
+        let sql = "SELECT * FROM t WHERE a = :a OR b = :b OR a = :a";
+        let params = [param("a", "Number", Some("1")), param("b", "Text", Some("x"))];
+        let (mysql, mysql_bound) = rewrite_params(sql, Dialect::Mysql, &params).unwrap();
+        assert_eq!(mysql, "SELECT * FROM t WHERE a = ? OR b = ? OR a = ?");
+        assert_eq!(mysql_bound.len(), 3);
+
+        let (sqlite, sqlite_bound) = rewrite_params(sql, Dialect::Sqlite, &params).unwrap();
+        assert_eq!(sqlite, mysql);
+        assert_eq!(sqlite_bound, mysql_bound);
+    }
+
+    #[test]
+    fn mssql_uses_p_numbered_placeholders() {
+        let sql = "SELECT * FROM t WHERE a = :a AND b = :b";
+        let params = [param("a", "Boolean", Some("true")), param("b", "NULL", None)];
+        let (rewritten, bound) = rewrite_params(sql, Dialect::Mssql, &params).unwrap();
+        assert_eq!(rewritten, "SELECT * FROM t WHERE a = @P1 AND b = @P2");
+        assert_eq!(
+            values(&bound),
+            vec![
+                ("a", ParamValue::Boolean(true)),
+                ("b", ParamValue::Null),
+            ]
+        );
+    }
+
+    #[test]
+    fn clickhouse_uses_typed_braces() {
+        let sql = "SELECT * FROM t WHERE id = :id AND price = :price AND ok = :ok AND gone = :gone";
+        let params = [
+            param("id", "Number", Some("7")),
+            param("price", "Number", Some("1.5")),
+            param("ok", "Boolean", Some("false")),
+            param("gone", "NULL", None),
+        ];
+        let (rewritten, bound) = rewrite_params(sql, Dialect::Clickhouse, &params).unwrap();
+        assert_eq!(
+            rewritten,
+            "SELECT * FROM t WHERE id = {id:Int64} AND price = {price:Float64} AND ok = {ok:Bool} AND gone = {gone:Nullable(String)}"
+        );
+        assert_eq!(bound.len(), 4);
+    }
+
+    #[test]
+    fn casts_assignments_strings_comments_and_dollar_bodies_are_untouched() {
+        let sql = "SELECT ':x', \"a:x\", `b:x`, [1:2], value::int, label := 1 -- :c\n/* :d */, $$ :e $$ FROM t";
+        let params = [param("x", "Text", Some("1"))];
+        let (rewritten, bound) = rewrite_params(sql, Dialect::Postgres, &params).unwrap();
+        assert_eq!(rewritten, sql);
+        assert!(bound.is_empty());
+    }
+
+    #[test]
+    fn no_params_leaves_sql_unchanged() {
+        let sql = "SELECT * FROM t WHERE id = :id";
+        let (rewritten, bound) = rewrite_params(sql, Dialect::Postgres, &[]).unwrap();
+        assert_eq!(rewritten, sql);
+        assert!(bound.is_empty());
+    }
+
+    #[test]
+    fn missing_value_is_an_error() {
+        let result = rewrite_params("SELECT :missing", Dialect::Postgres, &[]);
+        assert!(result.is_ok());
+        let result = rewrite_params(
+            "SELECT :missing",
+            Dialect::Postgres,
+            &[param("other", "Text", Some("x"))],
+        );
+        assert!(result.is_err());
     }
 }
 
