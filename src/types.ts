@@ -481,3 +481,43 @@ export interface BackupProgress {
   done: boolean;
   cancelled: boolean;
 }
+
+export interface RestorePreviewStatement {
+  number: number;
+  sql: string;
+}
+
+export interface RestorePreview {
+  gzip: boolean;
+  total_bytes: number;
+  total_statements: number;
+  create: number;
+  insert: number;
+  other: number;
+  statements: RestorePreviewStatement[];
+}
+
+export interface RestoreError {
+  statement: number;
+  sql: string;
+  message: string;
+}
+
+export interface RestoreSummary {
+  statements: number;
+  failed: number;
+  errors: RestoreError[];
+  cancelled: boolean;
+  stopped_on_error: boolean;
+  rolled_back: boolean;
+  duration_ms: number;
+}
+
+export interface RestoreProgress {
+  id: string;
+  statements: number;
+  bytes_read: number;
+  total_bytes: number;
+  done: boolean;
+  cancelled: boolean;
+}

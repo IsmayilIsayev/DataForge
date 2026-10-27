@@ -49,11 +49,22 @@ pub(crate) fn uint_json(value: u64) -> serde_json::Value {
 pub struct TxError {
     pub statement: Option<usize>,
     pub error: AppError,
+    /// First 200 characters of the failing statement, when available.
+    pub statement_sql: Option<String>,
 }
 
 impl TxError {
     pub fn new(statement: Option<usize>, error: AppError) -> Self {
-        Self { statement, error }
+        Self {
+            statement,
+            error,
+            statement_sql: None,
+        }
+    }
+
+    pub fn with_statement(mut self, sql: &str) -> Self {
+        self.statement_sql = Some(crate::core::restore::truncate_preview(sql, 200));
+        self
     }
 }
 
@@ -71,6 +82,9 @@ pub enum TxInput {
 pub struct TxRowError {
     pub row: u64,
     pub error: String,
+    /// First 200 characters of the statement that failed, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub statement: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -367,6 +381,16 @@ pub trait Driver: Send + Sync {
         &'a self,
         input: tokio::sync::mpsc::Receiver<TxInput>,
         database: Option<String>,
+    ) -> BoxFuture<'a, Result<TxStreamOutcome, TxError>>;
+    /// Run restore statements on one connection. `transactional` wraps the
+    /// PostgreSQL/SQLite path in a single transaction; MySQL, SQL Server and
+    /// ClickHouse run statement by statement without one. Savepoint messages
+    /// opt into continue-on-error (the dialect ignores them when untransactional).
+    fn stream_restore<'a>(
+        &'a self,
+        input: tokio::sync::mpsc::Receiver<TxInput>,
+        database: Option<String>,
+        transactional: bool,
     ) -> BoxFuture<'a, Result<TxStreamOutcome, TxError>>;
     fn get_schema<'a>(
         &'a self,

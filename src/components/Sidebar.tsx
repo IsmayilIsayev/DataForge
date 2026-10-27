@@ -45,6 +45,7 @@ const StructureDialog = lazy(() => import("./StructureDialog"));
 const ImportCsvDialog = lazy(() => import("./ImportCsvDialog"));
 const GenerateTestDataDialog = lazy(() => import("./GenerateTestDataDialog"));
 const BackupDialog = lazy(() => import("./BackupDialog"));
+const RestoreDialog = lazy(() => import("./RestoreDialog"));
 
 const dialogFallback = (
   <div style={{ position: "fixed", inset: 0 }} aria-hidden="true" />
@@ -475,6 +476,11 @@ export default function Sidebar({
     connection: ConnectionMeta;
     database: string;
   } | null>(null);
+  const [restoreFor, setRestoreFor] = useState<{
+    connection: ConnectionMeta;
+    database: string;
+    path: string;
+  } | null>(null);
   const [dropBusy, setDropBusy] = useState(false);
   const [loading, setLoading] = useState<Record<string, boolean>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -831,6 +837,21 @@ export default function Sidebar({
 
   function storeError(error: unknown) {
     useAppStore.getState().setError(errorMessage(error));
+  }
+
+  function chooseRestoreFile(connection: ConnectionMeta, database: string) {
+    void open({
+      multiple: false,
+      filters: [
+        { name: "SQL dump", extensions: ["sql", "gz"] },
+        { name: "All files", extensions: ["*"] },
+      ],
+    })
+      .then((selected) => {
+        if (typeof selected !== "string") return;
+        setRestoreFor({ connection, database, path: selected });
+      })
+      .catch((error) => storeError(error));
   }
 
   async function persistSavedQueries(next: SavedQueriesFile) {
@@ -1875,6 +1896,16 @@ export default function Sidebar({
                     refreshConnection(contextConnection);
                   }}
                 />
+                <MenuItem
+                  icon="icon-upload"
+                  label="Restore from .sql…"
+                  onClick={() => {
+                    const connection = contextConnection;
+                    const database = connection.database ?? "";
+                    setContextMenu(null);
+                    chooseRestoreFile(connection, database);
+                  }}
+                />
                 <MenuSeparator />
                 <div
                   style={{ display: "flex", gap: 5, padding: "5px 8px 3px" }}
@@ -2027,6 +2058,16 @@ export default function Sidebar({
                       connection: contextConnection,
                       database: menu.database,
                     });
+                  }}
+                />
+                <MenuItem
+                  icon="icon-upload"
+                  label="Restore from .sql…"
+                  onClick={() => {
+                    const menu = contextMenu;
+                    const connection = contextConnection;
+                    setContextMenu(null);
+                    chooseRestoreFile(connection, menu.database);
                   }}
                 />
                 <MenuItem
@@ -2381,6 +2422,20 @@ export default function Sidebar({
             connection={backupFor.connection}
             database={backupFor.database}
             onClose={() => setBackupFor(null)}
+          />
+        </Suspense>
+      )}
+
+      {restoreFor && (
+        <Suspense fallback={dialogFallback}>
+          <RestoreDialog
+            connection={restoreFor.connection}
+            database={restoreFor.database}
+            path={restoreFor.path}
+            onClose={() => setRestoreFor(null)}
+            onRestored={(database) =>
+              refreshDatabase(restoreFor.connection, database)
+            }
           />
         </Suspense>
       )}

@@ -7,6 +7,7 @@ pub mod import;
 pub mod plan;
 pub mod portable;
 pub mod query;
+pub mod restore;
 pub mod saved;
 pub mod schema;
 pub mod search;

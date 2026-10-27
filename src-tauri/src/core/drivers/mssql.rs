@@ -12,6 +12,7 @@ use crate::core::drivers::{
     SchemaSnapshot, SchemaTable, TableInfo, TableKind, TxError, TxInput, TxRowError,
     TxStreamOutcome, ER_TABLE_LIMIT,
 };
+use crate::core::restore::truncate_preview;
 use crate::error::{AppError, AppResult};
 
 const DEFAULT_MAX_ROWS: i64 = 1000;
@@ -477,6 +478,28 @@ impl Driver for MssqlDriver {
         })
     }
 
+    fn stream_restore<'a>(
+        &'a self,
+        input: tokio::sync::mpsc::Receiver<TxInput>,
+        database: Option<String>,
+        transactional: bool,
+    ) -> BoxFuture<'a, Result<TxStreamOutcome, TxError>> {
+        Box::pin(async move {
+            if transactional {
+                return self.stream_transaction(input, database).await;
+            }
+
+            let requested = database
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| self.database.clone());
+            let mut client = self
+                .client_for(&requested)
+                .await
+                .map_err(|error| TxError::new(None, error))?;
+            run_stream_restore(&mut client, input).await
+        })
+    }
+
     fn get_schema<'a>(
         &'a self,
         database: Option<&'a str>,
@@ -751,11 +774,16 @@ async fn run_stream_transaction(
                                 outcome.errors.push(TxRowError {
                                     row,
                                     error: message,
+                                    statement: None,
                                 });
                             }
                         } else {
                             let _ = client.execute("ROLLBACK TRANSACTION", &[]).await;
-                            return Err(TxError::new(None, db_error(error)));
+                            return Err(TxError::new(
+                                row.map(|value| value as usize),
+                                db_error(error),
+                            )
+                            .with_statement(statement));
                         }
                     }
                 }
@@ -772,6 +800,57 @@ async fn run_stream_transaction(
         .execute("COMMIT TRANSACTION", &[])
         .await
         .map_err(|error| TxError::new(None, db_error(error)))?;
+    Ok(outcome)
+}
+
+
+async fn run_stream_restore(
+    client: &mut MssqlClient,
+    mut input: tokio::sync::mpsc::Receiver<TxInput>,
+) -> Result<TxStreamOutcome, TxError> {
+    let mut outcome = TxStreamOutcome::default();
+    let mut savepoints: Vec<String> = Vec::new();
+
+    while let Some(item) = input.recv().await {
+        match item {
+            TxInput::Savepoint(name) => savepoints.push(name),
+            TxInput::ReleaseSavepoint(_) => {
+                savepoints.pop();
+            }
+            TxInput::Sql { sql, row } => {
+                let statement = trim_statement(&sql);
+                if statement.is_empty() {
+                    continue;
+                }
+                match client.execute(statement, &[]).await {
+                    Ok(result) => outcome.rows_affected += result.total(),
+                    Err(error) => {
+                        let message = error.to_string();
+                        if !savepoints.is_empty() {
+                            if let Some(row) = row {
+                                outcome.errors.push(TxRowError {
+                                    row,
+                                    error: message,
+                                    statement: Some(truncate_preview(statement, 200)),
+                                });
+                            }
+                        } else {
+                            return Err(TxError::new(
+                                row.map(|value| value as usize),
+                                db_error(error),
+                            )
+                            .with_statement(statement));
+                        }
+                    }
+                }
+            }
+            TxInput::Rollback => {
+                outcome.cancelled = true;
+                return Ok(outcome);
+            }
+        }
+    }
+
     Ok(outcome)
 }
 

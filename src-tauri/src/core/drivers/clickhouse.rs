@@ -8,6 +8,7 @@ use crate::core::drivers::{
     Dialect, Driver, ErColumn, ErSchema, ErTable, QueryResult, SchemaSnapshot, SchemaTable,
     SslMode, TableInfo, TableKind, TxError, TxInput, TxRowError, TxStreamOutcome, ER_TABLE_LIMIT,
 };
+use crate::core::restore::truncate_preview;
 use crate::error::{AppError, AppResult};
 
 const DEFAULT_MAX_ROWS: i64 = 1000;
@@ -334,6 +335,63 @@ impl ClickHouseDriver {
     }
 }
 
+
+async fn run_stream_restore(
+    driver: &ClickHouseDriver,
+    mut input: tokio::sync::mpsc::Receiver<TxInput>,
+    database: Option<String>,
+) -> Result<TxStreamOutcome, TxError> {
+    let mut outcome = TxStreamOutcome::default();
+    let mut savepoints: Vec<String> = Vec::new();
+
+    while let Some(item) = input.recv().await {
+        match item {
+            TxInput::Savepoint(name) => savepoints.push(name),
+            TxInput::ReleaseSavepoint(_) => {
+                savepoints.pop();
+            }
+            TxInput::Sql { sql, row } => {
+                let statement = trim_statement(&sql);
+                if statement.is_empty() {
+                    continue;
+                }
+                match driver
+                    .execute_statement(&sql, 0, database.as_deref(), None)
+                    .await
+                {
+                    Ok(result) => {
+                        outcome.rows_affected += result.rows_affected.unwrap_or(0)
+                    }
+                    Err(error) => {
+                        let message = error.to_string();
+                        if !savepoints.is_empty() {
+                            if let Some(row) = row {
+                                outcome.errors.push(TxRowError {
+                                    row,
+                                    error: message,
+                                    statement: Some(truncate_preview(statement, 200)),
+                                });
+                            }
+                        } else {
+                            return Err(TxError::new(
+                                row.map(|value| value as usize),
+                                error,
+                            )
+                            .with_statement(statement));
+                        }
+                    }
+                }
+            }
+            TxInput::Rollback => {
+                outcome.cancelled = true;
+                return Ok(outcome);
+            }
+        }
+    }
+
+    Ok(outcome)
+}
+
 impl Driver for ClickHouseDriver {
     fn dialect(&self) -> Dialect {
         Dialect::Clickhouse
@@ -424,48 +482,19 @@ impl Driver for ClickHouseDriver {
 
     fn stream_transaction<'a>(
         &'a self,
-        mut input: tokio::sync::mpsc::Receiver<TxInput>,
+        input: tokio::sync::mpsc::Receiver<TxInput>,
         database: Option<String>,
     ) -> BoxFuture<'a, Result<TxStreamOutcome, TxError>> {
-        Box::pin(async move {
-            let mut outcome = TxStreamOutcome::default();
-            let mut savepoints: Vec<String> = Vec::new();
+        Box::pin(async move { run_stream_restore(self, input, database).await })
+    }
 
-            while let Some(item) = input.recv().await {
-                match item {
-                    TxInput::Savepoint(name) => savepoints.push(name),
-                    TxInput::ReleaseSavepoint(_) => {
-                        savepoints.pop();
-                    }
-                    TxInput::Sql { sql, row } => {
-                        if trim_statement(&sql).is_empty() {
-                            continue;
-                        }
-                        match self
-                            .execute_statement(&sql, 0, database.as_deref(), None)
-                            .await
-                        {
-                            Ok(result) => {
-                                outcome.rows_affected += result.rows_affected.unwrap_or(0)
-                            }
-                            Err(error) if !savepoints.is_empty() => {
-                                outcome.errors.push(TxRowError {
-                                    row: row.unwrap_or(0),
-                                    error: error.to_string(),
-                                });
-                            }
-                            Err(error) => return Err(TxError::new(None, error)),
-                        }
-                    }
-                    TxInput::Rollback => {
-                        outcome.cancelled = true;
-                        return Ok(outcome);
-                    }
-                }
-            }
-
-            Ok(outcome)
-        })
+    fn stream_restore<'a>(
+        &'a self,
+        input: tokio::sync::mpsc::Receiver<TxInput>,
+        database: Option<String>,
+        _transactional: bool,
+    ) -> BoxFuture<'a, Result<TxStreamOutcome, TxError>> {
+        Box::pin(async move { run_stream_restore(self, input, database).await })
     }
 
     fn get_schema<'a>(

@@ -26,6 +26,8 @@ import type {
   GenerateSummary,
   Nl2SqlResult,
   QueryResult,
+  RestorePreview,
+  RestoreSummary,
   SavedQueriesFile,
   SchemaDiff,
   TableInfo,
@@ -329,6 +331,29 @@ export const backupDatabase = (request: BackupRequest) =>
     gzip: request.gzip,
     use_external: request.useExternal,
     backup_id: request.backupId,
+  });
+
+export const previewRestore = (connId: string, path: string) =>
+  invoke<RestorePreview>("restore_preview", {
+    conn_id: connId,
+    path,
+  });
+
+export interface RestoreRequest {
+  connId: string;
+  database: string;
+  path: string;
+  stopOnError: boolean;
+  restoreId: string;
+}
+
+export const restoreDatabase = (request: RestoreRequest) =>
+  invoke<RestoreSummary>("restore_database", {
+    conn_id: request.connId,
+    database: request.database,
+    path: request.path,
+    stop_on_error: request.stopOnError,
+    restore_id: request.restoreId,
   });
 
 export interface CsvPreview {

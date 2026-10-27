@@ -297,6 +297,8 @@ pub fn run() {
             commands::export::cancel_operation,
             commands::backup::backup_capabilities,
             commands::backup::backup_database,
+            commands::restore::restore_preview,
+            commands::restore::restore_database,
             commands::saved::load_saved_queries,
             commands::saved::save_saved_queries,
             commands::portable::export_connections,
