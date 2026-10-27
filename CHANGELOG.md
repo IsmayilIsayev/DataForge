@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The SQL editor cursor no longer drifts into the middle of characters after the editor font finishes loading.
+
 ## [0.4.6] - 2026-10-23
 
 ### Added

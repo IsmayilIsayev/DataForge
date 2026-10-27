@@ -389,6 +389,11 @@ const SqlEditor = forwardRef<SqlEditorHandle, Props>(function SqlEditor(
   const handleMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
     setMonacoApi(monaco);
+    // Monaco measures glyph widths once; if JetBrains Mono arrives later the caret drifts into the text.
+    const remeasure = () => monaco.editor.remeasureFonts();
+    document.fonts.load('13px "JetBrains Mono"').then(remeasure, () => {});
+    document.fonts.addEventListener("loadingdone", remeasure);
+    editor.onDidDispose(() => document.fonts.removeEventListener("loadingdone", remeasure));
     editor.addCommand(
       monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter,
       () => executeRunRef.current(),
