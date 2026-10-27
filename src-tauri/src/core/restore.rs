@@ -555,7 +555,8 @@ mod tests {
         let sql = "SELECT 'C:\\'; SELECT 2;";
         assert_eq!(
             split_in_chunks(sql, Dialect::Mysql, 1),
-            vec!["SELECT 'C:\\'; SELECT 2".to_string()]
+            // \' keeps the literal open to EOF, so the last ';' is string content, not a terminator.
+            vec!["SELECT 'C:\\'; SELECT 2;".to_string()]
         );
         assert_eq!(
             split_in_chunks(sql, Dialect::Postgres, 1),
