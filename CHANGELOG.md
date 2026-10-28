@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Value panel: Edit opens a multi-line editor inside the panel (Ctrl+Enter saves, Esc cancels), so long and multi-line values are edited where they are read.
+
 ## [0.5.4] - 2026-10-28
 
 ### Changed

@@ -526,6 +526,8 @@ export default function DataGrid({
     (state) => state.clearPendingChanges,
   );
   const [editing, setEditing] = useState<Position | null>(null);
+  // Long values are edited in the value panel's textarea instead of the cell.
+  const [editInPanel, setEditInPanel] = useState(false);
   const [editText, setEditText] = useState("");
   const [savingChanges, setSavingChanges] = useState(false);
   const [failedChangeId, setFailedChangeId] = useState<string | null>(null);
@@ -938,6 +940,8 @@ export default function DataGrid({
   ) {
     if (event.button !== 0) return;
     event.preventDefault();
+    // preventDefault keeps the panel textarea from blurring, so save it here.
+    if (editing && editInPanel) void commitEdit();
     gridRef.current?.focus({ preventScroll: true });
     if (event.shiftKey && anchor) {
       setFocus({ row, col });
@@ -965,7 +969,11 @@ export default function DataGrid({
     Array.isArray(pkColumns) &&
     pkColumns.length > 0;
 
-  function startEdit(rowDisplay: number, columnActual: number) {
+  function startEdit(
+    rowDisplay: number,
+    columnActual: number,
+    inPanel = false,
+  ) {
     const source = sortedRows[rowDisplay];
     if (!source || pendingDeleted.has(source.index)) return;
     const queued = latestPendingUpdate(source.index, columnActual);
@@ -974,13 +982,15 @@ export default function DataGrid({
       : (source.row[columnActual] ?? null);
     setEditing({ row: rowDisplay, col: columnActual });
     setEditText(raw === null || raw === undefined ? "" : String(raw));
-    setViewer(null);
+    setEditInPanel(inPanel);
+    if (!inPanel) setViewer(null);
     setGridMenu(null);
   }
 
   async function commitEdit() {
     const current = editing;
     setEditing(null);
+    setEditInPanel(false);
     if (!current || !canEdit || !connId || !table || !tabId || !result) return;
 
     const source = sortedRows[current.row];
@@ -2363,6 +2373,7 @@ export default function DataGrid({
                           }
                         >
                           {editing &&
+                          !editInPanel &&
                           editing.row === rowIndex &&
                           editing.col === column ? (
                             <input
@@ -2663,7 +2674,7 @@ export default function DataGrid({
                 <button
                   type="button"
                   className="v2-icon-btn"
-                  onClick={() => startEdit(viewer.row, viewer.col)}
+                  onClick={() => startEdit(viewer.row, viewer.col, true)}
                   title="Edit value"
                   aria-label="Edit value"
                   style={{
@@ -2744,25 +2755,69 @@ export default function DataGrid({
                 <i className="icon-x" style={{ fontSize: 13 }} />
               </button>
             </div>
-            <pre
-              className="allow-select"
-              style={{
-                flex: 1,
-                minHeight: 0,
-                margin: 0,
-                padding: "10px 12px",
-                overflow: "auto",
-                fontFamily: "var(--mono)",
-                fontSize: 12,
-                lineHeight: 1.55,
-                whiteSpace: wrap ? "pre-wrap" : "pre",
-                wordBreak: "break-word",
-                color: activeValue === null ? "var(--fa)" : "var(--tx)",
-                fontStyle: activeValue === null ? "italic" : "normal",
-              }}
-            >
-              {prettyValue(activeValue, pretty)}
-            </pre>
+            {editing &&
+            editInPanel &&
+            editing.row === viewer.row &&
+            editing.col === viewer.col ? (
+              <textarea
+                autoFocus
+                className="allow-select"
+                aria-label={`Edit ${activeColumn}`}
+                value={editText}
+                onChange={(event) => setEditText(event.target.value)}
+                onKeyDown={(event) => {
+                  if (
+                    event.key === "Enter" &&
+                    (event.ctrlKey || event.metaKey)
+                  ) {
+                    event.preventDefault();
+                    void commitEdit();
+                  } else if (event.key === "Escape") {
+                    event.preventDefault();
+                    setEditing(null);
+                    setEditInPanel(false);
+                  }
+                }}
+                onBlur={() => void commitEdit()}
+                title="Ctrl+Enter to save · Esc to cancel"
+                spellCheck={false}
+                style={{
+                  flex: 1,
+                  minHeight: 0,
+                  margin: 0,
+                  padding: "10px 12px",
+                  resize: "none",
+                  border: "1px solid var(--ac)",
+                  outline: "none",
+                  background: "var(--bg)",
+                  color: "var(--tx)",
+                  fontFamily: "var(--mono)",
+                  fontSize: 12,
+                  lineHeight: 1.55,
+                  whiteSpace: wrap ? "pre-wrap" : "pre",
+                }}
+              />
+            ) : (
+              <pre
+                className="allow-select"
+                style={{
+                  flex: 1,
+                  minHeight: 0,
+                  margin: 0,
+                  padding: "10px 12px",
+                  overflow: "auto",
+                  fontFamily: "var(--mono)",
+                  fontSize: 12,
+                  lineHeight: 1.55,
+                  whiteSpace: wrap ? "pre-wrap" : "pre",
+                  wordBreak: "break-word",
+                  color: activeValue === null ? "var(--fa)" : "var(--tx)",
+                  fontStyle: activeValue === null ? "italic" : "normal",
+                }}
+              >
+                {prettyValue(activeValue, pretty)}
+              </pre>
+            )}
           </div>
         )}
       </div>
