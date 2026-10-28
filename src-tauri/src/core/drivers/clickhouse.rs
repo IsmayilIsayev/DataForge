@@ -443,6 +443,16 @@ async fn run_stream_restore(
                     }
                 }
             }
+            TxInput::CopyIn { sql, row, .. } => {
+                return Err(TxError::new(
+                    row.map(|value| value as usize),
+                    AppError::Config(
+                        "COPY ... FROM stdin is only supported when restoring into PostgreSQL"
+                            .to_string(),
+                    ),
+                )
+                .with_statement(&sql));
+            }
             TxInput::Rollback => {
                 outcome.cancelled = true;
                 return Ok(outcome);

@@ -109,18 +109,18 @@ fn read_preview(path: &str, dialect: Dialect) -> AppResult<RestorePreview> {
     loop {
         let read = source.reader.read(&mut chunk).map_err(io_err)?;
         if read == 0 {
-            splitter.finish(&mut output);
+            splitter.finish_records(&mut output);
         } else {
-            splitter.feed(&chunk[..read], &mut output);
+            splitter.feed_records(&chunk[..read], &mut output);
         }
 
         for statement in output.drain(..) {
             total += 1;
-            counts.add(classify_statement(&statement));
+            counts.add(classify_statement(&statement.sql));
             if preview.len() < PREVIEW_STATEMENTS {
                 preview.push(RestorePreviewStatement {
                     number: total,
-                    sql: truncate_preview(&statement, 200),
+                    sql: truncate_preview(&statement.sql, 200),
                 });
             }
         }
@@ -259,9 +259,9 @@ fn stream_file(
             }
         };
         if read == 0 {
-            splitter.finish(&mut output);
+            splitter.finish_records(&mut output);
         } else {
-            splitter.feed(&chunk[..read], &mut output);
+            splitter.feed_records(&chunk[..read], &mut output);
         }
 
         for statement in output.drain(..) {
@@ -271,7 +271,7 @@ fn stream_file(
                 break 'read;
             }
 
-            if transactional && is_transaction_control(&statement) {
+            if transactional && is_transaction_control(&statement.sql) {
                 skipped += 1;
                 continue;
             }
@@ -290,13 +290,18 @@ fn stream_file(
                 });
             }
 
-            if tx
-                .blocking_send(TxInput::Sql {
-                    sql: statement,
+            let input = match statement.copy_data {
+                Some(data) => TxInput::CopyIn {
+                    sql: statement.sql,
+                    data,
                     row: Some(ordinal),
-                })
-                .is_err()
-            {
+                },
+                None => TxInput::Sql {
+                    sql: statement.sql,
+                    row: Some(ordinal),
+                },
+            };
+            if tx.blocking_send(input).is_err() {
                 return Ok(FeedResult {
                     sent,
                     skipped,

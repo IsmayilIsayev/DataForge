@@ -654,7 +654,9 @@ pub fn external_dump_command(
             if !username.trim().is_empty() {
                 args.push(format!("--username={username}"));
             }
-            args.push(format!("--dbname={database}"));
+            // Pass the name via the environment: libpq treats --dbname values
+            // as conninfo, but PGDATABASE is used literally.
+            env.push(("PGDATABASE".to_string(), database.to_string()));
             args.push("--no-password".to_string());
             match mode {
                 DumpMode::Structure => args.push("--schema-only".to_string()),
@@ -1094,6 +1096,38 @@ mod tests {
     }
 
     #[test]
+    fn postgres_database_name_is_passed_via_pgdatabase_not_conninfo() {
+        let tables = selected();
+        for database in [
+            "host=attacker.example port=5432 dbname=postgres",
+            "postgresql://attacker.example:5432/postgres",
+        ] {
+            let command = external_dump_command(
+                Dialect::Postgres,
+                "db.example",
+                5432,
+                "app",
+                database,
+                &tables,
+                DumpMode::Both,
+                false,
+                Some("s3cr3t"),
+            )
+            .unwrap();
+
+            assert!(!command.args.iter().any(|arg| arg.starts_with("--dbname")));
+            assert!(!command.args.iter().any(|arg| arg.contains(database)));
+            assert_eq!(
+                command.env,
+                vec![
+                    ("PGDATABASE".to_string(), database.to_string()),
+                    ("PGPASSWORD".to_string(), "s3cr3t".to_string()),
+                ]
+            );
+        }
+    }
+
+    #[test]
     fn external_command_keeps_the_password_out_of_argv() {
         let tables = selected();
 
@@ -1116,7 +1150,10 @@ mod tests {
         assert!(!pg.args.iter().any(|arg| arg.contains("s3cr3t")));
         assert_eq!(
             pg.env,
-            vec![("PGPASSWORD".to_string(), "s3cr3t".to_string())]
+            vec![
+                ("PGDATABASE".to_string(), "shop".to_string()),
+                ("PGPASSWORD".to_string(), "s3cr3t".to_string()),
+            ]
         );
 
         let mysql = external_dump_command(

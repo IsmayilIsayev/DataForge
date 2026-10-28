@@ -186,11 +186,20 @@ function prettyValue(value: CellValue, pretty: boolean): string {
   }
 }
 
+function guardFormula(text: string): string {
+  return /^[=+\-@\t\r]/.test(text) ? `'${text}` : text;
+}
+
+function formulaSafeText(value: CellValue, text: string): string {
+  return typeof value === "string" ? guardFormula(text) : text;
+}
+
+function neutraliseFormula(value: CellValue): string {
+  return value === null ? "" : formulaSafeText(value, displayValue(value));
+}
+
 function csvCell(value: CellValue): string {
-  if (value === null) return "";
-  const raw = displayValue(value);
-  // Only text can carry a spreadsheet formula; numbers like -5 stay numeric.
-  const text = typeof value === "string" && /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
+  const text = neutraliseFormula(value);
   if (/[",\r\n]/.test(text)) {
     return `"${text.replace(/"/g, '""')}"`;
   }
@@ -198,7 +207,7 @@ function csvCell(value: CellValue): string {
 }
 
 function tsvCell(value: CellValue): string {
-  return value === null ? "" : displayValue(value);
+  return neutraliseFormula(value);
 }
 
 function jsonCell(value: CellValue): string | number | boolean | null {
@@ -1314,7 +1323,7 @@ export default function DataGrid({
       const lines = matrix.rows.map((row) => row.map(tsvCell).join("\t"));
       text =
         format === "headers"
-          ? [matrix.headers.join("\t"), ...lines].join("\n")
+          ? [matrix.headers.map(guardFormula).join("\t"), ...lines].join("\n")
           : lines.join("\n");
     } else if (format === "csv") {
       const lines = matrix.rows.map((row) => row.map(csvCell).join(","));
@@ -1352,7 +1361,7 @@ export default function DataGrid({
     if (!activeCell || activeCell.row >= sortedRows.length) return;
     const row = sortedRows[activeCell.row];
     const value = row.row[activeCell.col] ?? null;
-    const ok = await copyText(rawValue(value));
+    const ok = await copyText(formulaSafeText(value, rawValue(value)));
     setCopied(ok ? "Copied cell" : "Copy failed");
   }
 

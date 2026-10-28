@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Backup: pass the PostgreSQL database name to `pg_dump` via `PGDATABASE` so it cannot be parsed as libpq conninfo.
+- Connections: only reuse a saved database password when the SSH route (presence, host, port, user, auth, key file) is unchanged.
+- Restore: treat PostgreSQL `COPY ... FROM stdin` data as raw copy input instead of splitting and executing it as SQL; other targets reject it.
+- Data grid: neutralise spreadsheet formulas in TSV rows, headers and active-cell copy, matching CSV export.
+- Query history: apply secret redaction to parameterized queries as well; parameter values named like secrets stay masked.
+- Portable import: propagate keychain deletion errors when replacing a connection instead of ignoring them.
+
 ## [0.5.0] - 2026-10-27
 
 ### Added

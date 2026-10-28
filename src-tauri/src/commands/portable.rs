@@ -639,8 +639,8 @@ pub async fn apply_connections_import(
                     // The endpoint may have changed, and the old keychain
                     // entries must never be reused by an imported connection.
                     state.pool.remove(&id).await;
-                    let _ = secrets::delete_connection_password(&id);
-                    let _ = secrets::delete_connection_ssh_secret(&id);
+                    secrets::delete_connection_password(&id)?;
+                    secrets::delete_connection_ssh_secret(&id)?;
                     result.replaced += 1;
                 } else {
                     result.imported += 1;

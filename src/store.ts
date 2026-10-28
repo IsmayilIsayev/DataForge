@@ -744,8 +744,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   pushQueryHistory: (sql, connId, database, params) =>
     set((state) => {
       const trimmed = sql.trim();
-      const parameterized = !!params && params.length > 0;
-      if (!trimmed || (!parameterized && QUERY_HISTORY_SECRET.test(trimmed))) {
+      if (!trimmed || QUERY_HISTORY_SECRET.test(trimmed)) {
         return {};
       }
       const storedParams = params?.map((param) =>

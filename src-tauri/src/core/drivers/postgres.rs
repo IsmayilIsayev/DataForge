@@ -968,6 +968,18 @@ async fn run_transaction(
     Ok(affected)
 }
 
+async fn execute_copy_in(
+    conn: &mut PgConnection,
+    statement: &str,
+    data: &[u8],
+) -> Result<u64, sqlx::Error> {
+    let mut copy = conn.copy_in_raw(statement).await?;
+    if !data.is_empty() {
+        copy.send(data).await?;
+    }
+    copy.finish().await
+}
+
 async fn run_stream_transaction(
     conn: &mut PgConnection,
     mut input: tokio::sync::mpsc::Receiver<TxInput>,
@@ -1026,6 +1038,37 @@ async fn run_stream_transaction(
                     }
                 }
             }
+            TxInput::CopyIn { sql, data, row } => {
+                let statement = trim_statement(&sql);
+                if statement.is_empty() {
+                    continue;
+                }
+                match execute_copy_in(&mut tx, statement, &data).await {
+                    Ok(affected) => outcome.rows_affected += affected,
+                    Err(error) => {
+                        let message = error.to_string();
+                        if let Some(name) = savepoints.last().cloned() {
+                            let _ = sqlx::query(&format!("ROLLBACK TO SAVEPOINT {name}"))
+                                .execute(&mut *tx)
+                                .await;
+                            if let Some(row) = row {
+                                outcome.errors.push(TxRowError {
+                                    row,
+                                    error: message,
+                                    statement: None,
+                                });
+                            }
+                        } else {
+                            let _ = tx.rollback().await;
+                            return Err(TxError::new(
+                                row.map(|value| value as usize),
+                                db_error(error),
+                            )
+                            .with_statement(statement));
+                        }
+                    }
+                }
+            }
             TxInput::Rollback => {
                 let _ = tx.rollback().await;
                 outcome.cancelled = true;
@@ -1060,6 +1103,33 @@ async fn run_stream_restore(
                 }
                 match sqlx::query(statement).execute(&mut *conn).await {
                     Ok(result) => outcome.rows_affected += result.rows_affected(),
+                    Err(error) => {
+                        let message = error.to_string();
+                        if !savepoints.is_empty() {
+                            if let Some(row) = row {
+                                outcome.errors.push(TxRowError {
+                                    row,
+                                    error: message,
+                                    statement: Some(truncate_preview(statement, 200)),
+                                });
+                            }
+                        } else {
+                            return Err(TxError::new(
+                                row.map(|value| value as usize),
+                                db_error(error),
+                            )
+                            .with_statement(statement));
+                        }
+                    }
+                }
+            }
+            TxInput::CopyIn { sql, data, row } => {
+                let statement = trim_statement(&sql);
+                if statement.is_empty() {
+                    continue;
+                }
+                match execute_copy_in(&mut *conn, statement, &data).await {
+                    Ok(affected) => outcome.rows_affected += affected,
                     Err(error) => {
                         let message = error.to_string();
                         if !savepoints.is_empty() {

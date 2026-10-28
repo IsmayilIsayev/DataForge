@@ -309,6 +309,16 @@ async fn run_stream_transaction(
                     }
                 }
             }
+            TxInput::CopyIn { sql, row, .. } => {
+                return Err(TxError::new(
+                    row.map(|value| value as usize),
+                    AppError::Config(
+                        "COPY ... FROM stdin is only supported when restoring into PostgreSQL"
+                            .to_string(),
+                    ),
+                )
+                .with_statement(&sql));
+            }
             TxInput::Rollback => {
                 let _ = tx.rollback().await;
                 outcome.cancelled = true;
@@ -363,6 +373,16 @@ async fn run_stream_restore(
                         }
                     }
                 }
+            }
+            TxInput::CopyIn { sql, row, .. } => {
+                return Err(TxError::new(
+                    row.map(|value| value as usize),
+                    AppError::Config(
+                        "COPY ... FROM stdin is only supported when restoring into PostgreSQL"
+                            .to_string(),
+                    ),
+                )
+                .with_statement(&sql));
             }
             TxInput::Rollback => {
                 outcome.cancelled = true;

@@ -4,14 +4,35 @@ use tauri_plugin_dialog::DialogExt;
 
 use crate::core::drivers::{self, ConnectionInput, ConnectionMeta, Dialect};
 use crate::core::secrets;
-use crate::core::ssh::SshAuth;
+use crate::core::ssh::{SshAuth, SshConfig};
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
+
+/// The SSH login determines where the DB connection is actually routed.
+fn same_ssh_login(input_ssh: &SshConfig, meta_ssh: &SshConfig) -> bool {
+    input_ssh.host == meta_ssh.host
+        && input_ssh.port == meta_ssh.port
+        && input_ssh.username == meta_ssh.username
+        && input_ssh.auth == meta_ssh.auth
+        && input_ssh.key_path == meta_ssh.key_path
+}
+
+fn same_ssh_route(input: &ConnectionInput, meta: &ConnectionMeta) -> bool {
+    match (&input.ssh, &meta.ssh) {
+        (None, None) => true,
+        (Some(input_ssh), Some(meta_ssh)) => same_ssh_login(input_ssh, meta_ssh),
+        _ => false,
+    }
+}
 
 /// The keychain password belongs to one concrete endpoint. Reuse it only when
 /// every connection-relevant field still points at that same endpoint.
 fn stored_password_reusable(input: &ConnectionInput, meta: &ConnectionMeta) -> bool {
     if input.dialect != meta.dialect {
+        return false;
+    }
+
+    if !same_ssh_route(input, meta) {
         return false;
     }
 
@@ -50,13 +71,7 @@ fn apply_stored_ssh_host_key(input: &mut ConnectionInput, meta: Option<&Connecti
 /// determines which credential is valid still points at the same SSH login.
 fn ssh_secret_reusable(input: &ConnectionInput, meta: &ConnectionMeta) -> bool {
     match (&input.ssh, &meta.ssh) {
-        (Some(input_ssh), Some(meta_ssh)) => {
-            input_ssh.host == meta_ssh.host
-                && input_ssh.port == meta_ssh.port
-                && input_ssh.username == meta_ssh.username
-                && input_ssh.auth == meta_ssh.auth
-                && input_ssh.key_path == meta_ssh.key_path
-        }
+        (Some(input_ssh), Some(meta_ssh)) => same_ssh_login(input_ssh, meta_ssh),
         _ => false,
     }
 }
@@ -455,6 +470,30 @@ mod tests {
             &input(Dialect::Mysql, "db.example", 5432, "app", None),
             &stored
         ));
+    }
+
+    #[test]
+    fn password_is_not_reused_when_the_ssh_host_changes() {
+        let mut stored = meta(Dialect::Postgres, "db.example", 5432, "app", None);
+        stored.ssh = Some(ssh_config("bastion.example", 22, "deploy"));
+
+        let mut moved = input(Dialect::Postgres, "db.example", 5432, "app", None);
+        moved.ssh = Some(ssh_config("attacker.example", 22, "deploy"));
+
+        assert!(!stored_password_reusable(&moved, &stored));
+    }
+
+    #[test]
+    fn password_is_not_reused_when_ssh_is_added_or_removed() {
+        let stored = meta(Dialect::Postgres, "db.example", 5432, "app", None);
+        let mut added = input(Dialect::Postgres, "db.example", 5432, "app", None);
+        added.ssh = Some(ssh_config("bastion.example", 22, "deploy"));
+        assert!(!stored_password_reusable(&added, &stored));
+
+        let mut stored_with_ssh = meta(Dialect::Postgres, "db.example", 5432, "app", None);
+        stored_with_ssh.ssh = Some(ssh_config("bastion.example", 22, "deploy"));
+        let removed = input(Dialect::Postgres, "db.example", 5432, "app", None);
+        assert!(!stored_password_reusable(&removed, &stored_with_ssh));
     }
 
     #[test]
