@@ -74,7 +74,9 @@ impl TxError {
 #[derive(Debug)]
 pub enum TxInput {
     Sql { sql: String, row: Option<u64> },
-    CopyIn { sql: String, data: Vec<u8>, row: Option<u64> },
+    CopyStart { sql: String, row: Option<u64> },
+    CopyData(Vec<u8>),
+    CopyEnd,
     Savepoint(String),
     ReleaseSavepoint(String),
     Rollback,

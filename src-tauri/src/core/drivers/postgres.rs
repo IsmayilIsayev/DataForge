@@ -968,16 +968,47 @@ async fn run_transaction(
     Ok(affected)
 }
 
-async fn execute_copy_in(
+enum CopyOutcome {
+    Finished(u64),
+    Cancelled,
+}
+
+async fn stream_copy_in(
     conn: &mut PgConnection,
     statement: &str,
-    data: &[u8],
-) -> Result<u64, sqlx::Error> {
+    input: &mut tokio::sync::mpsc::Receiver<TxInput>,
+) -> Result<CopyOutcome, sqlx::Error> {
     let mut copy = conn.copy_in_raw(statement).await?;
-    if !data.is_empty() {
-        copy.send(data).await?;
+    loop {
+        match input.recv().await {
+            Some(TxInput::CopyData(data)) => {
+                let sent = copy.send(data).await.map(|_| ());
+                if let Err(error) = sent {
+                    let _ = copy.abort(error.to_string()).await;
+                    return Err(error);
+                }
+            }
+            Some(TxInput::CopyEnd) => {
+                return Ok(CopyOutcome::Finished(copy.finish().await?));
+            }
+            Some(TxInput::Rollback) => {
+                let _ = copy.abort("restore cancelled").await;
+                return Ok(CopyOutcome::Cancelled);
+            }
+            Some(_) => {
+                let _ = copy.abort("unexpected input during COPY").await;
+                return Err(sqlx::Error::Protocol(
+                    "unexpected input during COPY".to_string(),
+                ));
+            }
+            None => {
+                let _ = copy.abort("restore stream ended during COPY").await;
+                return Err(sqlx::Error::Protocol(
+                    "restore stream ended during COPY".to_string(),
+                ));
+            }
+        }
     }
-    copy.finish().await
 }
 
 async fn run_stream_transaction(
@@ -1038,13 +1069,20 @@ async fn run_stream_transaction(
                     }
                 }
             }
-            TxInput::CopyIn { sql, data, row } => {
+            TxInput::CopyStart { sql, row } => {
                 let statement = trim_statement(&sql);
                 if statement.is_empty() {
                     continue;
                 }
-                match execute_copy_in(&mut tx, statement, &data).await {
-                    Ok(affected) => outcome.rows_affected += affected,
+                match stream_copy_in(&mut *tx, statement, &mut input).await {
+                    Ok(CopyOutcome::Finished(affected)) => {
+                        outcome.rows_affected += affected;
+                    }
+                    Ok(CopyOutcome::Cancelled) => {
+                        let _ = tx.rollback().await;
+                        outcome.cancelled = true;
+                        return Ok(outcome);
+                    }
                     Err(error) => {
                         let message = error.to_string();
                         if let Some(name) = savepoints.last().cloned() {
@@ -1069,6 +1107,8 @@ async fn run_stream_transaction(
                     }
                 }
             }
+            // Leftover stream records after a COPY was rejected/aborted.
+            TxInput::CopyData(_) | TxInput::CopyEnd => {}
             TxInput::Rollback => {
                 let _ = tx.rollback().await;
                 outcome.cancelled = true;
@@ -1123,13 +1163,19 @@ async fn run_stream_restore(
                     }
                 }
             }
-            TxInput::CopyIn { sql, data, row } => {
+            TxInput::CopyStart { sql, row } => {
                 let statement = trim_statement(&sql);
                 if statement.is_empty() {
                     continue;
                 }
-                match execute_copy_in(&mut *conn, statement, &data).await {
-                    Ok(affected) => outcome.rows_affected += affected,
+                match stream_copy_in(&mut *conn, statement, &mut input).await {
+                    Ok(CopyOutcome::Finished(affected)) => {
+                        outcome.rows_affected += affected;
+                    }
+                    Ok(CopyOutcome::Cancelled) => {
+                        outcome.cancelled = true;
+                        return Ok(outcome);
+                    }
                     Err(error) => {
                         let message = error.to_string();
                         if !savepoints.is_empty() {
@@ -1150,6 +1196,8 @@ async fn run_stream_restore(
                     }
                 }
             }
+            // Leftover stream records after a COPY was rejected/aborted.
+            TxInput::CopyData(_) | TxInput::CopyEnd => {}
             TxInput::Rollback => {
                 outcome.cancelled = true;
                 return Ok(outcome);

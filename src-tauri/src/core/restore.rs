@@ -18,13 +18,27 @@ pub fn truncate_preview(sql: &str, max_chars: usize) -> String {
     sql.chars().take(max_chars).collect()
 }
 
-/// A statement produced by the restore splitter. `COPY ... FROM stdin`
-/// statements carry their raw data block so callers can send it through the
-/// PostgreSQL copy-in protocol instead of executing it as SQL.
+/// A record produced by the restore splitter. `COPY ... FROM stdin` data is
+/// emitted in bounded chunks between [`SplitRecord::CopyStart`] and
+/// [`SplitRecord::CopyEnd`] so callers can stream it through the PostgreSQL
+/// copy-in protocol without buffering the whole block.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SplitStatement {
-    pub sql: String,
-    pub copy_data: Option<Vec<u8>>,
+pub enum SplitRecord {
+    Statement(String),
+    CopyStart { sql: String },
+    CopyData(Vec<u8>),
+    CopyEnd,
+}
+
+/// Maximum size of one [`SplitRecord::CopyData`] chunk.
+const COPY_DATA_CHUNK_SIZE: usize = 1024 * 1024;
+
+/// Statement text for callers that do not stream COPY data.
+fn record_sql(record: SplitRecord) -> Option<String> {
+    match record {
+        SplitRecord::Statement(sql) | SplitRecord::CopyStart { sql } => Some(sql),
+        SplitRecord::CopyData(_) | SplitRecord::CopyEnd => None,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,44 +93,76 @@ fn dollar_tag_at(input: &[u8], index: usize, previous: Option<u8>) -> TagResult 
     TagResult::Complete(end + 1 - index)
 }
 
+/// First keyword on raw bytes, skipping whitespace and SQL comments. This is
+/// the allocation-free form of [`first_keyword`] used while scanning.
+fn first_keyword_bytes(mut bytes: &[u8]) -> &[u8] {
+    loop {
+        while let Some((first, rest)) = bytes.split_first() {
+            if !first.is_ascii_whitespace() {
+                break;
+            }
+            bytes = rest;
+        }
+        if bytes.starts_with(b"--") {
+            bytes = match bytes.iter().position(|byte| *byte == b'\n') {
+                Some(index) => &bytes[index + 1..],
+                None => &[],
+            };
+            continue;
+        }
+        if bytes.first() == Some(&b'#') {
+            bytes = match bytes.iter().position(|byte| *byte == b'\n') {
+                Some(index) => &bytes[index + 1..],
+                None => &[],
+            };
+            continue;
+        }
+        if bytes.starts_with(b"/*") {
+            bytes = match bytes[2..].windows(2).position(|pair| pair == b"*/") {
+                Some(index) => &bytes[index + 4..],
+                None => &[],
+            };
+            continue;
+        }
+        break;
+    }
+
+    let end = bytes
+        .iter()
+        .position(|byte| !byte.is_ascii_alphanumeric() && *byte != b'_')
+        .unwrap_or(bytes.len());
+    &bytes[..end]
+}
+
 /// Detect `COPY ... FROM stdin` while skipping comments and quoted text.
-fn is_copy_from_stdin(sql: &str) -> bool {
-    if first_keyword(sql) != "COPY" {
+fn is_copy_from_stdin(sql: &[u8]) -> bool {
+    if !first_keyword_bytes(sql).eq_ignore_ascii_case(b"COPY") {
         return false;
     }
 
-    let bytes = sql.as_bytes();
     let mut index = 0;
     let mut previous_from = false;
 
-    while index < bytes.len() {
-        let current = bytes[index];
+    while index < sql.len() {
+        let current = sql[index];
         if current.is_ascii_whitespace() {
             index += 1;
-        } else if current == b'-'
-            && index + 1 < bytes.len()
-            && bytes[index + 1] == b'-'
-        {
-            while index < bytes.len() && bytes[index] != b'\n' {
+        } else if current == b'-' && index + 1 < sql.len() && sql[index + 1] == b'-' {
+            while index < sql.len() && sql[index] != b'\n' {
                 index += 1;
             }
-        } else if current == b'/'
-            && index + 1 < bytes.len()
-            && bytes[index + 1] == b'*'
-        {
+        } else if current == b'/' && index + 1 < sql.len() && sql[index + 1] == b'*' {
             index += 2;
-            while index + 1 < bytes.len()
-                && !(bytes[index] == b'*' && bytes[index + 1] == b'/')
-            {
+            while index + 1 < sql.len() && !(sql[index] == b'*' && sql[index + 1] == b'/') {
                 index += 1;
             }
-            index = (index + 2).min(bytes.len());
+            index = (index + 2).min(sql.len());
         } else if current == b'\'' || current == b'"' {
             let quote = current;
             index += 1;
-            while index < bytes.len() {
-                if bytes[index] == quote {
-                    if index + 1 < bytes.len() && bytes[index + 1] == quote {
+            while index < sql.len() {
+                if sql[index] == quote {
+                    if index + 1 < sql.len() && sql[index + 1] == quote {
                         index += 2;
                         continue;
                     }
@@ -128,16 +174,16 @@ fn is_copy_from_stdin(sql: &str) -> bool {
             previous_from = false;
         } else if current.is_ascii_alphanumeric() || current == b'_' {
             let start = index;
-            while index < bytes.len()
-                && (bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_')
+            while index < sql.len()
+                && (sql[index].is_ascii_alphanumeric() || sql[index] == b'_')
             {
                 index += 1;
             }
             let word = &sql[start..index];
-            if previous_from && word.eq_ignore_ascii_case("STDIN") {
+            if previous_from && word.eq_ignore_ascii_case(b"STDIN") {
                 return true;
             }
-            previous_from = word.eq_ignore_ascii_case("FROM");
+            previous_from = word.eq_ignore_ascii_case(b"FROM");
         } else {
             previous_from = false;
             index += 1;
@@ -147,15 +193,11 @@ fn is_copy_from_stdin(sql: &str) -> bool {
     false
 }
 
-fn is_copy_terminator(line: &[u8]) -> bool {
-    let line = line.strip_suffix(b"\n").unwrap_or(line);
-    let line = line.strip_suffix(b"\r").unwrap_or(line);
-    line == b"\\."
-}
-
-/// Stateful statement splitter. Feed arbitrary byte chunks with [`feed`], then
-/// call [`finish`] once at end of input. Complete statements are appended to
-/// the output vector (without their trailing semicolon and trimmed).
+/// Stateful statement splitter. Feed arbitrary byte chunks with
+/// [`SqlSplitter::feed_records`], then call [`SqlSplitter::finish_records`] once
+/// at end of input. Complete statements are appended to the output vector
+/// (without their trailing semicolon and trimmed); PostgreSQL COPY data is
+/// streamed as bounded [`SplitRecord::CopyData`] chunks.
 pub struct SqlSplitter {
     dialect: Dialect,
     state: ScanState,
@@ -163,9 +205,9 @@ pub struct SqlSplitter {
     has_code: bool,
     dollar_tag: Vec<u8>,
     carry: Vec<u8>,
-    copy_sql: String,
     copy_data: Vec<u8>,
-    copy_line: Vec<u8>,
+    copy_prefix: Vec<u8>,
+    copy_at_line_start: bool,
     copy_skip_line: bool,
 }
 
@@ -178,14 +220,14 @@ impl SqlSplitter {
             has_code: false,
             dollar_tag: Vec::new(),
             carry: Vec::new(),
-            copy_sql: String::new(),
             copy_data: Vec::new(),
-            copy_line: Vec::new(),
+            copy_prefix: Vec::new(),
+            copy_at_line_start: false,
             copy_skip_line: false,
         }
     }
 
-    pub fn feed_records(&mut self, chunk: &[u8], out: &mut Vec<SplitStatement>) {
+    pub fn feed_records(&mut self, chunk: &[u8], out: &mut Vec<SplitRecord>) {
         if chunk.is_empty() {
             return;
         }
@@ -202,10 +244,10 @@ impl SqlSplitter {
     pub fn feed(&mut self, chunk: &[u8], out: &mut Vec<String>) {
         let mut records = Vec::new();
         self.feed_records(chunk, &mut records);
-        out.extend(records.into_iter().map(|statement| statement.sql));
+        out.extend(records.into_iter().filter_map(record_sql));
     }
 
-    pub fn finish_records(&mut self, out: &mut Vec<SplitStatement>) {
+    pub fn finish_records(&mut self, out: &mut Vec<SplitRecord>) {
         let data = std::mem::take(&mut self.carry);
         let consumed = self.scan(&data, true, out);
         debug_assert_eq!(consumed, data.len());
@@ -221,10 +263,10 @@ impl SqlSplitter {
     pub fn finish(&mut self, out: &mut Vec<String>) {
         let mut records = Vec::new();
         self.finish_records(&mut records);
-        out.extend(records.into_iter().map(|statement| statement.sql));
+        out.extend(records.into_iter().filter_map(record_sql));
     }
 
-    fn flush_statement(&mut self, out: &mut Vec<SplitStatement>) {
+    fn flush_statement(&mut self, out: &mut Vec<SplitRecord>) {
         if !self.has_code {
             self.buffer.clear();
             return;
@@ -232,42 +274,56 @@ impl SqlSplitter {
         let text = String::from_utf8_lossy(&self.buffer);
         let statement = text.trim();
         if !statement.is_empty() {
-            out.push(SplitStatement {
-                sql: statement.to_string(),
-                copy_data: None,
-            });
+            out.push(SplitRecord::Statement(statement.to_string()));
         }
         self.buffer.clear();
         self.has_code = false;
     }
 
-    fn begin_copy(&mut self) {
+    fn begin_copy(&mut self, out: &mut Vec<SplitRecord>) {
         let text = String::from_utf8_lossy(&self.buffer);
-        self.copy_sql = text.trim().to_string();
+        out.push(SplitRecord::CopyStart {
+            sql: text.trim().to_string(),
+        });
         self.buffer.clear();
         self.has_code = false;
         self.copy_data.clear();
-        self.copy_line.clear();
+        self.copy_prefix.clear();
+        self.copy_at_line_start = false;
         // The COPY statement itself ends on this line; data starts on the next.
         self.copy_skip_line = true;
         self.state = ScanState::CopyData;
     }
 
-    fn emit_copy(&mut self, out: &mut Vec<SplitStatement>) {
-        out.push(SplitStatement {
-            sql: std::mem::take(&mut self.copy_sql),
-            copy_data: Some(std::mem::take(&mut self.copy_data)),
-        });
-        self.copy_line.clear();
-        self.copy_skip_line = false;
+    fn push_copy_byte(&mut self, byte: u8, out: &mut Vec<SplitRecord>) {
+        self.copy_data.push(byte);
+        if self.copy_data.len() >= COPY_DATA_CHUNK_SIZE {
+            self.emit_copy_data(out);
+        }
     }
 
-    fn finish_copy(&mut self, out: &mut Vec<SplitStatement>) {
-        let line = std::mem::take(&mut self.copy_line);
-        if !self.copy_skip_line && !is_copy_terminator(&line) {
-            self.copy_data.extend_from_slice(&line);
+    fn emit_copy_data(&mut self, out: &mut Vec<SplitRecord>) {
+        if !self.copy_data.is_empty() {
+            out.push(SplitRecord::CopyData(std::mem::take(
+                &mut self.copy_data,
+            )));
         }
-        self.emit_copy(out);
+    }
+
+    fn finish_copy(&mut self, out: &mut Vec<SplitRecord>) {
+        if !self.copy_skip_line {
+            let prefix = std::mem::take(&mut self.copy_prefix);
+            if !matches!(prefix.as_slice(), b"\\." | b"\\.\r") {
+                for byte in prefix {
+                    self.push_copy_byte(byte, out);
+                }
+            }
+        }
+        self.emit_copy_data(out);
+        out.push(SplitRecord::CopyEnd);
+        self.copy_prefix.clear();
+        self.copy_at_line_start = false;
+        self.copy_skip_line = false;
         self.state = ScanState::Normal;
     }
 
@@ -275,7 +331,7 @@ impl SqlSplitter {
         &mut self,
         input: &[u8],
         finalising: bool,
-        out: &mut Vec<SplitStatement>,
+        out: &mut Vec<SplitRecord>,
     ) -> usize {
         let mut index = 0;
 
@@ -374,9 +430,8 @@ impl SqlSplitter {
                             index += 1;
                         }
                     } else if current == b';' {
-                        let text = String::from_utf8_lossy(&self.buffer);
-                        if is_copy_from_stdin(&text) {
-                            self.begin_copy();
+                        if is_copy_from_stdin(&self.buffer) {
+                            self.begin_copy(out);
                         } else {
                             self.flush_statement(out);
                         }
@@ -462,19 +517,40 @@ impl SqlSplitter {
                     index += 1;
                 }
                 ScanState::CopyData => {
-                    self.copy_line.push(current);
                     index += 1;
-                    if current == b'\n' {
-                        let line = std::mem::take(&mut self.copy_line);
-                        if self.copy_skip_line {
+                    if self.copy_skip_line {
+                        if current == b'\n' {
                             self.copy_skip_line = false;
-                        } else if is_copy_terminator(&line) {
-                            self.emit_copy(out);
-                            self.state = ScanState::Normal;
-                        } else {
-                            self.copy_data.extend_from_slice(&line);
+                            self.copy_at_line_start = true;
                         }
+                        continue;
                     }
+                    if self.copy_at_line_start {
+                        self.copy_prefix.push(current);
+                        let is_terminator = match self.copy_prefix.as_slice() {
+                            b"\\" | b"\\." | b"\\.\r" => continue,
+                            b"\\.\n" => true,
+                            _ => false,
+                        };
+                        if is_terminator {
+                            self.copy_prefix.clear();
+                            self.copy_at_line_start = false;
+                            self.emit_copy_data(out);
+                            out.push(SplitRecord::CopyEnd);
+                            self.state = ScanState::Normal;
+                            continue;
+                        }
+                        let prefix = std::mem::take(&mut self.copy_prefix);
+                        self.copy_at_line_start = false;
+                        for byte in prefix {
+                            self.push_copy_byte(byte, out);
+                        }
+                        continue;
+                    }
+                    if current == b'\n' {
+                        self.copy_at_line_start = true;
+                    }
+                    self.push_copy_byte(current, out);
                 }
                 ScanState::BlockComment => {
                     if current == b'*' {
@@ -511,7 +587,7 @@ pub fn split_statements(sql: &str, dialect: Dialect) -> Vec<String> {
     let mut statements = Vec::new();
     splitter.feed_records(sql.as_bytes(), &mut statements);
     splitter.finish_records(&mut statements);
-    statements.into_iter().map(|statement| statement.sql).collect()
+    statements.into_iter().filter_map(record_sql).collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -545,50 +621,7 @@ impl StatementCounts {
 /// The leading keyword, skipping whitespace and SQL comments. Dumps start with
 /// a comment header, so classification must look past it.
 pub fn first_keyword(sql: &str) -> String {
-    let bytes = sql.as_bytes();
-    let mut index = 0;
-
-    loop {
-        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
-            index += 1;
-        }
-        if index + 1 < bytes.len() && bytes[index] == b'-' && bytes[index + 1] == b'-' {
-            while index < bytes.len() && bytes[index] != b'\n' {
-                index += 1;
-            }
-            continue;
-        }
-        if index < bytes.len() && bytes[index] == b'#' {
-            while index < bytes.len() && bytes[index] != b'\n' {
-                index += 1;
-            }
-            continue;
-        }
-        if index + 1 < bytes.len() && bytes[index] == b'/' && bytes[index + 1] == b'*' {
-            index += 2;
-            while index + 1 < bytes.len()
-                && !(bytes[index] == b'*' && bytes[index + 1] == b'/')
-            {
-                index += 1;
-            }
-            index = if index + 1 < bytes.len() {
-                index + 2
-            } else {
-                bytes.len()
-            };
-            continue;
-        }
-        break;
-    }
-
-    let start = index;
-    while index < bytes.len()
-        && (bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_')
-    {
-        index += 1;
-    }
-
-    String::from_utf8_lossy(&bytes[start..index]).to_ascii_uppercase()
+    String::from_utf8_lossy(first_keyword_bytes(sql.as_bytes())).to_ascii_uppercase()
 }
 
 pub fn classify_statement(sql: &str) -> StatementKind {
@@ -664,19 +697,15 @@ impl RestoreStats {
 mod tests {
     use super::{
         classify_statement, first_keyword, is_gzip, is_transaction_control, split_statements,
-        truncate_preview, RestoreStats, SplitStatement, SqlSplitter, StatementCounts,
-        StatementKind,
+        truncate_preview, RestoreStats, SplitRecord, SqlSplitter, StatementCounts,
+        StatementKind, COPY_DATA_CHUNK_SIZE,
     };
     use crate::core::drivers::Dialect;
 
-    fn split_records_in_chunks(
-        sql: &str,
-        dialect: Dialect,
-        size: usize,
-    ) -> Vec<SplitStatement> {
+    fn split_records_in_chunks(sql: &[u8], dialect: Dialect, size: usize) -> Vec<SplitRecord> {
         let mut splitter = SqlSplitter::new(dialect);
         let mut statements = Vec::new();
-        for chunk in sql.as_bytes().chunks(size) {
+        for chunk in sql.chunks(size) {
             splitter.feed_records(chunk, &mut statements);
         }
         splitter.finish_records(&mut statements);
@@ -684,9 +713,12 @@ mod tests {
     }
 
     fn split_in_chunks(sql: &str, dialect: Dialect, size: usize) -> Vec<String> {
-        split_records_in_chunks(sql, dialect, size)
+        split_records_in_chunks(sql.as_bytes(), dialect, size)
             .into_iter()
-            .map(|statement| statement.sql)
+            .filter_map(|record| match record {
+                SplitRecord::Statement(sql) | SplitRecord::CopyStart { sql } => Some(sql),
+                SplitRecord::CopyData(_) | SplitRecord::CopyEnd => None,
+            })
             .collect()
     }
 
@@ -705,18 +737,80 @@ mod tests {
             "\\.\n",
             "INSERT INTO public.audit VALUES (1);\n",
         );
+        let expected_data = b"1\tx;DROP TABLE public.audit;--\n2\tSELECT 1;\n";
+        let expected_sql = [
+            "COPY public.users (id, name) FROM stdin",
+            "INSERT INTO public.audit VALUES (1)",
+        ];
 
         for size in [1usize, 2, 3, 7, 64] {
-            let statements = split_records_in_chunks(sql, Dialect::Postgres, size);
-            assert_eq!(statements.len(), 2, "chunk size {size}: {statements:?}");
-            assert_eq!(statements[0].sql, "COPY public.users (id, name) FROM stdin");
+            let records = split_records_in_chunks(sql.as_bytes(), Dialect::Postgres, size);
+            let mut statements = Vec::new();
+            let mut data = Vec::new();
+            let mut copy_open = false;
+            for record in records {
+                match record {
+                    SplitRecord::Statement(sql) => {
+                        assert!(!copy_open);
+                        statements.push(sql);
+                    }
+                    SplitRecord::CopyStart { sql } => {
+                        assert!(!copy_open);
+                        statements.push(sql);
+                        copy_open = true;
+                    }
+                    SplitRecord::CopyData(chunk) => {
+                        assert!(copy_open);
+                        data.extend_from_slice(&chunk);
+                    }
+                    SplitRecord::CopyEnd => {
+                        assert!(copy_open);
+                        copy_open = false;
+                    }
+                }
+            }
+
+            assert!(!copy_open, "chunk size {size}");
             assert_eq!(
-                statements[0].copy_data.as_deref(),
-                Some(b"1\tx;DROP TABLE public.audit;--\n2\tSELECT 1;\n".as_slice())
+                statements,
+                expected_sql
+                    .iter()
+                    .map(|sql| sql.to_string())
+                    .collect::<Vec<_>>(),
+                "chunk size {size}"
             );
-            assert_eq!(statements[1].sql, "INSERT INTO public.audit VALUES (1)");
-            assert!(statements[1].copy_data.is_none());
+            assert_eq!(data, expected_data.as_slice(), "chunk size {size}");
         }
+    }
+
+    #[test]
+    fn large_copy_data_is_split_into_bounded_chunks() {
+        let mut sql = Vec::from(b"COPY public.t (value) FROM stdin;\n".as_slice());
+        for _ in 0..(5 * 1024) {
+            sql.extend(std::iter::repeat(b'a').take(1023));
+            sql.push(b'\n');
+        }
+        let expected_len = 5 * 1024 * 1024;
+        sql.extend_from_slice(b"\\.\n");
+
+        let records = split_records_in_chunks(&sql, Dialect::Postgres, 64 * 1024);
+        let chunks: Vec<Vec<u8>> = records
+            .into_iter()
+            .filter_map(|record| match record {
+                SplitRecord::CopyData(chunk) => Some(chunk),
+                _ => None,
+            })
+            .collect();
+
+        assert!(chunks.len() > 1, "expected several chunks");
+        assert!(
+            chunks
+                .iter()
+                .all(|chunk| !chunk.is_empty() && chunk.len() <= COPY_DATA_CHUNK_SIZE),
+            "chunk sizes: {:?}",
+            chunks.iter().map(Vec::len).collect::<Vec<_>>()
+        );
+        assert_eq!(chunks.iter().map(Vec::len).sum::<usize>(), expected_len);
     }
 
     #[test]

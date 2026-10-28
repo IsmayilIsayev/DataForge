@@ -309,7 +309,7 @@ async fn run_stream_transaction(
                     }
                 }
             }
-            TxInput::CopyIn { sql, row, .. } => {
+            TxInput::CopyStart { sql, row } => {
                 return Err(TxError::new(
                     row.map(|value| value as usize),
                     AppError::Config(
@@ -319,6 +319,7 @@ async fn run_stream_transaction(
                 )
                 .with_statement(&sql));
             }
+            TxInput::CopyData(_) | TxInput::CopyEnd => {}
             TxInput::Rollback => {
                 let _ = tx.rollback().await;
                 outcome.cancelled = true;
@@ -374,7 +375,7 @@ async fn run_stream_restore(
                     }
                 }
             }
-            TxInput::CopyIn { sql, row, .. } => {
+            TxInput::CopyStart { sql, row } => {
                 return Err(TxError::new(
                     row.map(|value| value as usize),
                     AppError::Config(
@@ -384,6 +385,7 @@ async fn run_stream_restore(
                 )
                 .with_statement(&sql));
             }
+            TxInput::CopyData(_) | TxInput::CopyEnd => {}
             TxInput::Rollback => {
                 outcome.cancelled = true;
                 return Ok(outcome);

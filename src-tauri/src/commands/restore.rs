@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 use crate::core::drivers::{Dialect, TxError, TxInput, TxStreamOutcome};
 use crate::core::restore::{
     classify_statement, is_gzip, is_transaction_control, truncate_preview, RestoreStats,
-    SqlSplitter, StatementCounts,
+    SplitRecord, SqlSplitter, StatementCounts,
 };
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
@@ -114,13 +114,18 @@ fn read_preview(path: &str, dialect: Dialect) -> AppResult<RestorePreview> {
             splitter.feed_records(&chunk[..read], &mut output);
         }
 
-        for statement in output.drain(..) {
+        for record in output.drain(..) {
+            let sql = match record {
+                SplitRecord::Statement(sql) | SplitRecord::CopyStart { sql } => sql,
+                // COPY rows are streamed to the driver, never kept for preview.
+                SplitRecord::CopyData(_) | SplitRecord::CopyEnd => continue,
+            };
             total += 1;
-            counts.add(classify_statement(&statement.sql));
+            counts.add(classify_statement(&sql));
             if preview.len() < PREVIEW_STATEMENTS {
                 preview.push(RestorePreviewStatement {
                     number: total,
-                    sql: truncate_preview(&statement.sql, 200),
+                    sql: truncate_preview(&sql, 200),
                 });
             }
         }
@@ -264,83 +269,159 @@ fn stream_file(
             splitter.feed_records(&chunk[..read], &mut output);
         }
 
-        for statement in output.drain(..) {
-            ordinal += 1;
+        for record in output.drain(..) {
             if is_cancelled(&app, &id) {
                 cancelled = true;
                 break 'read;
             }
 
-            if transactional && is_transaction_control(&statement.sql) {
-                skipped += 1;
-                continue;
+            let mut completed = false;
+            match record {
+                SplitRecord::Statement(sql) => {
+                    ordinal += 1;
+
+                    if transactional && is_transaction_control(&sql) {
+                        skipped += 1;
+                        continue;
+                    }
+
+                    if !stop_on_error
+                        && tx
+                            .blocking_send(TxInput::Savepoint(SAVEPOINT.to_string()))
+                            .is_err()
+                    {
+                        return Ok(FeedResult {
+                            sent,
+                            skipped,
+                            cancelled: false,
+                            bytes_read: source.bytes_read(),
+                            total_bytes,
+                        });
+                    }
+
+                    if tx
+                        .blocking_send(TxInput::Sql {
+                            sql,
+                            row: Some(ordinal),
+                        })
+                        .is_err()
+                    {
+                        return Ok(FeedResult {
+                            sent,
+                            skipped,
+                            cancelled: false,
+                            bytes_read: source.bytes_read(),
+                            total_bytes,
+                        });
+                    }
+
+                    if !stop_on_error
+                        && tx
+                            .blocking_send(TxInput::ReleaseSavepoint(SAVEPOINT.to_string()))
+                            .is_err()
+                    {
+                        return Ok(FeedResult {
+                            sent,
+                            skipped,
+                            cancelled: false,
+                            bytes_read: source.bytes_read(),
+                            total_bytes,
+                        });
+                    }
+
+                    completed = true;
+                }
+                SplitRecord::CopyStart { sql } => {
+                    ordinal += 1;
+
+                    if !stop_on_error
+                        && tx
+                            .blocking_send(TxInput::Savepoint(SAVEPOINT.to_string()))
+                            .is_err()
+                    {
+                        return Ok(FeedResult {
+                            sent,
+                            skipped,
+                            cancelled: false,
+                            bytes_read: source.bytes_read(),
+                            total_bytes,
+                        });
+                    }
+
+                    if tx
+                        .blocking_send(TxInput::CopyStart {
+                            sql,
+                            row: Some(ordinal),
+                        })
+                        .is_err()
+                    {
+                        return Ok(FeedResult {
+                            sent,
+                            skipped,
+                            cancelled: false,
+                            bytes_read: source.bytes_read(),
+                            total_bytes,
+                        });
+                    }
+                }
+                SplitRecord::CopyData(data) => {
+                    if tx.blocking_send(TxInput::CopyData(data)).is_err() {
+                        return Ok(FeedResult {
+                            sent,
+                            skipped,
+                            cancelled: false,
+                            bytes_read: source.bytes_read(),
+                            total_bytes,
+                        });
+                    }
+                }
+                SplitRecord::CopyEnd => {
+                    if tx.blocking_send(TxInput::CopyEnd).is_err() {
+                        return Ok(FeedResult {
+                            sent,
+                            skipped,
+                            cancelled: false,
+                            bytes_read: source.bytes_read(),
+                            total_bytes,
+                        });
+                    }
+
+                    if !stop_on_error
+                        && tx
+                            .blocking_send(TxInput::ReleaseSavepoint(SAVEPOINT.to_string()))
+                            .is_err()
+                    {
+                        return Ok(FeedResult {
+                            sent,
+                            skipped,
+                            cancelled: false,
+                            bytes_read: source.bytes_read(),
+                            total_bytes,
+                        });
+                    }
+
+                    completed = true;
+                }
             }
 
-            if !stop_on_error
-                && tx
-                    .blocking_send(TxInput::Savepoint(SAVEPOINT.to_string()))
-                    .is_err()
-            {
-                return Ok(FeedResult {
-                    sent,
-                    skipped,
-                    cancelled: false,
-                    bytes_read: source.bytes_read(),
-                    total_bytes,
-                });
-            }
-
-            let input = match statement.copy_data {
-                Some(data) => TxInput::CopyIn {
-                    sql: statement.sql,
-                    data,
-                    row: Some(ordinal),
-                },
-                None => TxInput::Sql {
-                    sql: statement.sql,
-                    row: Some(ordinal),
-                },
-            };
-            if tx.blocking_send(input).is_err() {
-                return Ok(FeedResult {
-                    sent,
-                    skipped,
-                    cancelled: false,
-                    bytes_read: source.bytes_read(),
-                    total_bytes,
-                });
-            }
-
-            if !stop_on_error
-                && tx
-                    .blocking_send(TxInput::ReleaseSavepoint(SAVEPOINT.to_string()))
-                    .is_err()
-            {
-                return Ok(FeedResult {
-                    sent,
-                    skipped,
-                    cancelled: false,
-                    bytes_read: source.bytes_read(),
-                    total_bytes,
-                });
-            }
-
-            sent += 1;
-            let now = Instant::now();
-            if sent - last_count >= PROGRESS_STATEMENTS
-                || now.duration_since(last_report) >= Duration::from_secs(1)
-            {
-                emit_progress(
-                    &app,
-                    &id,
-                    sent,
-                    source.bytes_read(),
-                    total_bytes,
-                    false,
-                    false,
-                );
-                last_count = sent;
-                last_report = now;
+            if completed {
+                sent += 1;
+                let now = Instant::now();
+                if sent - last_count >= PROGRESS_STATEMENTS
+                    || now.duration_since(last_report) >= Duration::from_secs(1)
+                {
+                    emit_progress(
+                        &app,
+                        &id,
+                        sent,
+                        source.bytes_read(),
+                        total_bytes,
+                        false,
+                        false,
+                    );
+                    last_count = sent;
+                    last_report = now;
+                }
             }
         }
 

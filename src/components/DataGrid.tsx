@@ -1361,7 +1361,7 @@ export default function DataGrid({
     if (!activeCell || activeCell.row >= sortedRows.length) return;
     const row = sortedRows[activeCell.row];
     const value = row.row[activeCell.col] ?? null;
-    const ok = await copyText(formulaSafeText(value, rawValue(value)));
+    const ok = await copyText(rawValue(value));
     setCopied(ok ? "Copied cell" : "Copy failed");
   }
 
