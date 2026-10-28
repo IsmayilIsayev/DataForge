@@ -1979,6 +1979,10 @@ export default function DataGrid({
             style={{
               flex: 1,
               minWidth: 0,
+              // Without this, a bottom-docked value panel turns the parent into a
+              // column and the grid grows to its full content height, spilling
+              // over the footer and status bar.
+              minHeight: 0,
               display: "flex",
               position: "relative",
             }}
