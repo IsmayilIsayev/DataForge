@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-10-28
+
 ### Fixed
 
 - Results grid: with the value panel docked at the bottom, the grid no longer spills over the panel, footer and status bar.
