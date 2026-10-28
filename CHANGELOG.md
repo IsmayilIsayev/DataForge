@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Results grid: double-click opens the value panel again for long, multi-line or JSON values and in read-only grids; other cells are edited in place.
+
 ## [0.5.3] - 2026-10-28
 
 ### Fixed
