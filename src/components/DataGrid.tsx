@@ -46,7 +46,6 @@ const INDEX_WIDTH = 44;
 const DEFAULT_COL_WIDTH = 160;
 const MIN_COL_WIDTH = 56;
 const ROW_HEIGHT = 22;
-const LONG_TEXT_LENGTH = 60;
 const MIN_VIEWER_WIDTH = 280;
 const MIN_VIEWER_HEIGHT = 120;
 const VIEWER_MAX_RATIO = 0.7;
@@ -147,30 +146,6 @@ function toChangeInput(change: PendingChange): ChangeInput {
     return { kind: "delete", pk: change.pk };
   }
   return { kind: "insert", values: change.values };
-}
-
-const MONO_FONT =
-  '12px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace';
-let measureContext: CanvasRenderingContext2D | null | undefined;
-
-function measureText(text: string): number {
-  if (measureContext === undefined) {
-    measureContext = document.createElement("canvas").getContext("2d");
-  }
-  if (!measureContext) return text.length * 7;
-  measureContext.font = MONO_FONT;
-  return measureContext.measureText(text).width;
-}
-
-// Long values are easier to read in the viewer panel than in the grid cell.
-// "Wider than the column" is measured with the grid's 12px mono font plus the
-// 8px padding on each side.
-function isLongValue(value: CellValue, columnWidth: number): boolean {
-  if (typeof value !== "string") return false;
-  if (value.length > LONG_TEXT_LENGTH) return true;
-  if (/[\r\n]/.test(value)) return true;
-  if (cellType(value) === "json") return true;
-  return measureText(value) + 16 > columnWidth;
 }
 
 function prettyValue(value: CellValue, pretty: boolean): string {
@@ -1365,6 +1340,15 @@ export default function DataGrid({
     setCopied(ok ? "Copied cell" : "Copy failed");
   }
 
+  function viewActiveCell() {
+    const cell = focus ?? anchor;
+    if (!cell || cell.row >= sortedRows.length) return;
+    const actual = order[cell.col];
+    if (actual === undefined) return;
+    setViewer({ row: cell.row, col: actual });
+    setGridMenu(null);
+  }
+
   async function copyViewer() {
     if (!viewer || viewer.row >= sortedRows.length) return;
     const value = sortedRows[viewer.row].row[viewer.col] ?? null;
@@ -1484,6 +1468,11 @@ export default function DataGrid({
     const key = event.key.toLowerCase();
     if (!mod) {
       if (editing) return;
+      if (event.shiftKey && event.key === "Enter") {
+        event.preventDefault();
+        viewActiveCell();
+        return;
+      }
       let rowDelta = 0;
       let colDelta = 0;
       if (event.key === "ArrowUp") rowDelta = -1;
@@ -2280,16 +2269,15 @@ export default function DataGrid({
                           }
                           onDoubleClick={() => {
                             if (deletedRow) return;
-                            const columnWidth =
-                              widths[column] ?? DEFAULT_COL_WIDTH;
-                            if (isLongValue(value, columnWidth)) {
+                            if (!canEdit) return;
+                            if (
+                              typeof value === "string" &&
+                              /[\r\n]/.test(value)
+                            ) {
                               setViewer({ row: rowIndex, col: column });
                               setGridMenu(null);
-                            } else if (canEdit) {
-                              startEdit(rowIndex, column);
                             } else {
-                              setViewer({ row: rowIndex, col: column });
-                              setGridMenu(null);
+                              startEdit(rowIndex, column);
                             }
                           }}
                           onContextMenu={(event) =>
@@ -2355,6 +2343,13 @@ export default function DataGrid({
                               onMouseDown={(event) =>
                                 event.stopPropagation()
                               }
+                              onFocus={(event) => {
+                                const input = event.currentTarget;
+                                input.setSelectionRange(
+                                  input.value.length,
+                                  input.value.length,
+                                );
+                              }}
                               onKeyDown={(event) => {
                                 if (event.key === "Enter") {
                                   event.preventDefault();
@@ -2779,7 +2774,7 @@ export default function DataGrid({
               ? "Hover a mark for exact values"
               : activeCell
                 ? displayValue(activeValue)
-                : "Click a cell to preview · double-click to open"}
+                : "Click a cell to preview · double-click to edit · Shift+Enter to view"}
           </span>
           <button
             type="button"
@@ -3258,6 +3253,11 @@ export default function DataGrid({
                 setGridMenu(null);
                 void copyActiveCell();
               }}
+            />
+            <GridMenuItem
+              icon="icon-eye"
+              label="View value"
+              onClick={viewActiveCell}
             />
             {canEdit && (
               <>

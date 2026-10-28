@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Results grid: double-click edits a cell in place; the value viewer opens from the context menu (View value) or Shift+Enter.
+
 ## [0.5.1] - 2026-10-28
 
 ### Security
