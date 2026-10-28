@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-28
+
 ### Security
 
 - Backup: pass the PostgreSQL database name to `pg_dump` via `PGDATABASE` so it cannot be parsed as libpq conninfo.
