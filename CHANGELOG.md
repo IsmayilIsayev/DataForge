@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Schema compare and structure backups: validate server-supplied column type/default metadata before generating DDL; unsafe columns are skipped with a warning.
+- Schema compare: emit a view definition only when it forms exactly one statement; unsafe definitions are skipped with a warning.
+- Data grid: neutralise spreadsheet formula prefixes in single-cell and viewer copy.
+- Query history: never persist parameter values, and redact SQL mentioning `pwd`, `passwd`, `pin`, `credential` or `auth`.
+
 ### Changed
 
 - Results grid: double-click edits a cell in place; the value viewer opens from the context menu (View value) or Shift+Enter.

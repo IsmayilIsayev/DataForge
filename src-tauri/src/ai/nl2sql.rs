@@ -385,6 +385,7 @@ pub async fn nl2sql(
     result.schema_truncated = schema.truncated;
 
     if used_fallback || result.sql.trim().is_empty() {
+        #[cfg(debug_assertions)]
         eprintln!("[ai_nl2sql] raw model response:\n{raw}");
     }
 

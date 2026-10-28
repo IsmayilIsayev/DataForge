@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::core::drivers::Dialect;
+use crate::core::restore::split_statements;
 
 pub const DIFF_TABLE_LIMIT: usize = 500;
 
@@ -127,6 +128,8 @@ pub struct ViewDiff {
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub definition: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -356,7 +359,78 @@ fn narrowing_reason(dialect: Dialect, from: &str, to: &str) -> Option<String> {
     None
 }
 
+/// Reject metadata text that could terminate the generated statement or hide
+/// additional SQL. Type/default expressions are server-supplied, so they may
+/// only contain a single balanced fragment.
+pub(crate) fn safe_metadata_sql(text: &str) -> bool {
+    if text.contains(';')
+        || text.contains("--")
+        || text.contains("/*")
+        || text.contains("*/")
+        || text.contains('\0')
+        || text.contains('\n')
+        || text.contains('\r')
+    {
+        return false;
+    }
+
+    let mut quote: Option<char> = None;
+    let mut depth = 0i32;
+    let mut chars = text.chars().peekable();
+    while let Some(character) = chars.next() {
+        match quote {
+            Some(open) => {
+                if character == open {
+                    if chars.peek() == Some(&open) {
+                        chars.next();
+                    } else {
+                        quote = None;
+                    }
+                }
+            }
+            None => match character {
+                '\'' | '"' => quote = Some(character),
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth < 0 {
+                        return false;
+                    }
+                }
+                _ => {}
+            },
+        }
+    }
+    quote.is_none() && depth == 0
+}
+
+fn column_metadata_safe(column: &ColumnSchema) -> bool {
+    safe_metadata_sql(&column.data_type)
+        && column
+            .default
+            .as_deref()
+            .map(safe_metadata_sql)
+            .unwrap_or(true)
+}
+
+fn skipped_column_comment(name: &str) -> String {
+    format!(
+        "-- skipped: unsafe metadata for column {}",
+        name.replace(['\r', '\n', '\0'], " ")
+    )
+}
+
+fn unsafe_column_warning(name: &str) -> String {
+    format!(
+        "Unsafe metadata for column {name}; skipped from generated SQL."
+    )
+}
+
 pub(crate) fn column_definition(dialect: Dialect, column: &ColumnSchema) -> String {
+    if !column_metadata_safe(column) {
+        return skipped_column_comment(&column.name);
+    }
+
     let mut sql = format!("{} {}", quote(dialect, &column.name), column.data_type.trim());
 
     match dialect {
@@ -402,49 +476,63 @@ pub(crate) fn create_table_sql(
     table: &TableSchema,
     foreign_keys: &[ForeignKeySchema],
 ) -> String {
-    let mut definitions: Vec<String> = table
-        .columns
-        .iter()
-        .map(|column| column_definition(dialect, column))
-        .collect();
-    let pk = primary_key_columns(table);
+    let sqlite_pk_column = if dialect == Dialect::Sqlite {
+        let primary_key = primary_key_columns(table);
+        if primary_key.len() == 1 {
+            table.columns.iter().find(|column| {
+                column.primary_key
+                    && column.auto_increment
+                    && column_metadata_safe(column)
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
-    if dialect == Dialect::Sqlite
-        && pk.len() == 1
-        && table
-            .columns
-            .iter()
-            .any(|column| column.primary_key && column.auto_increment)
-    {
-        if let Some(column) = table.columns.iter().find(|column| column.primary_key) {
-            let mut definition = format!(
-                "{} {} PRIMARY KEY AUTOINCREMENT",
-                quote(dialect, &column.name),
-                column.data_type.trim()
-            );
-            if !column.nullable {
-                definition.push_str(" NOT NULL");
+    let mut definitions: Vec<String> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+
+    for column in &table.columns {
+        if !column_metadata_safe(column) {
+            skipped.push(skipped_column_comment(&column.name));
+            continue;
+        }
+        if let Some(pk_column) = sqlite_pk_column {
+            if column.name == pk_column.name {
+                let mut definition = format!(
+                    "{} {} PRIMARY KEY AUTOINCREMENT",
+                    quote(dialect, &column.name),
+                    column.data_type.trim()
+                );
+                if !column.nullable {
+                    definition.push_str(" NOT NULL");
+                }
+                if let Some(default) = normalize_default(&column.default) {
+                    definition.push_str(" DEFAULT ");
+                    definition.push_str(&default);
+                }
+                definitions.push(definition);
+                continue;
             }
-            if let Some(default) = normalize_default(&column.default) {
-                definition.push_str(" DEFAULT ");
-                definition.push_str(&default);
-            }
-            definitions = table
+        }
+        definitions.push(column_definition(dialect, column));
+    }
+
+    let primary_key: Vec<String> = primary_key_columns(table)
+        .into_iter()
+        .filter(|name| {
+            table
                 .columns
                 .iter()
-                .map(|item| {
-                    if item.name == column.name {
-                        definition.clone()
-                    } else {
-                        column_definition(dialect, item)
-                    }
-                })
-                .collect();
-        }
-    } else if !pk.is_empty() {
+                .any(|column| column.name == *name && column_metadata_safe(column))
+        })
+        .collect();
+    if sqlite_pk_column.is_none() && !primary_key.is_empty() {
         definitions.push(format!(
             "PRIMARY KEY ({})",
-            columns_csv(dialect, &pk)
+            columns_csv(dialect, &primary_key)
         ));
     }
 
@@ -462,10 +550,18 @@ pub(crate) fn create_table_sql(
         }
     }
 
+    let mut body = definitions.join(",\n  ");
+    if !skipped.is_empty() {
+        if !body.is_empty() {
+            body.push_str("\n  ");
+        }
+        body.push_str(&skipped.join("\n  "));
+    }
+
     format!(
         "CREATE TABLE {} (\n  {}\n)",
         quote(dialect, &table.name),
-        definitions.join(",\n  ")
+        body
     )
 }
 
@@ -594,6 +690,15 @@ pub fn diff_schemas(dialect: Dialect, source: &SchemaData, target: &SchemaData) 
     for source_table in &source.tables {
         if !target_names.contains(source_table.name.as_str()) {
             let create_sql = create_table_sql(dialect, source_table, &source.foreign_keys);
+            let warning = {
+                let unsafe_columns: Vec<String> = source_table
+                    .columns
+                    .iter()
+                    .filter(|column| !column_metadata_safe(column))
+                    .map(|column| unsafe_column_warning(&column.name))
+                    .collect();
+                (!unsafe_columns.is_empty()).then(|| unsafe_columns.join(" "))
+            };
             let mut diff = TableDiff {
                 name: source_table.name.clone(),
                 status: "added".to_string(),
@@ -604,8 +709,8 @@ pub fn diff_schemas(dialect: Dialect, source: &SchemaData, target: &SchemaData) 
                 TableDiffItem {
                     kind: "table_added".to_string(),
                     label: format!("+ table {}", source_table.name),
-                    destructive: false,
-                    reason: None,
+                    destructive: warning.is_some(),
+                    reason: warning.clone(),
                     before: None,
                     after: Some(create_sql.clone()),
                     before_column: None,
@@ -617,8 +722,8 @@ pub fn diff_schemas(dialect: Dialect, source: &SchemaData, target: &SchemaData) 
                 create_sql,
                 "create_table",
                 Some(&source_table.name),
-                false,
-                None,
+                warning.is_some(),
+                warning,
             ));
             for index in &source_table.indexes {
                 push_item(
@@ -676,13 +781,14 @@ pub fn diff_schemas(dialect: Dialect, source: &SchemaData, target: &SchemaData) 
                 continue;
             }
 
+            let safe = column_metadata_safe(column);
             push_item(
                 &mut diff,
                 TableDiffItem {
                     kind: "column_added".to_string(),
                     label: format!("+ column {} {}", column.name, column.data_type),
                     destructive: false,
-                    reason: None,
+                    reason: (!safe).then(|| unsafe_column_warning(&column.name)),
                     before: None,
                     after: Some(column_definition(dialect, column)),
                     before_column: None,
@@ -690,6 +796,10 @@ pub fn diff_schemas(dialect: Dialect, source: &SchemaData, target: &SchemaData) 
                     changes: Vec::new(),
                 },
             );
+
+            if !safe {
+                continue;
+            }
 
             if dialect == Dialect::Sqlite
                 && !column.nullable
@@ -791,7 +901,7 @@ pub fn diff_schemas(dialect: Dialect, source: &SchemaData, target: &SchemaData) 
             );
             let not_null = target_column.nullable && !column.nullable;
             let destructive = narrowing.is_some() || not_null;
-            let reason = match (narrowing, not_null) {
+            let mut reason = match (narrowing, not_null) {
                 (Some(narrow), true) => Some(format!(
                     "{narrow} Setting NOT NULL on a nullable column can also fail for existing NULL rows."
                 )),
@@ -802,6 +912,14 @@ pub fn diff_schemas(dialect: Dialect, source: &SchemaData, target: &SchemaData) 
                 )),
                 (None, false) => None,
             };
+            let safe = column_metadata_safe(column);
+            if !safe {
+                let warning = unsafe_column_warning(&column.name);
+                reason = Some(match reason {
+                    Some(existing) => format!("{warning} {existing}"),
+                    None => warning,
+                });
+            }
 
             push_item(
                 &mut diff,
@@ -817,6 +935,10 @@ pub fn diff_schemas(dialect: Dialect, source: &SchemaData, target: &SchemaData) 
                     changes,
                 },
             );
+
+            if !safe {
+                continue;
+            }
 
             match dialect {
                 Dialect::Postgres => {
@@ -1435,6 +1557,16 @@ fn compare_foreign_keys(
     }
 }
 
+fn single_statement(sql: &str, dialect: Dialect) -> bool {
+    split_statements(sql, dialect).len() == 1
+}
+
+fn unsafe_view_warning(name: &str) -> String {
+    format!(
+        "Unsafe view definition for {name}; not included in the generated SQL."
+    )
+}
+
 fn compare_views(
     dialect: Dialect,
     source: &SchemaData,
@@ -1453,44 +1585,64 @@ fn compare_views(
     for view in &source.views {
         match target_by_name.get(view.name.as_str()) {
             None => {
-                result.push(ViewDiff {
-                    name: view.name.clone(),
-                    status: "added".to_string(),
-                    definition: view.definition.clone(),
-                });
                 match view.definition.as_deref() {
                     Some(definition) if !definition.trim().is_empty() => {
-                        phases.add_views.push(statement(
+                        let sql = format!(
+                            "CREATE VIEW {} AS {}",
+                            quote(dialect, &view.name),
+                            definition.trim().trim_end_matches(';')
+                        );
+                        if single_statement(&sql, dialect) {
+                            result.push(ViewDiff {
+                                name: view.name.clone(),
+                                status: "added".to_string(),
+                                definition: view.definition.clone(),
+                                reason: None,
+                            });
+                            phases.add_views.push(statement(
+                                sql,
+                                "create_view",
+                                None,
+                                false,
+                                None,
+                            ));
+                        } else {
+                            result.push(ViewDiff {
+                                name: view.name.clone(),
+                                status: "added".to_string(),
+                                definition: None,
+                                reason: Some(unsafe_view_warning(&view.name)),
+                            });
+                        }
+                    }
+                    _ => {
+                        result.push(ViewDiff {
+                            name: view.name.clone(),
+                            status: "added".to_string(),
+                            definition: view.definition.clone(),
+                            reason: None,
+                        });
+                        phases.add_views.push(note(
                             format!(
-                                "CREATE VIEW {} AS {}",
-                                quote(dialect, &view.name),
-                                definition.trim().trim_end_matches(';')
+                                "-- view definition unavailable: {} (create it manually)",
+                                quote(dialect, &view.name)
                             ),
-                            "create_view",
-                            None,
-                            false,
                             None,
                         ));
                     }
-                    _ => phases.add_views.push(note(
-                        format!(
-                            "-- view definition unavailable: {} (create it manually)",
-                            quote(dialect, &view.name)
-                        ),
-                        None,
-                    )),
                 }
             }
             Some(target_view) => {
                 let source_definition = normalize_default(&view.definition);
                 let target_definition = normalize_default(&target_view.definition);
                 if source_definition != target_definition {
-                    result.push(ViewDiff {
-                        name: view.name.clone(),
-                        status: "changed".to_string(),
-                        definition: view.definition.clone(),
-                    });
                     let Some(definition) = source_definition else {
+                        result.push(ViewDiff {
+                            name: view.name.clone(),
+                            status: "changed".to_string(),
+                            definition: view.definition.clone(),
+                            reason: None,
+                        });
                         phases.add_views.push(note(
                             format!(
                                 "-- view definition unavailable: {} (update it manually)",
@@ -1500,6 +1652,34 @@ fn compare_views(
                         ));
                         continue;
                     };
+                    let create_sql = if dialect == Dialect::Sqlite {
+                        format!(
+                            "CREATE VIEW {} AS {}",
+                            quote(dialect, &view.name),
+                            definition.trim_end_matches(';')
+                        )
+                    } else {
+                        format!(
+                            "CREATE OR REPLACE VIEW {} AS {}",
+                            quote(dialect, &view.name),
+                            definition.trim_end_matches(';')
+                        )
+                    };
+                    if !single_statement(&create_sql, dialect) {
+                        result.push(ViewDiff {
+                            name: view.name.clone(),
+                            status: "changed".to_string(),
+                            definition: None,
+                            reason: Some(unsafe_view_warning(&view.name)),
+                        });
+                        continue;
+                    }
+                    result.push(ViewDiff {
+                        name: view.name.clone(),
+                        status: "changed".to_string(),
+                        definition: view.definition.clone(),
+                        reason: None,
+                    });
                     if dialect == Dialect::Sqlite {
                         phases.add_views.push(statement(
                             format!("DROP VIEW {}", quote(dialect, &view.name)),
@@ -1508,30 +1688,14 @@ fn compare_views(
                             false,
                             None,
                         ));
-                        phases.add_views.push(statement(
-                            format!(
-                                "CREATE VIEW {} AS {}",
-                                quote(dialect, &view.name),
-                                definition.trim_end_matches(';')
-                            ),
-                            "create_view",
-                            None,
-                            false,
-                            None,
-                        ));
-                    } else {
-                        phases.add_views.push(statement(
-                            format!(
-                                "CREATE OR REPLACE VIEW {} AS {}",
-                                quote(dialect, &view.name),
-                                definition.trim_end_matches(';')
-                            ),
-                            "create_view",
-                            None,
-                            false,
-                            None,
-                        ));
                     }
+                    phases.add_views.push(statement(
+                        create_sql,
+                        "create_view",
+                        None,
+                        false,
+                        None,
+                    ));
                 }
             }
         }
@@ -1545,6 +1709,7 @@ fn compare_views(
             name: view.name.clone(),
             status: "removed".to_string(),
             definition: view.definition.clone(),
+            reason: None,
         });
         phases.drop_views.push(statement(
             format!("DROP VIEW {}", quote(dialect, &view.name)),
@@ -1561,8 +1726,8 @@ fn compare_views(
 #[cfg(test)]
 mod tests {
     use super::{
-        diff_schemas, ColumnSchema, ForeignKeySchema, IndexSchema, SchemaData, TableSchema,
-        ViewSchema,
+        create_table_sql, diff_schemas, safe_metadata_sql, ColumnSchema, ForeignKeySchema,
+        IndexSchema, SchemaData, TableSchema, ViewSchema,
     };
     use crate::core::drivers::Dialect;
 
@@ -1974,5 +2139,126 @@ mod tests {
             .statements
             .iter()
             .any(|statement| statement.kind == "drop_view" && !statement.destructive));
+    }
+
+    #[test]
+    fn metadata_validator_accepts_normal_type_and_default_text() {
+        for text in [
+            "varchar(255)",
+            "numeric(10,2)",
+            "enum('a','b')",
+            "'it''s'",
+            "now()",
+            "nextval('s'::regclass)",
+        ] {
+            assert!(safe_metadata_sql(text), "{text} should be accepted");
+        }
+    }
+
+    #[test]
+    fn metadata_validator_rejects_statement_breakouts() {
+        for text in [
+            "int) ; DROP TABLE audit_log; --",
+            "1); DROP TABLE audit_log; --",
+            "int\nDROP TABLE audit_log",
+            "int -- comment",
+            "int /* comment */",
+            "varchar(255",
+            "varchar255)",
+            "'unterminated",
+            "\"unterminated",
+        ] {
+            assert!(!safe_metadata_sql(text), "{text} should be rejected");
+        }
+    }
+
+    #[test]
+    fn unsafe_column_metadata_is_skipped_and_commented() {
+        let mut unsafe_column = column("payload", "int) ; DROP TABLE audit_log; --", true, false);
+        unsafe_column.default = Some("1); DROP TABLE audit_log; --".to_string());
+        let table = table(
+            "users",
+            vec![column("id", "integer", false, true), unsafe_column],
+        );
+
+        let sql = create_table_sql(Dialect::Postgres, &table, &[]);
+
+        assert!(sql.contains("\"id\" integer NOT NULL"));
+        assert!(sql.contains("-- skipped: unsafe metadata for column payload"));
+        assert!(!sql.contains("DROP TABLE"));
+        assert!(!sql.contains("payload\""));
+    }
+
+    #[test]
+    fn unsafe_added_column_has_no_statement_and_warns() {
+        let source = schema(vec![table(
+            "users",
+            vec![
+                column("id", "integer", false, true),
+                column("payload", "int) ; DROP TABLE audit_log; --", true, false),
+            ],
+        )]);
+        let target = schema(vec![table(
+            "users",
+            vec![column("id", "integer", false, true)],
+        )]);
+
+        let diff = diff_schemas(Dialect::Postgres, &source, &target);
+
+        assert_eq!(kinds(&diff), Vec::<&str>::new());
+        let item = diff.tables[0]
+            .items
+            .iter()
+            .find(|item| item.kind == "column_added")
+            .expect("column item");
+        assert!(item.reason.as_deref().unwrap_or("").contains("Unsafe metadata"));
+        assert!(!diff.statements.iter().any(|statement| statement.sql.contains("DROP TABLE")));
+    }
+
+    #[test]
+    fn unsafe_view_definition_is_skipped() {
+        let source = SchemaData {
+            database: "db".to_string(),
+            tables: Vec::new(),
+            foreign_keys: Vec::new(),
+            views: vec![ViewSchema {
+                name: "v".to_string(),
+                definition: Some("SELECT 1; DROP TABLE audit_log; --".to_string()),
+            }],
+            truncated: false,
+        };
+        let target = schema(Vec::new());
+
+        let diff = diff_schemas(Dialect::Postgres, &source, &target);
+
+        assert!(diff.statements.is_empty());
+        assert!(diff.views[0]
+            .reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("Unsafe view definition"));
+    }
+
+    #[test]
+    fn view_definition_with_quoted_semicolon_is_kept() {
+        let source = SchemaData {
+            database: "db".to_string(),
+            tables: Vec::new(),
+            foreign_keys: Vec::new(),
+            views: vec![ViewSchema {
+                name: "v".to_string(),
+                definition: Some(
+                    "SELECT 'a;b' AS value\nFROM (SELECT 1) AS source".to_string(),
+                ),
+            }],
+            truncated: false,
+        };
+        let target = schema(Vec::new());
+
+        let diff = diff_schemas(Dialect::Postgres, &source, &target);
+
+        assert_eq!(kinds(&diff), vec!["create_view"]);
+        assert!(diff.statements[0].sql.contains("'a;b'"));
+        assert!(diff.views[0].reason.is_none());
     }
 }

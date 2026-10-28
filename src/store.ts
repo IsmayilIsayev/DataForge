@@ -196,8 +196,8 @@ function confirmDiscard(count: number): boolean {
 
 const QUERY_HISTORY_KEY = "df-query-history";
 const QUERY_HISTORY_MAX = 100;
-const QUERY_HISTORY_SECRET = /(IDENTIFIED\s+BY|PASSWORD|SECRET|TOKEN|API_KEY)/i;
-const PARAM_SECRET = /pass|secret|token|key/i;
+const QUERY_HISTORY_SECRET =
+  /(IDENTIFIED\s+BY|PASSWORD|SECRET|TOKEN|API_KEY|\bPWD\b|\bPASSWD\b|\bPIN\b|\bCREDENTIAL\b|\bAUTH\b)/i;
 const PARAM_TYPES = new Set(["Text", "Number", "Boolean", "NULL"]);
 
 export interface QueryHistoryEntry {
@@ -228,7 +228,7 @@ function loadHistoryParams(value: unknown): QueryParam[] | undefined {
       {
         name: param.name,
         type: param.type as QueryParam["type"],
-        value: param.value as string | null,
+        value: null,
       },
     ];
   });
@@ -747,11 +747,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
       if (!trimmed || QUERY_HISTORY_SECRET.test(trimmed)) {
         return {};
       }
-      const storedParams = params?.map((param) =>
-        PARAM_SECRET.test(param.name)
-          ? { ...param, value: "••••" }
-          : param,
-      );
+      const storedParams = params?.map((param) => ({
+        name: param.name,
+        type: param.type,
+        value: null,
+      }));
       const entry: QueryHistoryEntry = {
         sql: trimmed,
         ...(connId ? { connId } : {}),

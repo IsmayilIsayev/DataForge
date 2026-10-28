@@ -337,6 +337,18 @@ function ViewGroup({ view }: { view: ViewDiff }) {
             {view.definition.replace(/\s+/g, " ").slice(0, 220)}
           </span>
         )}
+        {view.reason && (
+          <span
+            style={{
+              display: "block",
+              color: "var(--er)",
+              fontSize: 10.5,
+              lineHeight: 1.35,
+            }}
+          >
+            {view.reason}
+          </span>
+        )}
       </span>
     </div>
   );

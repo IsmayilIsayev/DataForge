@@ -7,6 +7,7 @@ use serde_json::{Map, Value};
 use tauri::{Emitter, State};
 use tauri_plugin_dialog::DialogExt;
 
+use crate::commands::backup::safe_stem;
 use crate::commands::edit::{quote_ident, quote_lit, table_ref};
 use crate::core::backup::value_literal;
 use crate::core::drivers::{Dialect, Driver};
@@ -947,7 +948,7 @@ pub async fn export_table(
         .map(|column| column.data_type.clone())
         .collect();
 
-    let default_name = format!("{table}.{}", format.extension());
+    let default_name = format!("{}.{}", safe_stem(&table), format.extension());
     let path = match save_file_dialog(&app, default_name, format).await? {
         Some(path) => path,
         None => return Ok(None),

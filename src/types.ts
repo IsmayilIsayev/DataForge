@@ -214,6 +214,7 @@ export interface ViewDiff {
   name: string;
   status: "added" | "removed" | "changed";
   definition?: string | null;
+  reason?: string | null;
 }
 
 export interface SchemaDiff {

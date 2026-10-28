@@ -117,8 +117,8 @@ export default function HistoryDialog({ onClose, onPick }: Props) {
                 onDoubleClick={() => pick(item)}
                 title={
                   item.params && item.params.length > 0
-                    ? `Double-click to load into the editor\n${item.params
-                        .map((param) => `${param.name} = ${param.value ?? "NULL"}`)
+                    ? `Double-click to load into the editor\nParameters: ${item.params
+                        .map((param) => `${param.name} (${param.type})`)
                         .join(", ")}`
                     : "Double-click to load into the editor"
                 }

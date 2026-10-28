@@ -1004,6 +1004,26 @@ mod tests {
     }
 
     #[test]
+    fn structure_statements_skip_unsafe_column_metadata() {
+        let mut schema = fixture();
+        let mut unsafe_column = column("payload", "int) ; DROP TABLE audit_log; --", true, false);
+        unsafe_column.default = Some("1); DROP TABLE audit_log; --".to_string());
+        schema.tables[0].columns.push(unsafe_column);
+
+        let sql = structure_statements(
+            Dialect::Postgres,
+            "shop",
+            &schema,
+            &["users".to_string()],
+            false,
+        )
+        .join("\n");
+
+        assert!(sql.contains("-- skipped: unsafe metadata for column payload"));
+        assert!(!sql.contains("DROP TABLE"));
+    }
+
+    #[test]
     fn value_literals_escape_quotes_backslashes_null_and_binary() {
         let escaped = Value::String("O'Brien\\path".to_string());
 

@@ -892,7 +892,11 @@ export default function DataGrid({
     );
 
   const selection = anchor && focus ? normalizeRange(anchor, focus) : null;
-  const activeCell = viewer ?? focus ?? anchor;
+  // viewer.col is a data column index; focus/anchor.col are display positions.
+  const focusCell = focus ?? anchor;
+  const activeCell =
+    viewer ??
+    (focusCell ? { row: focusCell.row, col: order[focusCell.col] ?? focusCell.col } : null);
   const activeValue =
     activeCell && activeCell.row < sortedRows.length
       ? (sortedRows[activeCell.row].row[activeCell.col] ?? null)
@@ -1336,7 +1340,7 @@ export default function DataGrid({
     if (!activeCell || activeCell.row >= sortedRows.length) return;
     const row = sortedRows[activeCell.row];
     const value = row.row[activeCell.col] ?? null;
-    const ok = await copyText(rawValue(value));
+    const ok = await copyText(formulaSafeText(value, rawValue(value)));
     setCopied(ok ? "Copied cell" : "Copy failed");
   }
 
@@ -1352,7 +1356,7 @@ export default function DataGrid({
   async function copyViewer() {
     if (!viewer || viewer.row >= sortedRows.length) return;
     const value = sortedRows[viewer.row].row[viewer.col] ?? null;
-    const ok = await copyText(prettyValue(value, pretty));
+    const ok = await copyText(formulaSafeText(value, prettyValue(value, pretty)));
     setCopied(ok ? "Copied cell" : "Copy failed");
   }
 

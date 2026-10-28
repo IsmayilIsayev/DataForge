@@ -89,7 +89,7 @@ fn ensure_extension(path: String, gzip: bool) -> String {
     }
 }
 
-fn safe_stem(value: &str) -> String {
+pub(crate) fn safe_stem(value: &str) -> String {
     let stem: String = value
         .chars()
         .map(|character| {
