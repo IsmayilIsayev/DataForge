@@ -272,6 +272,8 @@ impl MssqlDriver {
         if input.trust_cert.unwrap_or(false) {
             config.trust_cert();
         }
+        // tiberius 0.13 defaults to a 30s per-round-trip limit; long queries are cancelled by the user instead.
+        config.command_timeout(None);
 
         connect_client(&config).await?;
         Ok(Self { config, database })

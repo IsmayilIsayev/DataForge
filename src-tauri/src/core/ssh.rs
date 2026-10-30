@@ -1,10 +1,7 @@
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use russh::client;
-use russh::keys::key::PublicKey;
-use russh::keys::load_secret_key;
+use russh::keys::{load_secret_key, HashAlg, PrivateKeyWithHashAlg, PublicKeyOrCertificate};
 use russh::Disconnect;
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
@@ -70,18 +67,15 @@ struct ClientHandler {
 impl client::Handler for ClientHandler {
     type Error = russh::Error;
 
-    // This is the desugared form of the `async fn` in `client::Handler`. It
-    // avoids pulling `async-trait` in as a direct dependency for one method.
-    fn check_server_key<'life0, 'life1, 'async_trait>(
-        &'life0 mut self,
-        server_public_key: &'life1 PublicKey,
-    ) -> Pin<Box<dyn Future<Output = Result<bool, Self::Error>> + Send + 'async_trait>>
-    where
-        Self: 'async_trait,
-        'life0: 'async_trait,
-        'life1: 'async_trait,
-    {
-        let offered = format!("SHA256:{}", server_public_key.fingerprint());
+    async fn check_server_key(
+        &mut self,
+        server_public_key: &PublicKeyOrCertificate,
+    ) -> Result<bool, Self::Error> {
+        // Displays as "SHA256:<base64>", the same spelling older releases stored.
+        let offered = server_public_key
+            .public_key()
+            .fingerprint(HashAlg::Sha256)
+            .to_string();
         let accepted = match &self.expected {
             Some(expected) => fingerprints_match(expected, &offered),
             None => true,
@@ -92,7 +86,7 @@ impl client::Handler for ClientHandler {
             state.mismatch = !accepted;
         }
 
-        Box::pin(async move { Ok(accepted) })
+        Ok(accepted)
     }
 }
 
@@ -146,6 +140,7 @@ async fn authenticate(
         SshAuth::Password => session
             .authenticate_password(cfg.username.as_str(), secret.unwrap_or(""))
             .await
+            .map(|result| result.success())
             .map_err(|error| AppError::Config(format!("SSH authentication failed: {error}")))?,
         SshAuth::Key => {
             let key_path = cfg
@@ -165,9 +160,20 @@ async fn authenticate(
             .map_err(|error| AppError::Config(format!("SSH key: {error}")))?
             .map_err(|error| AppError::Config(format!("SSH key could not be loaded: {error}")))?;
 
-            session
-                .authenticate_publickey(cfg.username.as_str(), Arc::new(key))
+            // RSA keys must sign with a SHA-2 hash the server accepts; ignored for other key types.
+            let hash_alg = session
+                .best_supported_rsa_hash()
                 .await
+                .ok()
+                .flatten()
+                .flatten();
+            session
+                .authenticate_publickey(
+                    cfg.username.as_str(),
+                    PrivateKeyWithHashAlg::new(Arc::new(key), hash_alg),
+                )
+                .await
+                .map(|result| result.success())
                 .map_err(|error| AppError::Config(format!("SSH authentication failed: {error}")))?
         }
     };
@@ -362,6 +368,19 @@ mod tests {
         assert!(fingerprints_match("abc123", "SHA256:abc123"));
         assert!(fingerprints_match(" sha256:abc123 ", "SHA256:abc123"));
         assert!(!fingerprints_match("SHA256:abc123", "SHA256:def456"));
+    }
+
+    #[test]
+    fn host_key_fingerprint_matches_openssh_spelling() {
+        // Saved host keys must keep matching after russh upgrades; this is `ssh-keygen -lf` output.
+        let key = russh::keys::PublicKey::from_openssh(
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMV9icZUwNLXs5+ymonI6d2rtkcQNmCkG2WfZmvKz1Y8",
+        )
+        .expect("valid public key");
+        assert_eq!(
+            key.fingerprint(russh::keys::HashAlg::Sha256).to_string(),
+            "SHA256:Azotq5ZlaNkxuQXufDglUoGRHCpbcUyDsE9F3F3bavU"
+        );
     }
 
     #[test]
