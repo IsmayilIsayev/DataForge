@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.6] - 2026-10-30
+
+### Security
+- Updated vite to 6.4 and DOMPurify (Monaco) to 3.4.17, closing all open Dependabot alerts.
+
 ## [0.5.5] - 2026-10-28
 
 ### Added
