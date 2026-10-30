@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.7] - 2026-10-30
+
+### Security
+- Updated zip to 9.1 (via rust_xlsxwriter 0.102 and tauri-plugin-updater 2.14.1) and tokio to 1.54.1.
+- Refreshed the stale Cargo.lock so builds and dependency scans use the same versions.
+
 ## [0.5.6] - 2026-10-30
 
 ### Security
