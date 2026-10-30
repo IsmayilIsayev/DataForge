@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.8] - 2026-10-30
+
+### Security
+- Updated the SSH client (russh 0.65) and the SQL Server driver (tiberius 0.13, rustls 0.23), closing the remaining SSH and TLS advisories.
+
+### Changed
+- SQL Server queries keep running without a client-side time limit, as before (tiberius 0.13 would otherwise stop them after 30 seconds).
+
 ## [0.5.7] - 2026-10-30
 
 ### Security
