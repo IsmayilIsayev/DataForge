@@ -25,7 +25,7 @@ interface Props {
   settingsSignal?: number;
   chatRequest?: ChatRequest | null;
   onChatRequestHandled?: () => void;
-  onRunSql?: (sql: string) => void;
+  onRunSql?: (sql: string, chart?: boolean) => void;
   uiLanguage?: string;
 }
 

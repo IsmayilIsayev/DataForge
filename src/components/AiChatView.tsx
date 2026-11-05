@@ -14,7 +14,7 @@ interface Props {
   uiLanguage: string;
   onConfigure: () => void;
   onInsertSql: (sql: string) => void;
-  onRunSql?: (sql: string) => void;
+  onRunSql?: (sql: string, chart?: boolean) => void;
   request?: ChatRequest | null;
   onRequestHandled?: () => void;
 }
@@ -191,6 +191,18 @@ export default function AiChatView({
               style={{ height: 20, padding: "0 7px", fontSize: 11 }}
             >
               Run
+            </button>
+          )}
+          {onRunSql && /^\s*(select|with)\b/i.test(block.text) && (
+            <button
+              type="button"
+              className="v2-btn"
+              onClick={() => onRunSql(block.text, true)}
+              disabled={!isConnected}
+              title="Run the query and show the result as a chart"
+              style={{ height: 20, padding: "0 7px", fontSize: 11 }}
+            >
+              Chart
             </button>
           )}
         </div>

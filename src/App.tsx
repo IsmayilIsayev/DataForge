@@ -977,7 +977,7 @@ export default function App() {
   );
 
   const handleRunChatSql = useCallback(
-    (sql: string) => {
+    (sql: string, chart = false) => {
       const store = useAppStore.getState();
       if (!sql.trim()) return;
       if (!store.activeConnId || !store.connected[store.activeConnId]) {
@@ -1003,7 +1003,12 @@ export default function App() {
         sql,
         store.activeDb ?? undefined,
         tabId,
-      );
+      ).then(() => {
+        const view = useAppStore.getState().tabStates[tabId];
+        if (chart && view?.result?.rows.length) {
+          useAppStore.getState().setResultView("chart", tabId);
+        }
+      });
     },
     [executeSql],
   );
