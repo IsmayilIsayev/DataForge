@@ -424,6 +424,65 @@ pub async fn backup_capabilities(
     })
 }
 
+/// Back up every table of `database` into `path` with the built-in writer
+/// (scheduled backups). Returns the row count; a failed file is removed.
+pub(crate) async fn backup_all_to(
+    app: &tauri::AppHandle,
+    conn_id: &str,
+    database: &str,
+    mode: DumpMode,
+    gzip: bool,
+    path: &str,
+) -> AppResult<u64> {
+    let state = app.state::<AppState>();
+    let driver = state.ensure_driver(conn_id).await?;
+    let dialect = driver.dialect();
+    let tables: Vec<String> = driver
+        .list_tables(database)
+        .await?
+        .into_iter()
+        .filter(|table| table.kind == TableKind::Table)
+        .map(|table| table.name)
+        .collect();
+    if tables.is_empty() {
+        return Err(AppError::Config(format!("{database} has no tables to back up")));
+    }
+    let options = DumpOptions {
+        mode: if supports_structure(dialect) { mode } else { DumpMode::Data },
+        ..DumpOptions::default()
+    };
+    let schema = if options.mode.includes_structure() || dialect == Dialect::Postgres {
+        Some(driver.get_diff_schema(Some(database)).await?)
+    } else {
+        None
+    };
+    let id = format!("schedule-{}", uuid::Uuid::new_v4());
+    let result = run_builtin(
+        app,
+        &state,
+        driver,
+        database,
+        &tables,
+        schema.as_ref(),
+        &options,
+        path,
+        gzip,
+        &id,
+    )
+    .await;
+    match result {
+        Ok((false, rows)) => Ok(rows),
+        Ok((true, _)) => {
+            let _ = std::fs::remove_file(path);
+            Err(AppError::Cancelled("backup cancelled".to_string()))
+        }
+        Err(error) => {
+            let _ = std::fs::remove_file(path);
+            Err(error)
+        }
+    }
+}
+
 #[tauri::command(rename_all = "snake_case")]
 #[allow(clippy::too_many_arguments)]
 pub async fn backup_database(
