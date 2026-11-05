@@ -154,13 +154,19 @@ function inferPreset(config: AiConfig): AiPreset {
   if (config.provider === "openai") return "openai";
   if (config.provider === "google") return "google";
 
-  const url = (config.base_url ?? "").toLowerCase();
-  if (url.includes("api.openai.com")) return "openai";
-  if (url.includes("openrouter.ai")) return "openrouter";
-  if (url.includes("api.groq.com")) return "groq";
-  if (url.includes(":11434")) return "ollama";
-  if (url.includes(":1234")) return "lmstudio";
-  if (url.includes("localhost") || url.includes("127.0.0.1")) return "opencode";
+  let host = "";
+  let port = "";
+  try {
+    ({ hostname: host, port } = new URL(config.base_url ?? ""));
+  } catch {
+    return "custom";
+  }
+  if (host === "api.openai.com") return "openai";
+  if (host === "openrouter.ai") return "openrouter";
+  if (host === "api.groq.com") return "groq";
+  if (port === "11434") return "ollama";
+  if (port === "1234") return "lmstudio";
+  if (host === "localhost" || host === "127.0.0.1") return "opencode";
   return "custom";
 }
 
