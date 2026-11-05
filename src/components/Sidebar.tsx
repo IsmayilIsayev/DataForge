@@ -45,6 +45,7 @@ const StructureDialog = lazy(() => import("./StructureDialog"));
 const ImportCsvDialog = lazy(() => import("./ImportCsvDialog"));
 const GenerateTestDataDialog = lazy(() => import("./GenerateTestDataDialog"));
 const BackupDialog = lazy(() => import("./BackupDialog"));
+const TransferDialog = lazy(() => import("./TransferDialog"));
 const RestoreDialog = lazy(() => import("./RestoreDialog"));
 
 const dialogFallback = (
@@ -473,6 +474,10 @@ export default function Sidebar({
     table: string;
   } | null>(null);
   const [backupFor, setBackupFor] = useState<{
+    connection: ConnectionMeta;
+    database: string;
+  } | null>(null);
+  const [transferFor, setTransferFor] = useState<{
     connection: ConnectionMeta;
     database: string;
   } | null>(null);
@@ -2049,6 +2054,18 @@ export default function Sidebar({
                   }}
                 />
                 <MenuItem
+                  icon="icon-arrow-right-left"
+                  label="Transfer data…"
+                  onClick={() => {
+                    const menu = contextMenu;
+                    setContextMenu(null);
+                    setTransferFor({
+                      connection: contextConnection,
+                      database: menu.database,
+                    });
+                  }}
+                />
+                <MenuItem
                   icon="icon-download"
                   label="Backup…"
                   onClick={() => {
@@ -2422,6 +2439,17 @@ export default function Sidebar({
             connection={backupFor.connection}
             database={backupFor.database}
             onClose={() => setBackupFor(null)}
+          />
+        </Suspense>
+      )}
+
+      {transferFor && (
+        <Suspense fallback={dialogFallback}>
+          <TransferDialog
+            connection={transferFor.connection}
+            database={transferFor.database}
+            onClose={() => setTransferFor(null)}
+            onDone={refreshDatabase}
           />
         </Suspense>
       )}

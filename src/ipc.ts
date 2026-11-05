@@ -37,6 +37,7 @@ import type {
   TestDataColumnConfig,
   TestDataLocale,
   TestDataPreview,
+  TransferSummary,
 } from "./types";
 
 export const listConnections = () =>
@@ -335,6 +336,29 @@ export const exportTable = (
 
 export const cancelOperation = (operationId: string) =>
   invoke<void>("cancel_operation", { operation_id: operationId });
+
+export type TransferIfExists = "append" | "replace" | "skip";
+
+export interface TransferRequest {
+  sourceConn: string;
+  sourceDb: string;
+  targetConn: string;
+  targetDb: string;
+  tables: string[];
+  ifExists: TransferIfExists;
+  transferId: string;
+}
+
+export const transferTables = (request: TransferRequest) =>
+  invoke<TransferSummary>("transfer_tables", {
+    source_conn: request.sourceConn,
+    source_db: request.sourceDb,
+    target_conn: request.targetConn,
+    target_db: request.targetDb,
+    tables: request.tables,
+    if_exists: request.ifExists,
+    transfer_id: request.transferId,
+  });
 
 export const backupCapabilities = (connId: string) =>
   invoke<BackupCapabilities>("backup_capabilities", { conn_id: connId });

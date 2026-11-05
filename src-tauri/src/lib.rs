@@ -307,6 +307,7 @@ pub fn run() {
             commands::portable::apply_connections_import,
             commands::import::preview_csv,
             commands::import::import_csv,
+            commands::transfer::transfer_tables,
             commands::test_data::test_data_columns,
             commands::test_data::preview_test_data,
             commands::test_data::generate_rows,

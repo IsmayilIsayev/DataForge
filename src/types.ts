@@ -504,6 +504,29 @@ export interface BackupCapabilities {
   external_tool: string | null;
 }
 
+export interface TableTransfer {
+  table: string;
+  rows: number;
+  created: boolean;
+  skipped: boolean;
+  dropped_columns: string[];
+  error: string | null;
+}
+
+export interface TransferSummary {
+  tables: TableTransfer[];
+  cancelled: boolean;
+}
+
+export interface TransferProgress {
+  id: string;
+  table: string;
+  table_index: number;
+  tables_total: number;
+  rows: number;
+  done: boolean;
+}
+
 export interface BackupProgress {
   id: string;
   table?: string | null;
