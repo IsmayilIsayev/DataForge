@@ -613,6 +613,9 @@ export default function AiPanel({
     <form
       onSubmit={handleSaveSettings}
       style={{
+        flex: 1,
+        minHeight: 0,
+        overflowY: "auto",
         display: "flex",
         flexDirection: "column",
         gap: 10,
@@ -771,6 +774,7 @@ export default function AiPanel({
       style={{
         height: "100%",
         minHeight: 0,
+        minWidth: 0,
         display: "flex",
         flexDirection: "column",
         position: "relative",
@@ -1123,6 +1127,8 @@ export default function AiPanel({
                         fontFamily: "var(--mono)",
                         fontSize: 12,
                         lineHeight: "18px",
+                        whiteSpace: "pre-wrap",
+                        wordBreak: "break-word",
                       }}
                     >
                       {sqlHighlight(result.sql)}
@@ -1419,8 +1425,9 @@ export default function AiPanel({
                   role="dialog"
                   aria-label="Choose a model"
                   style={{
+                    // The panel sits at the window's right edge: grow leftwards from the trigger's right end.
                     position: "absolute",
-                    left: 0,
+                    right: 0,
                     bottom: "calc(100% + 5px)",
                     zIndex: 30,
                     width: 280,

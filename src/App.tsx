@@ -2635,6 +2635,7 @@ export default function App() {
                 background: "var(--sf)",
                 borderLeft: "1px solid var(--bd)",
                 minHeight: 0,
+                minWidth: 0,
               }}
             >
               <Suspense fallback={<div style={{ flex: 1 }} />}>

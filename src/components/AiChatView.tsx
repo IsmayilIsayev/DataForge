@@ -235,7 +235,8 @@ export default function AiChatView({
         style={{
           flex: 1,
           minHeight: 0,
-          overflow: "auto",
+          overflowX: "hidden",
+          overflowY: "auto",
           display: "flex",
           flexDirection: "column",
           gap: 10,
@@ -281,10 +282,12 @@ export default function AiChatView({
                   color: "var(--tx)",
                   fontSize: 12.5,
                   lineHeight: 1.5,
+                  // Long SQL, URLs or tokens have no spaces; let them wrap instead of widening the panel.
+                  overflowWrap: "anywhere",
                 }}
               >
                 {user ? (
-                  <span style={{ whiteSpace: "pre-wrap" }}>
+                  <span style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
                     {message.content}
                   </span>
                 ) : (
