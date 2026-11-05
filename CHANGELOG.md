@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.10] - 2026-11-06
+
 ### Added
 - Transfer data (database right-click → Transfer data…): copy tables to another connection or database, across MySQL, PostgreSQL, SQLite and SQL Server. Missing tables are created with their columns and primary key; existing ones can get the rows added, replaced or be skipped. Each table runs in its own transaction, with progress and Cancel.
 - AI chat: a Chart button next to suggested SELECT queries runs the query and opens the result as a chart.
