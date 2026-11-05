@@ -1,5 +1,5 @@
 import { isProduction, isReadOnly } from "./environment";
-import { classifySql } from "./sqlGuard";
+import { classifyRedis, classifySql } from "./sqlGuard";
 import { useAppStore } from "./store";
 import type { ConnectionMeta } from "./types";
 
@@ -42,7 +42,8 @@ export async function guardSqlExecution(
   const connection = resolveConnection(connectionOrId);
   if (!connection || !sql.trim()) return { allow: true };
 
-  const classification = classifySql(sql);
+  const classification =
+    connection.dialect === "redis" ? classifyRedis(sql) : classifySql(sql);
   const needsConfirmation =
     classification.hasWrite || options.forceProductionConfirm === true;
   if (!needsConfirmation) return { allow: true };

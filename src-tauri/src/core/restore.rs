@@ -583,6 +583,15 @@ impl SqlSplitter {
 /// Split a complete SQL string. This is the original `run_query` entry point
 /// kept as a thin wrapper around the incremental splitter.
 pub fn split_statements(sql: &str, dialect: Dialect) -> Vec<String> {
+    // Redis runs one command per line; '#' starts a comment line.
+    if dialect == Dialect::Redis {
+        return sql
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(str::to_string)
+            .collect();
+    }
     let mut splitter = SqlSplitter::new(dialect);
     let mut statements = Vec::new();
     splitter.feed_records(sql.as_bytes(), &mut statements);

@@ -124,7 +124,7 @@ fn binary_literal(dialect: Dialect, hex: &str) -> String {
         Dialect::Mysql | Dialect::Mssql => format!("0x{hex}"),
         Dialect::Sqlite => format!("X'{hex}'"),
         Dialect::Clickhouse => format!("unhex('{hex}')"),
-        Dialect::Mongodb => quote_lit(dialect, Some(hex)),
+        Dialect::Mongodb | Dialect::Redis => quote_lit(dialect, Some(hex)),
     }
 }
 

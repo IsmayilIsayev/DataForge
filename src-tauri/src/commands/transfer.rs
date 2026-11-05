@@ -436,10 +436,11 @@ pub async fn transfer_tables(
             target.dialect_name()
         )));
     }
-    if source.dialect() == Dialect::Mongodb {
-        return Err(AppError::Config(
-            "Transfer from MongoDB is not supported yet".to_string(),
-        ));
+    if matches!(source.dialect(), Dialect::Mongodb | Dialect::Redis) {
+        return Err(AppError::Config(format!(
+            "Transfer from {} is not supported yet",
+            source.dialect_name()
+        )));
     }
 
     let existing: Vec<String> = target

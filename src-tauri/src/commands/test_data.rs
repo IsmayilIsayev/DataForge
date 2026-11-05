@@ -216,7 +216,7 @@ async fn unique_columns(
                 }
             }
         }
-        Dialect::Mongodb | Dialect::Clickhouse => {}
+        Dialect::Mongodb | Dialect::Clickhouse | Dialect::Redis => {}
     }
 
     Ok(result)
@@ -327,7 +327,7 @@ async fn column_extras(
                 );
             }
         }
-        Dialect::Mongodb | Dialect::Clickhouse => {}
+        Dialect::Mongodb | Dialect::Clickhouse | Dialect::Redis => {}
     }
 
     Ok(extras)

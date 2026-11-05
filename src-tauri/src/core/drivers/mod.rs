@@ -3,6 +3,7 @@ pub mod er;
 pub mod mssql;
 pub mod mysql;
 pub mod postgres;
+pub mod redis;
 pub mod sqlite;
 
 pub use er::{
@@ -107,6 +108,7 @@ pub enum Dialect {
     Mssql,
     Mongodb,
     Clickhouse,
+    Redis,
 }
 
 impl Dialect {
@@ -117,6 +119,7 @@ impl Dialect {
             Dialect::Sqlite => "sqlite",
             Dialect::Mssql => "mssql",
             Dialect::Mongodb => "mongodb",
+            Dialect::Redis => "redis",
             Dialect::Clickhouse => "clickhouse",
         }
     }
@@ -694,6 +697,7 @@ fn default_port(dialect: Dialect) -> u16 {
         Dialect::Postgres => 5432,
         Dialect::Mssql => 1433,
         Dialect::Clickhouse => 8123,
+        Dialect::Redis => 6379,
         Dialect::Sqlite | Dialect::Mongodb => 0,
     }
 }
@@ -734,6 +738,7 @@ pub async fn connect(
         Dialect::Clickhouse => {
             Arc::new(clickhouse::ClickHouseDriver::connect(&endpoint, password).await?)
         }
+        Dialect::Redis => Arc::new(redis::RedisDriver::connect(&endpoint, password).await?),
         other => {
             return Err(AppError::Config(format!(
                 "{} dialekti MVP-də dəstəklənmir",

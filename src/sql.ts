@@ -14,6 +14,8 @@ function formatterLanguage(dialect: Dialect | string): SqlLanguage {
 export function formatSql(sql: string, dialect: Dialect | string = "mysql"): string {
   const source = sql.trim();
   if (!source) return "";
+  // Redis commands are not SQL; the formatter would mangle them.
+  if (dialect === "redis") return source;
   try {
     return format(source, {
       language: formatterLanguage(dialect),
@@ -101,6 +103,10 @@ export function selectAllSql(
   limit = 1000,
   where = "",
 ): string {
+  // Redis "tables" are key patterns, browsed by DataForge's BROWSE command.
+  if (dialect === "redis") {
+    return `BROWSE ${JSON.stringify(table)} LIMIT ${limit}`;
+  }
   const filter = where.trim();
   const select = dialect === "mssql" ? `SELECT TOP (${limit}) *` : "SELECT *";
   const limitClause = dialect === "mssql" ? "" : `\nLIMIT ${limit}`;

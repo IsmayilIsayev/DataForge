@@ -158,6 +158,7 @@ function engineLabel(dialect: string | undefined, flavor?: string) {
   if (dialect === "mssql") return "SQL Server";
   if (dialect === "mongodb") return "MongoDB";
   if (dialect === "clickhouse") return "ClickHouse";
+  if (dialect === "redis") return "Redis";
   if (dialect === "mysql") return "MySQL";
   return "—";
 }
@@ -950,7 +951,12 @@ export default function App() {
       }
 
       let params: QueryParam[] | undefined;
-      const names = findParams(query).map((param) => param.name);
+      // Redis keys use ':' (user:1), which is not a parameter.
+      const names =
+        store.connections.find((item) => item.id === store.activeConnId)
+          ?.dialect === "redis"
+          ? []
+          : findParams(query).map((param) => param.name);
       if (names.length > 0) {
         const values = await promptParams(tab.id, names);
         if (!values) return;

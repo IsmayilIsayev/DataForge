@@ -129,7 +129,9 @@ fn is_uuid_type(dialect: Dialect, data_type: &str) -> bool {
         Dialect::Postgres => data_type == "uuid",
         Dialect::Clickhouse => data_type.contains("uuid"),
         Dialect::Mssql => data_type == "uniqueidentifier",
-        Dialect::Mysql | Dialect::Sqlite | Dialect::Mongodb => data_type.contains("uuid"),
+        Dialect::Mysql | Dialect::Sqlite | Dialect::Mongodb | Dialect::Redis => {
+            data_type.contains("uuid")
+        }
     }
 }
 
@@ -157,7 +159,7 @@ fn is_text_type(dialect: Dialect, data_type: &str) -> bool {
                 || data_type == "xml"
                 || data_type == "string"
         }
-        Dialect::Sqlite | Dialect::Mongodb => {
+        Dialect::Sqlite | Dialect::Mongodb | Dialect::Redis => {
             data_type.contains("char")
                 || data_type.contains("text")
                 || data_type.contains("clob")
@@ -453,7 +455,7 @@ fn estimate_sql(dialect: Dialect, database: &str) -> Option<String> {
              WHERE active AND database = {} GROUP BY table",
             string_literal(dialect, database)
         )),
-        Dialect::Sqlite | Dialect::Mongodb => None,
+        Dialect::Sqlite | Dialect::Mongodb | Dialect::Redis => None,
     }
 }
 

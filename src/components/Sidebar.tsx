@@ -137,6 +137,7 @@ function engineName(connection: ConnectionMeta) {
     return FLAVOR_LABELS[connection.flavor] ?? connection.flavor;
   }
   if (connection.dialect === "clickhouse") return "ClickHouse";
+  if (connection.dialect === "redis") return "Redis";
   return connection.dialect;
 }
 
@@ -2035,6 +2036,8 @@ export default function Sidebar({
                     );
                   }}
                 />
+{contextConnection.dialect !== "redis" && (
+                  <>
                 <MenuItem
                   icon="icon-network"
                   label="ER diagram"
@@ -2099,6 +2102,8 @@ export default function Sidebar({
                     });
                   }}
                 />
+                  </>
+                )}
                 <MenuItem
                   icon="icon-refresh-cw"
                   label="Refresh"
@@ -2137,6 +2142,8 @@ export default function Sidebar({
                     );
                   }}
                 />
+{contextConnection.dialect !== "redis" && (
+                  <>
                 <MenuItem
                   icon="icon-search"
                   label="Search in this table…"
@@ -2187,6 +2194,8 @@ export default function Sidebar({
                     }}
                   />
                 )}
+                  </>
+                )}
                 <MenuItem
                   icon="icon-copy"
                   label="Copy name"
@@ -2218,6 +2227,8 @@ export default function Sidebar({
                     });
                   }}
                 />
+{contextConnection.dialect !== "redis" && (
+                  <>
                 <MenuSeparator />
                 <MenuItem
                   icon="icon-table-2"
@@ -2259,6 +2270,8 @@ export default function Sidebar({
                     });
                   }}
                 />
+                  </>
+                )}
               </>
             )}
           </div>

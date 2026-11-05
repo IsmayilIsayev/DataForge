@@ -282,7 +282,7 @@ pub(crate) fn rewrite_params(
                             Dialect::Clickhouse => {
                                 format!("{{{}:{}}}", name, clickhouse_type(&value))
                             }
-                            Dialect::Mongodb => "?".to_string(),
+                            Dialect::Mongodb | Dialect::Redis => "?".to_string(),
                         };
                         out.extend_from_slice(placeholder.as_bytes());
                         bound.push(BoundParam { name, value });

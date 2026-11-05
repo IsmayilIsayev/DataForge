@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Transfer data (database right-click → Transfer data…): copy tables to another connection or database, across MySQL, PostgreSQL, SQLite and SQL Server. Missing tables are created with their columns and primary key; existing ones can get the rows added, replaced or be skipped. Each table runs in its own transaction, with progress and Cancel.
+- AI chat: a Chart button next to suggested SELECT queries runs the query and opens the result as a chart.
+- Redis connections: browse keys grouped by prefix (`user:*`) with type, TTL and a value preview, and run Redis commands in the editor, one per line. Read-only and production connections guard every command that is not a read. No TLS yet: use an SSH tunnel for remote servers.
+
 ### Fixed
 - Charts pick sensible defaults: dates become a line (never a pie), categories group by the column with the fewest distinct values, and key columns such as `id` or `user_id` are never summed as a measure.
 - Long date ranges are grouped per hour, day, month or year so the whole range is charted instead of only the first 50 points.

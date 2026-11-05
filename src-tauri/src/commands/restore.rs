@@ -552,9 +552,9 @@ pub async fn restore_database(
             meta.name
         )));
     }
-    if dialect == Dialect::Mongodb {
+    if matches!(dialect, Dialect::Mongodb | Dialect::Redis) {
         return Err(AppError::Config(
-            "Restore is not supported for MongoDB".to_string(),
+            format!("Restore is not supported for {dialect}"),
         ));
     }
 

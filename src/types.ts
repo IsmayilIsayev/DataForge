@@ -1,4 +1,4 @@
-export type Dialect = "mysql" | "postgres" | "sqlite" | "mssql" | "mongodb" | "clickhouse";
+export type Dialect = "mysql" | "postgres" | "sqlite" | "mssql" | "mongodb" | "clickhouse" | "redis";
 
 export type ConnectionEnvironment = "dev" | "test" | "prod";
 

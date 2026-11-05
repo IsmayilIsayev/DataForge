@@ -315,11 +315,72 @@ export function classifySql(sql: string): SqlClassification {
   };
 }
 
+const REDIS_READS = new Set(
+  (
+    "GET MGET STRLEN GETRANGE EXISTS TYPE TTL PTTL EXPIRETIME KEYS SCAN RANDOMKEY DBSIZE " +
+    "HGET HMGET HGETALL HKEYS HVALS HLEN HEXISTS HSTRLEN HSCAN HRANDFIELD " +
+    "LRANGE LLEN LINDEX LPOS SMEMBERS SCARD SISMEMBER SMISMEMBER SSCAN SRANDMEMBER " +
+    "SINTER SUNION SDIFF ZRANGE ZRANGEBYSCORE ZRANGEBYLEX ZREVRANGE ZREVRANGEBYSCORE " +
+    "ZCARD ZSCORE ZMSCORE ZRANK ZREVRANK ZCOUNT ZLEXCOUNT ZSCAN XRANGE XREVRANGE XLEN " +
+    "XINFO BITCOUNT GETBIT BITPOS PFCOUNT GEOPOS GEODIST GEOHASH GEOSEARCH OBJECT " +
+    "MEMORY INFO PING ECHO TIME LASTSAVE ROLE BROWSE JSON.GET JSON.TYPE JSON.MGET"
+  ).split(" "),
+);
+const REDIS_DANGEROUS = new Set([
+  "FLUSHDB",
+  "FLUSHALL",
+  "SHUTDOWN",
+  "CONFIG",
+  "DEBUG",
+  "SWAPDB",
+  "MIGRATE",
+  "REPLICAOF",
+  "SLAVEOF",
+]);
+
+/** Redis runs one command per line; anything not known to be a read counts as a write. */
+export function classifyRedis(text: string): SqlClassification {
+  const statements: ClassifiedStatement[] = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"))
+    .map((line) => {
+      const keyword = line.split(/\s+/)[0].toUpperCase();
+      const dangerous = REDIS_DANGEROUS.has(keyword);
+      const kind: StatementKind = REDIS_READS.has(keyword)
+        ? "read"
+        : dangerous
+          ? "ddl"
+          : "write";
+      return {
+        sql: line,
+        kind,
+        keyword,
+        hasWhere: false,
+        requiresTypedConfirm: dangerous,
+      };
+    });
+  return {
+    statements,
+    hasWrite: statements.some((statement) => statement.kind !== "read"),
+    hasDdl: statements.some((statement) => statement.kind === "ddl"),
+    requiresTypedConfirm: statements.some(
+      (statement) => statement.requiresTypedConfirm,
+    ),
+  };
+}
+
 /**
  * Dev-only sanity checks for the pure classifier. There is no test runner in
  * this project, so failures show up as console.assert messages in development.
  */
 export function selfCheck() {
+  console.assert(
+    !classifyRedis("GET user:1\nHGETALL user:2").hasWrite &&
+      classifyRedis("del user:1").hasWrite &&
+      classifyRedis("FLUSHALL").requiresTypedConfirm,
+    "redis reads, writes and FLUSHALL classify correctly",
+  );
   console.assert(
     !classifySql("-- DROP TABLE x\nSELECT 1").hasWrite,
     "a DROP inside a line comment must not count as a write",

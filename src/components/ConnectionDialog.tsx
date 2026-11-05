@@ -26,7 +26,7 @@ interface Props {
   onSaved: (meta: ConnectionMeta) => void;
 }
 
-type DialectOption = "mysql" | "postgres" | "sqlite" | "mssql" | "clickhouse";
+type DialectOption = "mysql" | "postgres" | "sqlite" | "mssql" | "clickhouse" | "redis";
 type ActiveTab =
   | "general"
   | "advanced"
@@ -111,6 +111,7 @@ const ENGINE_LABELS: Array<{ id: DialectOption; label: string }> = [
   { id: "mysql", label: "MySQL" },
   { id: "mssql", label: "SQL Server" },
   { id: "clickhouse", label: "ClickHouse" },
+  { id: "redis", label: "Redis" },
   { id: "sqlite", label: "SQLite" },
 ];
 
@@ -137,6 +138,7 @@ const PRESETS: Preset[] = [
   { id: "azure_postgres", label: "Azure Postgres", dialect: "postgres", flavor: "azure_postgres", port: "5432", hint: "SSL usually required" },
   { id: "mssql", label: "SQL Server", dialect: "mssql", port: "1433" },
   { id: "clickhouse", label: "ClickHouse", dialect: "clickhouse", port: "8123" },
+  { id: "redis", label: "Redis", dialect: "redis", port: "6379", hint: "No TLS yet: use an SSH tunnel for remote servers" },
   { id: "sqlite", label: "SQLite", dialect: "sqlite", port: "" },
 ];
 
@@ -200,7 +202,8 @@ function isSupportedDialect(dialect: Dialect): dialect is DialectOption {
     dialect === "postgres" ||
     dialect === "sqlite" ||
     dialect === "mssql" ||
-    dialect === "clickhouse"
+    dialect === "clickhouse" ||
+    dialect === "redis"
   );
 }
 
@@ -209,6 +212,7 @@ function defaultPort(dialect: DialectOption) {
   if (dialect === "postgres") return "5432";
   if (dialect === "mssql") return "1433";
   if (dialect === "clickhouse") return "8123";
+  if (dialect === "redis") return "6379";
   return "";
 }
 
@@ -247,6 +251,7 @@ function parseConnectionUrl(raw: string): {
     flavor = "mariadb";
   } else if (scheme === "sqlserver" || scheme === "mssql") dialect = "mssql";
   else if (scheme === "clickhouse") dialect = "clickhouse";
+  else if (scheme === "redis") dialect = "redis";
   else if (scheme === "sqlite" || scheme === "sqlite3") dialect = "sqlite";
   if (!dialect) return null;
 
