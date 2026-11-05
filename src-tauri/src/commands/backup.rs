@@ -8,7 +8,7 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use serde::Serialize;
 use serde_json::Value;
-use tauri::{Emitter, State};
+use tauri::{Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::commands::export::read_table;
@@ -16,7 +16,7 @@ use crate::core::backup::{
     external_dump_command, external_tool, external_tool_name, supports_structure, timestamp_utc,
     DumpColumn, DumpMode, DumpOptions, SqlDumpWriter,
 };
-use crate::core::drivers::{Dialect, Driver};
+use crate::core::drivers::{Dialect, Driver, TableKind};
 use crate::core::schema_diff::SchemaData;
 use crate::core::secrets;
 use crate::error::{AppError, AppResult};

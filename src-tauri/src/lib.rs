@@ -257,6 +257,7 @@ pub fn run() {
         .setup(|app| {
             let config_dir = app.path().app_config_dir()?;
             app.manage(AppState::new(config_dir)?);
+            commands::schedule::start(app.handle().clone());
             harden_webview(app)?;
             setup_native_menu(app)?;
             setup_tray(app)?;
@@ -308,6 +309,10 @@ pub fn run() {
             commands::import::preview_csv,
             commands::import::import_csv,
             commands::transfer::transfer_tables,
+            commands::schedule::list_backup_schedules,
+            commands::schedule::save_backup_schedule,
+            commands::schedule::delete_backup_schedule,
+            commands::schedule::pick_backup_folder,
             commands::test_data::test_data_columns,
             commands::test_data::preview_test_data,
             commands::test_data::generate_rows,

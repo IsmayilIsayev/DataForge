@@ -8,6 +8,7 @@ import type {
   AiProvider,
   BackupCapabilities,
   BackupMode,
+  BackupSchedule,
   CellRef,
   CellValue,
   ChatMessage,
@@ -336,6 +337,18 @@ export const exportTable = (
 
 export const cancelOperation = (operationId: string) =>
   invoke<void>("cancel_operation", { operation_id: operationId });
+
+export const listBackupSchedules = () =>
+  invoke<BackupSchedule[]>("list_backup_schedules");
+
+export const saveBackupSchedule = (schedule: BackupSchedule) =>
+  invoke<BackupSchedule[]>("save_backup_schedule", { schedule });
+
+export const deleteBackupSchedule = (id: string) =>
+  invoke<BackupSchedule[]>("delete_backup_schedule", { id });
+
+export const pickBackupFolder = () =>
+  invoke<string | null>("pick_backup_folder");
 
 export type TransferIfExists = "append" | "replace" | "skip";
 

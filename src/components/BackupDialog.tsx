@@ -4,13 +4,18 @@ import {
   backupCapabilities,
   backupDatabase,
   cancelOperation,
+  deleteBackupSchedule,
   errorMessage,
+  listBackupSchedules,
   listTables,
+  pickBackupFolder,
+  saveBackupSchedule,
 } from "../ipc";
 import type {
   BackupCapabilities,
   BackupMode,
   BackupProgress,
+  BackupSchedule,
   ConnectionMeta,
   TableInfo,
 } from "../types";
@@ -63,6 +68,15 @@ export default function BackupDialog({
   const [progress, setProgress] = useState<
     (BackupProgress & { cancelRequested: boolean }) | null
   >(null);
+
+  const [schedules, setSchedules] = useState<BackupSchedule[]>([]);
+  const [everyInput, setEveryInput] = useState("24");
+  const [keepInput, setKeepInput] = useState("7");
+  const [folder, setFolder] = useState("");
+  const [scheduleError, setScheduleError] = useState<string | null>(null);
+  const mine = schedules.filter(
+    (item) => item.conn_id === connection.id && item.database === database,
+  );
 
   const structureSupported = capabilities?.structure_supported ?? false;
   const externalTool = capabilities?.external_tool ?? null;
@@ -126,6 +140,42 @@ export default function BackupDialog({
       unlisten?.();
     };
   }, []);
+
+  useEffect(() => {
+    listBackupSchedules()
+      .then(setSchedules)
+      .catch(() => {
+        // Only available inside Tauri.
+      });
+  }, []);
+
+  async function addSchedule() {
+    setScheduleError(null);
+    try {
+      setSchedules(
+        await saveBackupSchedule({
+          id: "",
+          conn_id: connection.id,
+          database,
+          folder,
+          every_hours: Math.round(Number(everyInput)) || 24,
+          keep: Math.round(Number(keepInput)) || 7,
+          gzip,
+          mode: structureSupported ? mode : "data",
+        }),
+      );
+    } catch (failure) {
+      setScheduleError(errorMessage(failure));
+    }
+  }
+
+  async function removeSchedule(id: string) {
+    try {
+      setSchedules(await deleteBackupSchedule(id));
+    } catch (failure) {
+      setScheduleError(errorMessage(failure));
+    }
+  }
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -488,6 +538,105 @@ export default function BackupDialog({
               </span>
             )}
           </div>
+        </div>
+
+        <div
+          style={{
+            flex: "none",
+            display: "flex",
+            flexDirection: "column",
+            gap: 6,
+            margin: "0 12px 8px",
+            paddingTop: 8,
+            borderTop: "1px solid var(--bd)",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 12, fontWeight: 500 }}>Schedule</span>
+            <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--fa)" }}>
+              all tables, current content and gzip settings · runs while DataForge is open
+            </span>
+          </div>
+          {mine.map((item) => (
+            <div
+              key={item.id}
+              style={{ ...checkboxStyle, color: "var(--mu)", overflowWrap: "anywhere" }}
+            >
+              <span style={{ flex: 1, minWidth: 0 }}>
+                every {item.every_hours}h · keep {item.keep} · {item.folder}
+                {item.last_run
+                  ? ` · last ${new Date(item.last_run * 1000).toLocaleString()}`
+                  : " · not run yet"}
+                {item.last_error && (
+                  <span style={{ color: "var(--er)" }}> · {item.last_error}</span>
+                )}
+              </span>
+              <button
+                type="button"
+                className="v2-btn"
+                onClick={() => void removeSchedule(item.id)}
+                style={{ height: 20, padding: "0 8px", fontSize: 11 }}
+              >
+                Remove
+              </button>
+            </div>
+          ))}
+          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
+            <label style={checkboxStyle}>
+              Every
+              <input
+                type="number"
+                min={1}
+                max={720}
+                value={everyInput}
+                onChange={(event) => setEveryInput(event.target.value)}
+                style={{ ...inputStyle, width: 64 }}
+              />
+              hours
+            </label>
+            <label style={checkboxStyle}>
+              keep last
+              <input
+                type="number"
+                min={1}
+                max={365}
+                value={keepInput}
+                onChange={(event) => setKeepInput(event.target.value)}
+                style={{ ...inputStyle, width: 64 }}
+              />
+            </label>
+            <button
+              type="button"
+              className="v2-btn"
+              onClick={() =>
+                void pickBackupFolder()
+                  .then((picked) => picked && setFolder(picked))
+                  .catch((failure) => setScheduleError(errorMessage(failure)))
+              }
+              style={{ height: 24, padding: "0 8px", fontSize: 11 }}
+            >
+              {folder ? "Change folder" : "Choose folder…"}
+            </button>
+            {folder && (
+              <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--fa)", overflowWrap: "anywhere" }}>
+                {folder}
+              </span>
+            )}
+            <button
+              type="button"
+              className="v2-btn"
+              onClick={() => void addSchedule()}
+              disabled={!folder || loading}
+              style={{ height: 24, padding: "0 8px", fontSize: 11 }}
+            >
+              Add schedule
+            </button>
+          </div>
+          {scheduleError && (
+            <div role="alert" style={{ color: "var(--er)", fontFamily: "var(--mono)", fontSize: 11.5 }}>
+              {scheduleError}
+            </div>
+          )}
         </div>
 
         {progress && !progress.done && (

@@ -9,6 +9,7 @@ pub mod portable;
 pub mod query;
 pub mod restore;
 pub mod saved;
+pub mod schedule;
 pub mod schema;
 pub mod search;
 pub mod test_data;

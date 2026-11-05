@@ -504,6 +504,20 @@ export interface BackupCapabilities {
   external_tool: string | null;
 }
 
+export interface BackupSchedule {
+  id: string;
+  conn_id: string;
+  database: string;
+  folder: string;
+  every_hours: number;
+  keep: number;
+  gzip: boolean;
+  mode: BackupMode;
+  last_run?: number | null;
+  last_error?: string | null;
+  last_path?: string | null;
+}
+
 export interface TableTransfer {
   table: string;
   rows: number;
