@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Charts pick sensible defaults: dates become a line (never a pie), categories group by the column with the fewest distinct values, and key columns such as `id` or `user_id` are never summed as a measure.
+- Long date ranges are grouped per hour, day, month or year so the whole range is charted instead of only the first 50 points.
+- When a chart has too many categories it keeps the biggest ones rather than the alphabetically first; pie and donut charts show at most 8 slices plus "Other".
+- The chart says when it only covers the first loaded rows of a larger result.
+- Min/max aggregation no longer crashes on very large results.
+
 ## [0.5.9] - 2026-11-05
 
 ### Fixed

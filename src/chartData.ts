@@ -29,7 +29,13 @@ export interface ColumnProfile {
   index: number;
   name: string;
   kind: ColumnKind;
+  /** Distinct non-empty values in the profiled sample. */
+  distinct: number;
+  /** Key columns (id, user_id, userId): numeric, but summing them means nothing. */
+  idLike: boolean;
 }
+
+export type DateBucket = "none" | "hour" | "day" | "month" | "year";
 
 export interface ChartPoint {
   x: number;
@@ -48,6 +54,8 @@ export interface ChartData {
   series: ChartSeries[];
   skippedRows: number;
   truncated: boolean;
+  /** Grain dates were grouped by so a time axis fits the point budget. */
+  bucket: DateBucket;
   xNumeric: boolean;
   xMin: number;
   xMax: number;
@@ -59,6 +67,10 @@ export const DEFAULT_TOP_N = 50;
 export const MAX_CHART_POINTS = 1000;
 
 const PROFILE_ROWS = 300;
+const PIE_SLICES = 8;
+
+const ID_NAME = /^id$|_id$|[a-z0-9]Id$/;
+const TIME_NAME = /^(year|month|quarter|week|day|hour|il|ay|gün)$|_(year|month)$/i;
 
 export function parseNumeric(value: CellValue): number | null {
   if (typeof value === "number") {
@@ -120,17 +132,25 @@ export function profileColumns(
     let numeric = 0;
     let dates = 0;
     let filled = 0;
+    const seen = new Set<string>();
     for (const row of sample) {
       const value = row[index];
       if (value === null || value === undefined || value === "") continue;
       filled += 1;
+      seen.add(String(value));
       if (parseNumeric(value) !== null) numeric += 1;
       else if (parseDateValue(value) !== null) dates += 1;
     }
     let kind: ColumnKind = "text";
     if (filled > 0 && numeric / filled >= 0.8) kind = "numeric";
     else if (filled > 0 && dates / filled >= 0.8) kind = "date";
-    return { index, name, kind };
+    return {
+      index,
+      name,
+      kind,
+      distinct: seen.size,
+      idLike: kind === "numeric" && ID_NAME.test(name),
+    };
   });
 }
 
@@ -143,35 +163,58 @@ export function autoChartConfig(
   rows: CellValue[][],
 ): ChartConfig {
   const profiles = profileColumns(columns, rows);
-  const numeric = profiles.filter((profile) => profile.kind === "numeric");
-  const labels = profiles.filter((profile) => profile.kind !== "numeric");
-  const rowCount = rows.length;
+  const measures = profiles.filter((p) => p.kind === "numeric" && !p.idLike);
+  const date = profiles.find((p) => p.kind === "date");
+  // The fewest distinct values makes the most readable category axis
+  // (status, country) rather than one bar per row (email, name).
+  const category = profiles
+    .filter((p) => p.kind === "text" && p.distinct > 0)
+    .sort((a, b) => a.distinct - b.distinct)[0];
+  const timeNumber = measures.find((p) => TIME_NAME.test(p.name));
 
   let type: ChartType = "bar";
-  let x = labels[0]?.name ?? numeric[0]?.name ?? columns[0] ?? "";
-
-  if (labels.length === 0 && numeric.length >= 2) {
-    type = "scatter";
-    x = numeric[0].name;
-  } else if (labels.length > 0 && numeric.length === 1) {
-    type = rowCount <= 8 ? "donut" : "bar";
-  }
-  if (type === "bar" && labels[0]?.kind === "date" && rowCount > 12) {
+  let sort: ChartSort = "x";
+  let x: string;
+  if (date) {
+    x = date.name;
     type = "line";
+  } else if (category) {
+    x = category.name;
+    sort = "value";
+  } else if (timeNumber && measures.length >= 2) {
+    x = timeNumber.name;
+    type = "line";
+  } else if (measures.length >= 2) {
+    x = measures[0].name;
+    type = "scatter";
+  } else {
+    x = profiles.find((p) => p.idLike)?.name ?? columns[0] ?? "";
   }
 
-  const y = numeric
-    .filter((profile) => profile.name !== x)
+  const y = measures
+    .filter((p) => p.name !== x)
     .slice(0, 3)
-    .map((profile) => profile.name);
-  const usableY = y.length > 0 ? y : numeric.slice(0, 1).map((p) => p.name);
+    .map((p) => p.name);
+
+  if (
+    type === "bar" &&
+    category?.name === x &&
+    y.length <= 1 &&
+    category.distinct <= PIE_SLICES &&
+    rows.every((row) => {
+      const value = y.length ? parseNumeric(row[columns.indexOf(y[0])]) : 1;
+      return value === null || value >= 0;
+    })
+  ) {
+    type = "donut";
+  }
 
   return {
     type,
     x,
-    y: usableY,
-    aggregation: usableY.length > 0 ? "sum" : "count",
-    sort: "x",
+    y,
+    aggregation: y.length > 0 ? "sum" : "count",
+    sort,
     topN: DEFAULT_TOP_N,
     stacked: false,
   };
@@ -208,8 +251,9 @@ function aggregate(values: number[], mode: Aggregation): number | null {
   if (mode === "avg") {
     return values.reduce((sum, value) => sum + value, 0) / values.length;
   }
-  if (mode === "min") return Math.min(...values);
-  return Math.max(...values);
+  // reduce, not Math.min(...values): spreading 100k+ values overflows the stack.
+  if (mode === "min") return values.reduce((a, b) => (b < a ? b : a));
+  return values.reduce((a, b) => (b > a ? b : a));
 }
 
 interface Group {
@@ -224,6 +268,35 @@ function compareKeys(a: number | string, b: number | string): number {
   if (typeof a === "number") return -1;
   if (typeof b === "number") return 1;
   return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+}
+
+const BUCKETS: DateBucket[] = ["none", "hour", "day", "month", "year"];
+
+function bucketLabel(stamp: number, bucket: DateBucket): string {
+  const iso = new Date(stamp).toISOString();
+  if (bucket === "hour") return `${iso.slice(0, 13)}:00`;
+  if (bucket === "day") return iso.slice(0, 10);
+  if (bucket === "month") return iso.slice(0, 7);
+  return iso.slice(0, 4);
+}
+
+function bucketStart(stamp: number, bucket: DateBucket): number {
+  const d = new Date(stamp);
+  if (bucket === "hour") return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), d.getUTCHours());
+  if (bucket === "day") return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+  if (bucket === "month") return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
+  return Date.UTC(d.getUTCFullYear(), 0, 1);
+}
+
+/** Finest grain whose distinct periods fit the budget, so a time axis shows the whole range. */
+function pickBucket(stamps: number[], budget: number): DateBucket {
+  for (const bucket of BUCKETS) {
+    const keys = new Set(
+      bucket === "none" ? stamps : stamps.map((stamp) => bucketStart(stamp, bucket)),
+    );
+    if (keys.size <= budget) return bucket;
+  }
+  return "year";
 }
 
 export function buildChartData(
@@ -303,6 +376,7 @@ export function buildChartData(
       series,
       skippedRows: skipped.size,
       truncated,
+      bucket: "none",
       xNumeric: true,
       xMin,
       xMax,
@@ -315,16 +389,32 @@ export function buildChartData(
   const xProfile = profiles.find((profile) => profile.name === config.x);
   const groups = new Map<string, Group>();
   const skipped = new Set<number>();
+  const isPie = config.type === "pie" || config.type === "donut";
+  const limit = Math.min(topN, pointBudget);
+
+  let bucket: DateBucket = "none";
+  if (xProfile?.kind === "date") {
+    const stamps: number[] = [];
+    for (const row of rows) {
+      const stamp = parseDateValue(row[xIndex]);
+      if (stamp !== null) stamps.push(stamp);
+    }
+    bucket = pickBucket(stamps, limit);
+  }
 
   for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
     const row = rows[rowIndex];
-    const rawLabel = labelText(row[xIndex]);
-    const sortKey =
-      xProfile?.kind === "date"
-        ? (parseDateValue(row[xIndex]) ?? rawLabel)
-        : xProfile?.kind === "numeric"
-          ? (parseNumeric(row[xIndex]) ?? rawLabel)
-          : rawLabel;
+    let rawLabel = labelText(row[xIndex]);
+    let sortKey: number | string = rawLabel;
+    if (xProfile?.kind === "date") {
+      const stamp = parseDateValue(row[xIndex]);
+      if (stamp !== null) {
+        sortKey = bucket === "none" ? stamp : bucketStart(stamp, bucket);
+        if (bucket !== "none") rawLabel = bucketLabel(stamp, bucket);
+      }
+    } else if (xProfile?.kind === "numeric") {
+      sortKey = parseNumeric(row[xIndex]) ?? rawLabel;
+    }
     let group = groups.get(rawLabel);
     if (!group) {
       group = {
@@ -357,42 +447,45 @@ export function buildChartData(
   }
 
   let grouped = Array.from(groups.values());
+  // A pie shows one measure: the first selected column.
   const seriesNames = yIndexes.length > 0 ? config.y : ["Count"];
+  const seriesValue = (group: Group, index: number): number | null => {
+    if (yIndexes.length === 0) return group.counts[0] ?? 0;
+    if (config.aggregation === "count") return group.counts[index] ?? 0;
+    return aggregate(group.values[index], config.aggregation);
+  };
+  const total = (group: Group) =>
+    isPie
+      ? seriesValue(group, 0) ?? 0
+      : seriesNames.reduce((sum, _, index) => sum + (seriesValue(group, index) ?? 0), 0);
+  const byValue = (a: Group, b: Group) => total(b) - total(a);
+  const byX = (a: Group, b: Group) => compareKeys(a.sortKey, b.sortKey);
 
-  if (config.sort === "value") {
-    grouped.sort((a, b) => {
-      const total = (group: Group) =>
-        yIndexes.length === 0
-          ? group.counts[0] ?? 0
-          : yIndexes.reduce((sum, _, index) => {
-              const value =
-                config.aggregation === "count"
-                  ? group.counts[index]
-                  : aggregate(group.values[index], config.aggregation) ?? 0;
-              return sum + value;
-            }, 0);
-      return total(b) - total(a);
-    });
-  } else {
-    grouped.sort((a, b) => compareKeys(a.sortKey, b.sortKey));
+  const cap = isPie ? Math.min(limit, PIE_SLICES) : limit;
+  const truncated = grouped.length > cap;
+  let rest: Group[] = [];
+  if (truncated) {
+    // Time and number axes keep their order; categories keep the biggest groups,
+    // not the alphabetically first ones.
+    grouped.sort(xProfile?.kind === "text" ? byValue : byX);
+    rest = grouped.slice(cap);
+    grouped = grouped.slice(0, cap);
   }
-
-  const limit = Math.min(topN, pointBudget);
-  const truncated = grouped.length > limit;
-  grouped = grouped.slice(0, limit);
+  grouped.sort(config.sort === "value" ? byValue : byX);
 
   const labels = grouped.map((group) => group.label);
-  const series: ChartSeries[] = seriesNames.map((name, seriesIndex) => ({
-    name,
-    values: grouped.map((group) => {
-      if (yIndexes.length === 0) return group.counts[0] ?? 0;
-      if (config.aggregation === "count") {
-        return group.counts[seriesIndex] ?? 0;
-      }
-      return aggregate(group.values[seriesIndex], config.aggregation);
+  const series: ChartSeries[] = (isPie ? seriesNames.slice(0, 1) : seriesNames).map(
+    (name, seriesIndex) => ({
+      name,
+      values: grouped.map((group) => seriesValue(group, seriesIndex)),
+      points: [],
     }),
-    points: [],
-  }));
+  );
+  // Sums and counts add up, so the slices left out of a pie still show as "Other".
+  if (isPie && rest.length > 0 && ["sum", "count"].includes(config.aggregation)) {
+    labels.push(`Other (${rest.length})`);
+    series[0].values.push(rest.reduce((sum, group) => sum + (seriesValue(group, 0) ?? 0), 0));
+  }
 
   let yMin = Infinity;
   let yMax = -Infinity;
@@ -413,6 +506,7 @@ export function buildChartData(
     series,
     skippedRows: skipped.size,
     truncated,
+    bucket,
     xNumeric: false,
     xMin: 0,
     xMax: Math.max(1, labels.length - 1),
@@ -519,8 +613,43 @@ export function selfCheck(): void {
   console.assert(data.series[0].values[0] === 14, "buildChartData sums");
   console.assert(data.skippedRows === 1, "buildChartData tracks skipped rows");
   console.assert(
-    autoChartConfig(["at", "n"], [["2024-01-01", "1"], ["2024-01-02", "2"]]).type === "donut",
-    "autoChartConfig small label+number is donut",
+    autoChartConfig(["at", "n"], [["2024-01-01", "1"], ["2024-01-02", "2"]]).type === "line",
+    "autoChartConfig dates make a line, never a pie",
+  );
+  const users = autoChartConfig(
+    ["id", "email", "status", "age"],
+    [
+      ["1", "a@x.az", "active", "30"],
+      ["2", "b@x.az", "active", "41"],
+      ["3", "c@x.az", "banned", "25"],
+    ],
+  );
+  console.assert(
+    users.x === "status" && !users.y.includes("id"),
+    "autoChartConfig groups by the low-cardinality column and never sums ids",
+  );
+  const stamps = Array.from({ length: 400 }, (_, i) => [
+    new Date(Date.UTC(2024, 0, 1) + i * 86400000).toISOString().slice(0, 10),
+    "1",
+  ]);
+  const daily = buildChartData(["d", "n"], stamps, {
+    ...config,
+    type: "line",
+    x: "d",
+    y: ["n"],
+  });
+  console.assert(
+    daily.bucket === "month" && daily.labels[0] === "2024-01" && !daily.truncated,
+    "buildChartData buckets long date ranges instead of cutting them",
+  );
+  const many = buildChartData(
+    ["k", "n"],
+    [["a", "1"], ["b", "1"], ["c", "1"], ["d", "1"], ["e", "1"], ["f", "1"], ["g", "1"], ["h", "1"], ["z", "100"]],
+    { ...config, type: "pie", x: "k", y: ["n"] },
+  );
+  console.assert(
+    many.labels.includes("z") && many.labels[many.labels.length - 1] === "Other (1)",
+    "pie keeps the biggest slices and folds the rest into Other",
   );
 }
 

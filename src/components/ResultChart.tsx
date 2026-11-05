@@ -1595,6 +1595,30 @@ export default function ResultChart({
             top {config.topN.toLocaleString("en-US")}
           </span>
         )}
+        {data.bucket !== "none" && (
+          <span
+            style={{
+              color: "var(--fa)",
+              fontFamily: "var(--mono)",
+              fontSize: 10.5,
+            }}
+            title="Dates are grouped so the whole range fits"
+          >
+            per {data.bucket}
+          </span>
+        )}
+        {result.truncated && (
+          <span
+            style={{
+              color: "var(--wn)",
+              fontFamily: "var(--mono)",
+              fontSize: 10.5,
+            }}
+            title="The chart only covers the rows that were loaded. Aggregate in SQL (GROUP BY) to chart the whole table."
+          >
+            first {result.rows.length.toLocaleString("en-US")} rows only
+          </span>
+        )}
 
         <button
           type="button"
