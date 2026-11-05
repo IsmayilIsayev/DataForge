@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.9] - 2026-11-05
+
+### Fixed
+- AI assistant: long questions, answers and generated SQL now wrap inside the panel instead of running past its edge.
+- AI assistant: the model picker opens towards the window instead of off its right edge, and the AI settings form scrolls when the panel is short.
+
 ## [0.5.8] - 2026-10-30
 
 ### Security
