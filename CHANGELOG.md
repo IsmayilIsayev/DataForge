@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.11] - 2026-11-06
+
 ### Added
 - Redis over TLS: tick "TLS (rediss://)" or paste a `rediss://` URL to connect to hosted Redis (Upstash, Redis Cloud, Azure, ElastiCache). The server certificate is checked against public CAs or the CA file on the SSL tab, also through an SSH tunnel.
 - Running queries (connection right-click → Running queries…): see what is running on MySQL, PostgreSQL, SQL Server or ClickHouse right now, with user, database and duration, refreshed every 2 seconds, and stop a stuck query. Blocked on read-only connections.
