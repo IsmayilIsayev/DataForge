@@ -680,9 +680,9 @@ export default function App() {
     let cancelled = false;
     const unlisteners: UnlistenFn[] = [];
 
-    const bind = async (event: string, handler: () => void) => {
+    const bind = async (event: string, handler: (payload: unknown) => void) => {
       try {
-        const unlisten = await listen(event, handler);
+        const unlisten = await listen(event, (item) => handler(item.payload));
         if (cancelled) unlisten();
         else unlisteners.push(unlisten);
       } catch {
@@ -730,6 +730,12 @@ export default function App() {
       await bind("menu:zoom-reset", () => applyZoom(1));
       await bind("menu:check-updates", () => {
         void checkForUpdates(false);
+      });
+      await bind("backup-schedule:ran", (payload) => {
+        const ran = payload as { database: string; error: string | null };
+        if (ran.error) {
+          void notify("Scheduled backup failed", `${ran.database}: ${ran.error}`);
+        }
       });
     })();
 
