@@ -193,6 +193,57 @@ pub(crate) fn create_table_sql(
     )
 }
 
+fn sql_text(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
+fn is_integer(data_type: &str) -> bool {
+    matches!(
+        base_type(data_type).as_str(),
+        "int" | "integer" | "int2" | "int4" | "int8" | "smallint" | "bigint" | "serial" | "bigserial"
+            | "smallserial"
+    )
+}
+
+/// After copying into an existing PostgreSQL table, move each serial/identity
+/// sequence past the copied ids so the next INSERT does not collide.
+/// Columns without a sequence make `setval(NULL, ..)` return NULL, a no-op.
+pub(crate) fn sequence_fixes(database: &str, table: &str, columns: &[DumpColumn]) -> Vec<String> {
+    let target = table_ref(Dialect::Postgres, database, table);
+    columns
+        .iter()
+        .filter(|column| is_integer(&column.data_type))
+        .map(|column| {
+            format!(
+                "SELECT setval(pg_get_serial_sequence('{}', '{}'), m) FROM (SELECT MAX({}) AS m FROM {target}) s WHERE m IS NOT NULL",
+                sql_text(&target),
+                sql_text(&column.name),
+                quote_ident(Dialect::Postgres, &column.name),
+            )
+        })
+        .collect()
+}
+
+/// SQL Server rejects explicit values for an IDENTITY column unless
+/// IDENTITY_INSERT is on. The setting only lasts for one batch here, so it
+/// wraps each INSERT, and only when a written column is the identity column.
+pub(crate) fn with_identity_insert(database: &str, table: &str, columns: &[DumpColumn], insert: &str) -> String {
+    let target = table_ref(Dialect::Mssql, database, table);
+    let names: Vec<String> = columns
+        .iter()
+        .map(|column| format!("N'{}'", sql_text(&column.name)))
+        .collect();
+    format!(
+        "DECLARE @df_identity bit = CASE WHEN EXISTS (SELECT 1 FROM sys.identity_columns WHERE object_id = OBJECT_ID(N'{}') AND name IN ({})) THEN 1 ELSE 0 END;\n\
+         IF @df_identity = 1 SET IDENTITY_INSERT {target} ON;\n\
+         {};\n\
+         IF @df_identity = 1 SET IDENTITY_INSERT {target} OFF;",
+        sql_text(&target),
+        names.join(", "),
+        insert.trim_end().trim_end_matches(';'),
+    )
+}
+
 fn is_cancelled(app: &tauri::AppHandle, id: &str) -> bool {
     app.state::<AppState>()
         .cancelled
@@ -212,6 +263,17 @@ struct Plan {
     create: Option<String>,
     clear: bool,
     dropped: Vec<String>,
+}
+
+impl Plan {
+    /// Statements run after the last row, in the same transaction.
+    fn finish(&self, target: Dialect, database: &str) -> Vec<String> {
+        if self.create.is_none() && target == Dialect::Postgres {
+            sequence_fixes(database, &self.target_table, &self.write)
+        } else {
+            Vec::new()
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -239,6 +301,8 @@ async fn copy_table(
         let write = plan.write.clone();
         let pk = plan.pk.clone();
         let pk_types = plan.pk_types.clone();
+        let finish = plan.finish(target_dialect, target_db);
+        let identity = plan.create.is_none() && target_dialect == Dialect::Mssql;
         let mut setup = Vec::new();
         if let Some(create) = &plan.create {
             setup.push(create.clone());
@@ -266,7 +330,10 @@ async fn copy_table(
                     return Ok(false);
                 }
                 for chunk in batch.chunks(INSERT_ROWS) {
-                    let sql = insert_batch_sql(target_dialect, &target_db, &target_table, &write, chunk);
+                    let mut sql = insert_batch_sql(target_dialect, &target_db, &target_table, &write, chunk);
+                    if identity {
+                        sql = with_identity_insert(&target_db, &target_table, &write, &sql);
+                    }
                     if !send(TxInput::Sql { sql, row: None }) {
                         return Ok(false);
                     }
@@ -299,6 +366,13 @@ async fn copy_table(
             .await;
             if result.is_err() {
                 send(TxInput::Rollback);
+            }
+            if matches!(result, Ok(true)) {
+                for sql in finish {
+                    if !send(TxInput::Sql { sql, row: None }) {
+                        break;
+                    }
+                }
             }
             result.map(|completed| (rows, !completed))
         })
@@ -538,8 +612,37 @@ pub async fn transfer_tables(
 
 #[cfg(test)]
 mod tests {
-    use super::{create_table_sql, transfer_type};
+    use super::{create_table_sql, sequence_fixes, transfer_type, with_identity_insert};
+    use crate::core::backup::DumpColumn;
     use crate::core::drivers::{ColumnInfo, Dialect};
+
+    fn dump(name: &str, data_type: &str) -> DumpColumn {
+        DumpColumn {
+            name: name.to_string(),
+            data_type: data_type.to_string(),
+        }
+    }
+
+    #[test]
+    fn moves_postgres_sequences_only_for_integer_columns() {
+        let fixes = sequence_fixes("", "Orders", &[dump("id", "integer"), dump("note", "text"), dump("o'k", "bigint")]);
+        assert_eq!(fixes.len(), 2);
+        assert_eq!(
+            fixes[0],
+            "SELECT setval(pg_get_serial_sequence('\"Orders\"', 'id'), m) FROM (SELECT MAX(\"id\") AS m FROM \"Orders\") s WHERE m IS NOT NULL"
+        );
+        assert!(fixes[1].contains("'o''k'"));
+    }
+
+    #[test]
+    fn wraps_sql_server_inserts_in_identity_insert() {
+        let sql = with_identity_insert("shop", "users", &[dump("id", "int")], "INSERT INTO x (id) VALUES (1);");
+        assert!(sql.contains("OBJECT_ID(N'[shop].[dbo].[users]') AND name IN (N'id')"));
+        assert!(sql.contains("SET IDENTITY_INSERT [shop].[dbo].[users] ON;"));
+        assert!(sql.contains("INSERT INTO x (id) VALUES (1);\n"));
+        assert!(!sql.contains(";;"));
+        assert!(sql.ends_with("SET IDENTITY_INSERT [shop].[dbo].[users] OFF;"));
+    }
 
     fn column(name: &str, data_type: &str, nullable: bool, key: bool) -> ColumnInfo {
         ColumnInfo {

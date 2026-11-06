@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Redis over TLS: tick "TLS (rediss://)" or paste a `rediss://` URL to connect to hosted Redis (Upstash, Redis Cloud, Azure, ElastiCache). The server certificate is checked against public CAs or the CA file on the SSL tab, also through an SSH tunnel.
 
 ### Fixed
+- Transfer into an existing PostgreSQL table moves its serial/identity sequences past the copied ids, so new rows no longer fail with duplicate keys.
+- Transfer into an existing SQL Server table with an IDENTITY column keeps the source ids instead of failing.
 - Disconnecting a connection no longer leaves it active with a database selected; its tree collapses.
 
 ## [0.5.10] - 2026-11-06
