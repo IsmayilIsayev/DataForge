@@ -1177,8 +1177,10 @@ dependencies = [
  "thiserror 2.0.21",
  "tiberius",
  "tokio",
+ "tokio-rustls",
  "tokio-util",
  "uuid",
+ "webpki-roots 1.0.10",
  "webview2-com",
  "windows",
 ]

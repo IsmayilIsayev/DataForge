@@ -4,20 +4,26 @@
 //! databases are `db0`..`dbN`, "tables" are key prefixes (`user:*`), and the
 //! editor runs one Redis command per line. `BROWSE <pattern> [LIMIT n]` is a
 //! DataForge command that lists matching keys with type, TTL and a value
-//! preview; table tabs use it.
+//! preview; table tabs use it. TLS (`rediss://`) is on when the SSL mode is not
+//! "disable".
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
+use tokio_rustls::rustls::pki_types::pem::PemObject;
+use tokio_rustls::rustls::pki_types::{CertificateDer, ServerName};
+use tokio_rustls::rustls::{ClientConfig, RootCertStore};
+use tokio_rustls::TlsConnector;
 
 use super::{
     BatchResult, BoundParam, BoxFuture, ColumnInfo, ConnectionInput, Dialect, Driver, ErSchema,
-    QueryResult, SchemaSnapshot, SchemaTable, StatementResult, TableInfo, TableKind, TxError,
-    TxInput, TxStreamOutcome,
+    QueryResult, SchemaSnapshot, SchemaTable, SslMode, StatementResult, TableInfo, TableKind,
+    TxError, TxInput, TxStreamOutcome,
 };
 use crate::error::{AppError, AppResult};
 
@@ -185,14 +191,45 @@ fn db_index(database: &str) -> Option<i64> {
     database.trim().trim_start_matches("db").parse().ok()
 }
 
+trait Io: AsyncRead + AsyncWrite + Send + Unpin {}
+impl<T: AsyncRead + AsyncWrite + Send + Unpin> Io for T {}
+
 struct Conn {
-    reader: BufReader<TcpStream>,
+    reader: BufReader<Box<dyn Io>>,
     db: i64,
+}
+
+/// Public CA roots plus the connection's own CA file, if set.
+fn tls_connector(ca_path: Option<&str>) -> AppResult<TlsConnector> {
+    let mut roots = RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    if let Some(path) = ca_path.map(str::trim).filter(|path| !path.is_empty()) {
+        let pem = std::fs::read(path)
+            .map_err(|error| AppError::Config(format!("CA certificate: {error}")))?;
+        for certificate in CertificateDer::pem_slice_iter(&pem) {
+            let certificate = certificate
+                .map_err(|error| AppError::Config(format!("CA certificate: {error}")))?;
+            roots
+                .add(certificate)
+                .map_err(|error| AppError::Config(format!("CA certificate: {error}")))?;
+        }
+    }
+    // shortcut: certificates are always verified (no "trust any certificate"); add a verifier option if self-signed servers without a CA file come up.
+    let config = ClientConfig::builder_with_provider(Arc::new(
+        tokio_rustls::rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|error| AppError::Db(format!("redis TLS: {error}")))?
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    Ok(TlsConnector::from(Arc::new(config)))
 }
 
 pub struct RedisDriver {
     host: String,
     port: u16,
+    /// Certificate check name: the real server host, also through an SSH tunnel.
+    tls: Option<(TlsConnector, ServerName<'static>)>,
     username: String,
     password: Option<String>,
     default_db: i64,
@@ -200,10 +237,22 @@ pub struct RedisDriver {
 }
 
 impl RedisDriver {
-    pub async fn connect(input: &ConnectionInput, password: Option<&str>) -> AppResult<Self> {
+    pub async fn connect(
+        input: &ConnectionInput,
+        password: Option<&str>,
+        tls_host: &str,
+    ) -> AppResult<Self> {
+        let tls = if matches!(input.ssl_mode, None | Some(SslMode::Disable)) {
+            None
+        } else {
+            let name = ServerName::try_from(tls_host.trim().to_string())
+                .map_err(|_| AppError::Config(format!("redis TLS: invalid host {tls_host:?}")))?;
+            Some((tls_connector(input.ssl_ca_path.as_deref())?, name))
+        };
         let driver = Self {
             host: input.host.trim().to_string(),
             port: if input.port == 0 { 6379 } else { input.port },
+            tls,
             username: input.username.trim().to_string(),
             password: password.filter(|value| !value.is_empty()).map(str::to_string),
             default_db: input.database.as_deref().and_then(db_index).unwrap_or(0),
@@ -221,6 +270,15 @@ impl RedisDriver {
         .await
         .map_err(|_| AppError::Db("redis: connection timed out".to_string()))?
         .map_err(io_err)?;
+        let stream: Box<dyn Io> = match &self.tls {
+            None => Box::new(stream),
+            Some((connector, name)) => Box::new(
+                tokio::time::timeout(Duration::from_secs(10), connector.connect(name.clone(), stream))
+                    .await
+                    .map_err(|_| AppError::Db("redis: TLS handshake timed out".to_string()))?
+                    .map_err(|error| AppError::Db(format!("redis TLS: {error}")))?,
+            ),
+        };
         let mut conn = Conn {
             reader: BufReader::new(stream),
             db: 0,
@@ -413,6 +471,7 @@ async fn exchange(conn: &mut Conn, commands: Vec<Vec<Vec<u8>>>) -> AppResult<Vec
         payload.extend_from_slice(&encode(command));
     }
     conn.reader.get_mut().write_all(&payload).await.map_err(io_err)?;
+    conn.reader.get_mut().flush().await.map_err(io_err)?;
     let mut replies = Vec::with_capacity(commands.len());
     for _ in 0..commands.len() {
         replies.push(read_reply(&mut conn.reader).await?);
@@ -634,8 +693,14 @@ pub(crate) fn prefix_tables(keys: &[String]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{encode, prefix_tables, read_reply, reply_table, split_args, Resp};
+    use super::{encode, prefix_tables, read_reply, reply_table, split_args, tls_connector, Resp};
     use serde_json::json;
+
+    #[test]
+    fn builds_a_tls_config_and_rejects_a_missing_ca_file() {
+        assert!(tls_connector(None).is_ok());
+        assert!(tls_connector(Some("/no/such/ca.pem")).is_err());
+    }
 
     #[test]
     fn splits_arguments_like_redis_cli() {

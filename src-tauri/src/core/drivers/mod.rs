@@ -738,7 +738,9 @@ pub async fn connect(
         Dialect::Clickhouse => {
             Arc::new(clickhouse::ClickHouseDriver::connect(&endpoint, password).await?)
         }
-        Dialect::Redis => Arc::new(redis::RedisDriver::connect(&endpoint, password).await?),
+        Dialect::Redis => {
+            Arc::new(redis::RedisDriver::connect(&endpoint, password, &input.host).await?)
+        }
         other => {
             return Err(AppError::Config(format!(
                 "{} dialekti MVP-də dəstəklənmir",

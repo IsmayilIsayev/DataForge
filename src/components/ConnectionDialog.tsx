@@ -138,7 +138,7 @@ const PRESETS: Preset[] = [
   { id: "azure_postgres", label: "Azure Postgres", dialect: "postgres", flavor: "azure_postgres", port: "5432", hint: "SSL usually required" },
   { id: "mssql", label: "SQL Server", dialect: "mssql", port: "1433" },
   { id: "clickhouse", label: "ClickHouse", dialect: "clickhouse", port: "8123" },
-  { id: "redis", label: "Redis", dialect: "redis", port: "6379", hint: "No TLS yet: use an SSH tunnel for remote servers" },
+  { id: "redis", label: "Redis", dialect: "redis", port: "6379", hint: "Turn on TLS for hosted Redis (rediss://)" },
   { id: "sqlite", label: "SQLite", dialect: "sqlite", port: "" },
 ];
 
@@ -251,7 +251,7 @@ function parseConnectionUrl(raw: string): {
     flavor = "mariadb";
   } else if (scheme === "sqlserver" || scheme === "mssql") dialect = "mssql";
   else if (scheme === "clickhouse") dialect = "clickhouse";
-  else if (scheme === "redis") dialect = "redis";
+  else if (scheme === "redis" || scheme === "rediss") dialect = "redis";
   else if (scheme === "sqlite" || scheme === "sqlite3") dialect = "sqlite";
   if (!dialect) return null;
 
@@ -290,7 +290,8 @@ function parseConnectionUrl(raw: string): {
     database: decode(url.pathname.replace(/^\//, "")),
     sslMode:
       normalizeSslMode(url.searchParams.get("sslmode")) ??
-      normalizeSslMode(url.searchParams.get("ssl-mode")),
+      normalizeSslMode(url.searchParams.get("ssl-mode")) ??
+      (scheme === "rediss" ? "require" : undefined),
     flavor,
   };
 }
@@ -327,7 +328,10 @@ function buildInput(
           : requestedDatabase;
 
   const supportsSsl =
-    dialect === "mysql" || dialect === "postgres" || dialect === "clickhouse";
+    dialect === "mysql" ||
+    dialect === "postgres" ||
+    dialect === "clickhouse" ||
+    dialect === "redis";
   const ssh = extra.sshUse
     ? {
         host: extra.sshHost.trim(),
@@ -613,7 +617,7 @@ export default function ConnectionDialog({
     const sslMode = parsed.sslMode;
     if (sslMode) {
       setExtra((current) => ({ ...current, sslMode }));
-    } else if (parsed.dialect === "clickhouse") {
+    } else if (parsed.dialect === "clickhouse" || parsed.dialect === "redis") {
       setExtra((current) => ({ ...current, sslMode: "disable" }));
     }
   };
@@ -735,7 +739,7 @@ export default function ConnectionDialog({
     setExtra((current) => ({
       ...current,
       sslMode:
-        preset.dialect === "clickhouse"
+        preset.dialect === "clickhouse" || preset.dialect === "redis"
           ? "disable"
           : current.sslMode === "disable"
             ? "prefer"
@@ -807,7 +811,7 @@ export default function ConnectionDialog({
     setExtra((current) => ({
       ...current,
       sslMode:
-        next === "clickhouse"
+        next === "clickhouse" || next === "redis"
           ? "disable"
           : current.sslMode === "disable"
             ? "prefer"
@@ -1373,6 +1377,20 @@ export default function ConnectionDialog({
                       checked={extra.sslMode !== "disable"}
                       label="HTTPS (TLS)"
                       onChange={toggleClickHouseHttps}
+                    />
+                  </Row>
+                )}
+                {dialect === "redis" && (
+                  <Row label="">
+                    <Check
+                      checked={extra.sslMode !== "disable"}
+                      label="TLS (rediss://)"
+                      onChange={() =>
+                        setExtraField(
+                          "sslMode",
+                          extra.sslMode === "disable" ? "verify_full" : "disable",
+                        )
+                      }
                     />
                   </Row>
                 )}

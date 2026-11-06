@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Redis over TLS: tick "TLS (rediss://)" or paste a `rediss://` URL to connect to hosted Redis (Upstash, Redis Cloud, Azure, ElastiCache). The server certificate is checked against public CAs or the CA file on the SSL tab, also through an SSH tunnel.
+
+### Fixed
+- Disconnecting a connection no longer leaves it active with a database selected; its tree collapses.
+
 ## [0.5.10] - 2026-11-06
 
 ### Added
