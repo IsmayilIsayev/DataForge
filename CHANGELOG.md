@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Redis over TLS: tick "TLS (rediss://)" or paste a `rediss://` URL to connect to hosted Redis (Upstash, Redis Cloud, Azure, ElastiCache). The server certificate is checked against public CAs or the CA file on the SSL tab, also through an SSH tunnel.
 - Running queries (connection right-click → Running queries…): see what is running on MySQL, PostgreSQL, SQL Server or ClickHouse right now, with user, database and duration, refreshed every 2 seconds, and stop a stuck query. Blocked on read-only connections.
 - Compare data (table right-click → Compare data…): match a table's rows with the same table in another database or connection by primary key, count what is the same, changed, only in the source and only in the target, list the differences, and copy or save a SQL script that makes the target equal to the source.
+- Users and permissions (connection right-click → Users and permissions…) for MySQL, PostgreSQL and SQL Server: list users, see a user's access in a database, create and drop users, grant read, read + write or full access to a database and revoke it. Passwords are sent only to the server, never stored. Blocked on read-only connections; production asks for confirmation.
 - A scheduled backup that fails shows a system notification with the database and the error.
 
 ### Fixed

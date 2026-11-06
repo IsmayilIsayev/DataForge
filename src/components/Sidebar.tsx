@@ -48,6 +48,7 @@ const BackupDialog = lazy(() => import("./BackupDialog"));
 const TransferDialog = lazy(() => import("./TransferDialog"));
 const ActivityDialog = lazy(() => import("./ActivityDialog"));
 const DataCompareDialog = lazy(() => import("./DataCompareDialog"));
+const UsersDialog = lazy(() => import("./UsersDialog"));
 const RestoreDialog = lazy(() => import("./RestoreDialog"));
 
 const dialogFallback = (
@@ -485,6 +486,7 @@ export default function Sidebar({
     database: string;
   } | null>(null);
   const [activityFor, setActivityFor] = useState<ConnectionMeta | null>(null);
+  const [usersFor, setUsersFor] = useState<ConnectionMeta | null>(null);
   const [compareFor, setCompareFor] = useState<{
     connection: ConnectionMeta;
     database: string;
@@ -1932,6 +1934,19 @@ export default function Sidebar({
                       }}
                     />
                   )}
+                {connected[contextConnection.id] &&
+                  ["mysql", "postgres", "mssql"].includes(
+                    contextConnection.dialect,
+                  ) && (
+                    <MenuItem
+                      icon="icon-users"
+                      label="Users and permissions…"
+                      onClick={() => {
+                        setContextMenu(null);
+                        setUsersFor(contextConnection);
+                      }}
+                    />
+                  )}
                 <MenuItem
                   icon="icon-upload"
                   label="Restore from .sql…"
@@ -2518,6 +2533,12 @@ export default function Sidebar({
             table={compareFor.table}
             onClose={() => setCompareFor(null)}
           />
+        </Suspense>
+      )}
+
+      {usersFor && (
+        <Suspense fallback={dialogFallback}>
+          <UsersDialog connection={usersFor} onClose={() => setUsersFor(null)} />
         </Suspense>
       )}
 

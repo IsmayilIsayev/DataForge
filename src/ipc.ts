@@ -390,6 +390,21 @@ export const compareTableData = (request: {
     table: request.table,
   });
 
+export type DbUserAction =
+  | { action: "create"; name: string; host?: string; password: string }
+  | { action: "drop"; name: string; host?: string }
+  | { action: "grant"; name: string; host?: string; database: string; access: "read" | "write" | "all" }
+  | { action: "revoke"; name: string; host?: string; database: string };
+
+export const listDbUsers = (connId: string) =>
+  invoke<QueryResult>("list_db_users", { conn_id: connId });
+
+export const dbUserGrants = (connId: string, name: string, host: string | undefined, database: string) =>
+  invoke<QueryResult>("db_user_grants", { conn_id: connId, name, host, database });
+
+export const manageDbUser = (connId: string, action: DbUserAction) =>
+  invoke<void>("manage_db_user", { conn_id: connId, action });
+
 export const listRunningQueries = (connId: string) =>
   invoke<QueryResult>("list_running_queries", { conn_id: connId });
 
