@@ -46,6 +46,7 @@ const ImportCsvDialog = lazy(() => import("./ImportCsvDialog"));
 const GenerateTestDataDialog = lazy(() => import("./GenerateTestDataDialog"));
 const BackupDialog = lazy(() => import("./BackupDialog"));
 const TransferDialog = lazy(() => import("./TransferDialog"));
+const ActivityDialog = lazy(() => import("./ActivityDialog"));
 const RestoreDialog = lazy(() => import("./RestoreDialog"));
 
 const dialogFallback = (
@@ -482,6 +483,7 @@ export default function Sidebar({
     connection: ConnectionMeta;
     database: string;
   } | null>(null);
+  const [activityFor, setActivityFor] = useState<ConnectionMeta | null>(null);
   const [restoreFor, setRestoreFor] = useState<{
     connection: ConnectionMeta;
     database: string;
@@ -1911,6 +1913,19 @@ export default function Sidebar({
                     refreshConnection(contextConnection);
                   }}
                 />
+                {connected[contextConnection.id] &&
+                  ["mysql", "postgres", "mssql", "clickhouse"].includes(
+                    contextConnection.dialect,
+                  ) && (
+                    <MenuItem
+                      icon="icon-activity"
+                      label="Running queries…"
+                      onClick={() => {
+                        setContextMenu(null);
+                        setActivityFor(contextConnection);
+                      }}
+                    />
+                  )}
                 <MenuItem
                   icon="icon-upload"
                   label="Restore from .sql…"
@@ -2472,6 +2487,15 @@ export default function Sidebar({
             database={transferFor.database}
             onClose={() => setTransferFor(null)}
             onDone={refreshDatabase}
+          />
+        </Suspense>
+      )}
+
+      {activityFor && (
+        <Suspense fallback={dialogFallback}>
+          <ActivityDialog
+            connection={activityFor}
+            onClose={() => setActivityFor(null)}
           />
         </Suspense>
       )}

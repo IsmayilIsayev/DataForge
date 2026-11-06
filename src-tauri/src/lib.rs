@@ -309,6 +309,8 @@ pub fn run() {
             commands::import::preview_csv,
             commands::import::import_csv,
             commands::transfer::transfer_tables,
+            commands::activity::list_running_queries,
+            commands::activity::stop_running_query,
             commands::schedule::list_backup_schedules,
             commands::schedule::save_backup_schedule,
             commands::schedule::delete_backup_schedule,

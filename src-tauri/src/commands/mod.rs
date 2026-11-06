@@ -1,3 +1,4 @@
+pub mod activity;
 pub mod ai;
 pub mod backup;
 pub mod connection;

@@ -27,6 +27,7 @@ import type {
   GenerateSummary,
   Nl2SqlResult,
   QueryParam,
+  QueryResult,
   RestorePreview,
   RestoreSummary,
   RunQueryResult,
@@ -372,6 +373,12 @@ export const transferTables = (request: TransferRequest) =>
     if_exists: request.ifExists,
     transfer_id: request.transferId,
   });
+
+export const listRunningQueries = (connId: string) =>
+  invoke<QueryResult>("list_running_queries", { conn_id: connId });
+
+export const stopRunningQuery = (connId: string, id: string) =>
+  invoke<void>("stop_running_query", { conn_id: connId, id });
 
 export const backupCapabilities = (connId: string) =>
   invoke<BackupCapabilities>("backup_capabilities", { conn_id: connId });
