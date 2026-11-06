@@ -47,6 +47,7 @@ const GenerateTestDataDialog = lazy(() => import("./GenerateTestDataDialog"));
 const BackupDialog = lazy(() => import("./BackupDialog"));
 const TransferDialog = lazy(() => import("./TransferDialog"));
 const ActivityDialog = lazy(() => import("./ActivityDialog"));
+const DataCompareDialog = lazy(() => import("./DataCompareDialog"));
 const RestoreDialog = lazy(() => import("./RestoreDialog"));
 
 const dialogFallback = (
@@ -484,6 +485,11 @@ export default function Sidebar({
     database: string;
   } | null>(null);
   const [activityFor, setActivityFor] = useState<ConnectionMeta | null>(null);
+  const [compareFor, setCompareFor] = useState<{
+    connection: ConnectionMeta;
+    database: string;
+    table: string;
+  } | null>(null);
   const [restoreFor, setRestoreFor] = useState<{
     connection: ConnectionMeta;
     database: string;
@@ -2202,6 +2208,19 @@ export default function Sidebar({
                       .catch((error) => storeError(error));
                   }}
                 />
+                <MenuItem
+                  icon="icon-git-compare"
+                  label="Compare data…"
+                  onClick={() => {
+                    const menu = contextMenu;
+                    setContextMenu(null);
+                    setCompareFor({
+                      connection: contextConnection,
+                      database: menu.database,
+                      table: menu.table,
+                    });
+                  }}
+                />
                 {contextConnection.dialect !== "clickhouse" && (
                   <MenuItem
                     icon="icon-flask-conical"
@@ -2487,6 +2506,17 @@ export default function Sidebar({
             database={transferFor.database}
             onClose={() => setTransferFor(null)}
             onDone={refreshDatabase}
+          />
+        </Suspense>
+      )}
+
+      {compareFor && (
+        <Suspense fallback={dialogFallback}>
+          <DataCompareDialog
+            connection={compareFor.connection}
+            database={compareFor.database}
+            table={compareFor.table}
+            onClose={() => setCompareFor(null)}
           />
         </Suspense>
       )}

@@ -2,6 +2,7 @@ pub mod activity;
 pub mod ai;
 pub mod backup;
 pub mod connection;
+pub mod data_compare;
 pub mod edit;
 pub mod export;
 pub mod import;

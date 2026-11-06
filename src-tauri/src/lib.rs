@@ -311,6 +311,7 @@ pub fn run() {
             commands::transfer::transfer_tables,
             commands::activity::list_running_queries,
             commands::activity::stop_running_query,
+            commands::data_compare::compare_table_data,
             commands::schedule::list_backup_schedules,
             commands::schedule::save_backup_schedule,
             commands::schedule::delete_backup_schedule,

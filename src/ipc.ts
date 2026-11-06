@@ -20,6 +20,7 @@ import type {
   ConnectionInput,
   ConnectionMeta,
   ConnectionState,
+  DataDiff,
   DatabaseTable,
   Dialect,
   ErSchema,
@@ -372,6 +373,21 @@ export const transferTables = (request: TransferRequest) =>
     tables: request.tables,
     if_exists: request.ifExists,
     transfer_id: request.transferId,
+  });
+
+export const compareTableData = (request: {
+  sourceConn: string;
+  sourceDb: string;
+  targetConn: string;
+  targetDb: string;
+  table: string;
+}) =>
+  invoke<DataDiff>("compare_table_data", {
+    source_conn: request.sourceConn,
+    source_db: request.sourceDb,
+    target_conn: request.targetConn,
+    target_db: request.targetDb,
+    table: request.table,
   });
 
 export const listRunningQueries = (connId: string) =>

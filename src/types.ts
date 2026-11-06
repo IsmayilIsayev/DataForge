@@ -82,6 +82,22 @@ export interface CellRef {
   value: string | null;
 }
 
+export interface DataDiff {
+  key: string[];
+  columns: string[];
+  skipped_columns: string[];
+  same: number;
+  changed: number;
+  only_source: number;
+  only_target: number;
+  samples: {
+    kind: "changed" | "only_source" | "only_target";
+    key: CellValue[];
+    columns: string[];
+  }[];
+  sync_sql: string | null;
+}
+
 export interface QueryResult {
   columns: string[];
   rows: CellValue[][];

@@ -301,7 +301,7 @@ async fn copy_table(
         let write = plan.write.clone();
         let pk = plan.pk.clone();
         let pk_types = plan.pk_types.clone();
-        let finish = plan.finish(target_dialect, target_db);
+        let finish = plan.finish(target_dialect, &target_db);
         let identity = plan.create.is_none() && target_dialect == Dialect::Mssql;
         let mut setup = Vec::new();
         if let Some(create) = &plan.create {
