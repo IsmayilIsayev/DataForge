@@ -759,6 +759,15 @@ export default function Sidebar({
   }
 
   async function disconnectOnly(connection: ConnectionMeta) {
+    // A disconnected connection must not stay the active one with a database selected.
+    const store = useAppStore.getState();
+    if (store.activeConnId === connection.id && !store.setActiveConn(null)) return;
+    setExpanded((current) => ({ ...current, [connection.id]: false }));
+    setSelected((current) =>
+      current === connection.id || current?.startsWith(`${connection.id}/`)
+        ? null
+        : current,
+    );
     try {
       await disconnectConnection(connection.id);
       const current = useAppStore.getState();
